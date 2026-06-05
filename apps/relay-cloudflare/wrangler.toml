@@ -1,0 +1,59 @@
+name = "simplysync-relay"
+main = "src/index.ts"
+compatibility_date = "2025-05-01"
+
+# Cron Trigger: compact the event log every 6 hours (drops superseded edits so
+# D1 stays small and per-owner quotas reflect current footprint).
+[triggers]
+crons = ["0 */6 * * *"]
+
+# --- Bindings -----------------------------------------------------------------
+
+# D1: owner metadata + the encrypted event log (small rows only).
+[[d1_databases]]
+binding = "DB"
+database_name = "simplysync-relay"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+# R2: encrypted, content-addressed blob chunks (cheap storage, free egress).
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "simplysync-relay-blobs"
+
+# Workers Rate Limiting bindings (in-colo, in-memory — cheap defense-in-depth).
+# `period` may only be 10 or 60 seconds. These are the wallet guard *inside*
+# the Worker; the primary guard is the zone-level WAF rate-limit rule (README).
+
+# General per-IP request budget across the whole API.
+[[unsafe.bindings]]
+name = "API_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 120, period = 10 }
+
+# Per-IP owner-creation budget. Bounds how fast new owner rows can be minted
+# from any one address — the anti row-spam gate (no account registration).
+[[unsafe.bindings]]
+name = "CREATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 5, period = 60 }
+
+# Per-owner write budget. One compromised/abusive key can't hammer writes.
+[[unsafe.bindings]]
+name = "WRITE_LIMITER"
+type = "ratelimit"
+namespace_id = "1003"
+simple = { limit = 60, period = 10 }
+
+# --- Tunables (override per-environment) --------------------------------------
+[vars]
+MAX_EVENT_BYTES       = "262144"        # 256 KiB per event
+MAX_OWNER_BYTES       = "1073741824"    # 1 GiB per owner (events + blobs)
+MAX_EVENTS_PER_PUSH   = "1000"
+MAX_EVENTS_PER_PULL   = "5000"
+DEFAULT_EVENTS_PER_PULL = "1000"
+MAX_BLOB_BYTES        = "8388608"       # 8 MiB per chunk
+MAX_OWNERS            = "100000"        # hard fleet cap (raise deliberately)
+RELAY_DISABLED        = "false"         # kill switch: "true" => 503 on writes

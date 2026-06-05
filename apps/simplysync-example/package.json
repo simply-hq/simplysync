@@ -1,0 +1,20 @@
+{
+  "name": "@simplysync/example",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "demo": "bun run src/index.ts demo",
+    "demo:with-relay": "bun run src/run-with-relay.ts",
+    "blob-demo": "bun run src/blob-demo.ts",
+    "clean": "rm -rf data/*.db data/*.db-shm data/*.db-wal"
+  },
+  "dependencies": {
+    "@simplysync/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "~5.9.2"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@simplysync/core",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@scure/bip39": "^2.0.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2"
+  }
+}

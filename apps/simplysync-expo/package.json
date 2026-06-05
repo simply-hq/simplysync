@@ -1,0 +1,38 @@
+{
+  "name": "@simplysync/expo",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./index.js",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~55.0.6",
+    "@simplysync/core": "workspace:*",
+    "expo": "~55.0.5",
+    "expo-clipboard": "~55.0.9",
+    "expo-constants": "~55.0.9",
+    "expo-dev-client": "~55.0.18",
+    "expo-font": "~55.0.4",
+    "expo-linking": "~55.0.8",
+    "expo-router": "~55.0.7",
+    "expo-secure-store": "~55.0.9",
+    "expo-splash-screen": "~55.0.12",
+    "expo-sqlite": "~55.0.11",
+    "expo-status-bar": "~55.0.4",
+    "react": "19.2.0",
+    "react-native": "0.83.2",
+    "react-native-nitro-modules": "0.34.1",
+    "react-native-quick-crypto": "^1.0.15",
+    "react-native-safe-area-context": "~5.6.2",
+    "react-native-screens": "~4.23.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "babel-preset-expo": "~55.0.8",
+    "typescript": "~5.9.2"
+  }
+}

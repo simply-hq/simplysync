@@ -1,0 +1,19 @@
+{
+  "name": "@simplysync/relay",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "dev:admin": "ADMIN_TOKEN=dev ADMIN_PATH=admin bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "clean": "rm -rf data/relay.db data/relay.db-shm data/relay.db-wal"
+  },
+  "dependencies": {
+    "@simplysync/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "~5.9.2"
+  }
+}

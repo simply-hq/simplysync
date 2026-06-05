@@ -1,0 +1,24 @@
+{
+  "name": "@simplysync/react",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.tsx",
+  "types": "./src/index.tsx",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@simplysync/db": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "*"
+  },
+  "devDependencies": {
+    "@types/react": "*",
+    "typescript": "~5.9.2"
+  }
+}

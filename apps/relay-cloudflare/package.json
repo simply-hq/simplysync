@@ -1,0 +1,21 @@
+{
+  "name": "@simplysync/relay-cloudflare",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "migrate:local": "wrangler d1 migrations apply simplysync-relay --local",
+    "migrate:remote": "wrangler d1 migrations apply simplysync-relay --remote",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@simplysync/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250501.0",
+    "typescript": "~5.9.2",
+    "wrangler": "^4.14.0"
+  }
+}

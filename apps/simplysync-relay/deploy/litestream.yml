@@ -1,0 +1,22 @@
+# Litestream continuously streams the relay's SQLite WAL to object storage, so a
+# dead VPS costs you minutes of sync data at most (and you can rebuild on a new
+# box with `litestream restore`). Cloudflare R2 is S3-compatible and has free
+# egress, so restores cost nothing.
+#
+# Install to /etc/simplysync-relay/litestream.yml
+# Secrets come from /etc/simplysync-relay/litestream.env (see litestream.env.example).
+
+dbs:
+  - path: /var/lib/simplysync-relay/relay.db
+    replicas:
+      - type: s3
+        bucket: simplysync-relay-backups
+        path: relay.db
+        # R2 endpoint: https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: auto
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        # Keep ~24h of point-in-time restore granularity.
+        retention: 24h
+        snapshot-interval: 6h
