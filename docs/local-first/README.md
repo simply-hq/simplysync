@@ -14,7 +14,7 @@ no one.
 ## Start here
 
 - **[User Guide](./guide.md)** — for app developers building on
-  `@simplysync/core`: identity & recovery keys (incl. BIP39 mnemonics),
+  `@simplysync/protocol`: identity & recovery keys (incl. BIP39 mnemonics),
   writing data, syncing, running a relay, and the core API reference.
 - **[Architecture & Contributor Guide](./architecture.md)** — for people
   working on the library: cryptographic design, the envelope format, the sync
@@ -39,8 +39,8 @@ bun run simplysync:demo   # spins up a relay, syncs two clients, prints the
 
 | Path | What it is |
 | --- | --- |
-| `packages/simplysync-core` | The library: identity, key derivation, AES-GCM envelopes, HLC, encoding. |
-| `packages/simplysync-db` | Schema + Kysely query layer + the sync engine (where payloads get encrypted/decrypted). |
+| `packages/simplysync-protocol` | The library: identity, key derivation, AES-GCM envelopes, HLC, encoding. |
+| `packages/simplysync-engine` | Schema + Kysely query layer + the sync engine (where payloads get encrypted/decrypted). |
 | `packages/simplysync-react` | React hooks for binding the engine into a UI. |
 | `apps/relay-go` | Canonical self-hostable relay: Go + SQLite, stores only ciphertext. See its [README](../../apps/relay-go/README.md). |
 | `apps/simplysync-relay` | Bun + SQLite relay (reference implementation, wire-identical to the Go relay). |
@@ -50,4 +50,4 @@ bun run simplysync:demo   # spins up a relay, syncs two clients, prints the
 
 Each app also has its own README with run instructions. The package-level
 overview lives in
-[`packages/simplysync-core/README.md`](../../packages/simplysync-core/README.md).
+[`packages/simplysync-protocol/README.md`](../../packages/simplysync-protocol/README.md).

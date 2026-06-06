@@ -1,6 +1,6 @@
 # SimplySync — User Guide
 
-A guide for building apps on SimplySync (the `@simplysync/core` package):
+A guide for building apps on SimplySync (the `@simplysync/protocol` package):
 an app-owned, end-to-end-encrypted local-first stack. Users own their
 data, the app works offline-first, and sync runs through a relay you can
 self-host. For how the internals work and how to contribute, see
@@ -34,14 +34,14 @@ own the local schema, the outbox, and the apply loop — there's no hidden ORM.
 
 ## Install
 
-The core is a workspace package (`@simplysync/core`). In this monorepo,
+The core is a workspace package (`@simplysync/protocol`). In this monorepo,
 depend on it with the workspace protocol:
 
 ```jsonc
 // package.json
 {
   "dependencies": {
-    "@simplysync/core": "workspace:*"
+    "@simplysync/protocol": "workspace:*"
   }
 }
 ```
@@ -64,7 +64,7 @@ two interchangeable credential formats and auto-detects which one it's given.
 ### Native recovery key (`sf1_…`)
 
 ```ts
-import { createRecoveryKey, deriveIdentity } from "@simplysync/core";
+import { createRecoveryKey, deriveIdentity } from "@simplysync/protocol";
 
 const recoveryKey = await createRecoveryKey(); // "sf1_…" — 32 bytes of entropy
 const identity = await deriveIdentity(recoveryKey);
@@ -83,7 +83,7 @@ write key) every time, so a user who saved their recovery phrase can restore
 their identity on any device with no re-onboarding.
 
 ```ts
-import { createMnemonic, deriveIdentity, isRecoveryMnemonic } from "@simplysync/core";
+import { createMnemonic, deriveIdentity, isRecoveryMnemonic } from "@simplysync/protocol";
 
 const phrase = createMnemonic(); // "<generated 24-word recovery phrase>"
 
@@ -115,7 +115,7 @@ Each install is a "device" with its own id. Writes are stamped with an HLC so
 edits from different devices order deterministically.
 
 ```ts
-import { createDeviceId, createHlc, compareHlc } from "@simplysync/core";
+import { createDeviceId, createHlc, compareHlc } from "@simplysync/protocol";
 
 const deviceId = await createDeviceId(); // persist this per install
 
@@ -133,7 +133,7 @@ A write does two things atomically-ish: update the local row, and enqueue an
 encrypted envelope. `encryptPayload` turns a domain change into a `SyncEnvelope`.
 
 ```ts
-import { encryptPayload, type SyncPayload } from "@simplysync/core";
+import { encryptPayload, type SyncPayload } from "@simplysync/protocol";
 
 const payload: SyncPayload = {
   schemaVersion: 1,
@@ -235,7 +235,7 @@ content-addressed chunks** and syncs them lazily — the iCloud model:
    decrypt, and cache locally.
 
 ```ts
-import { encryptBlob, decryptBlob } from "@simplysync/core";
+import { encryptBlob, decryptBlob } from "@simplysync/protocol";
 
 // Upload
 const { manifest, chunks } = await encryptBlob(identity, bytes, {

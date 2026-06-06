@@ -12,7 +12,7 @@ import type {
   Query,
   SchemaDefinition,
   SyncState,
-} from "@simplysync/db";
+} from "@simplysync/engine";
 
 // Re-export the common types so call sites can import them from the React entry.
 export type {
@@ -22,7 +22,7 @@ export type {
   SyncState,
   AppOwner,
   Transport,
-} from "@simplysync/db";
+} from "@simplysync/engine";
 
 // The React bindings the apps use:
 // SyncProvider, useQuery (reactive), useSyncState, createUseSync/useSync,

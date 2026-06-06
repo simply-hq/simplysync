@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
@@ -115,7 +115,9 @@ function renderNav(activeOut: string): string {
       return `<a href="${page.out}"${active}>${page.nav}</a>`;
     })
     .join("\n        ");
-  return items;
+  // The playground is a bundled SPA, not a markdown page, so it's appended here
+  // rather than living in `pages`.
+  return `${items}\n        <a href="playground.html">Playground ↗</a>`;
 }
 
 function renderToc(toc: TocEntry[]): string {
@@ -152,7 +154,7 @@ function layout(options: {
   <header class="topbar">
     <button class="menu-toggle" aria-label="Toggle navigation" onclick="document.body.classList.toggle('nav-open')">☰</button>
     <a class="brand" href="index.html">${SITE_TITLE} <span>Docs</span></a>
-    <a class="repo-link" href="${REPO_BLOB_BASE}/packages/simplysync-core">Source ↗</a>
+    <a class="repo-link" href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
   </header>
   <div class="shell">
     <aside class="sidebar" aria-label="Sections">
@@ -173,6 +175,56 @@ function layout(options: {
 </body>
 </html>
 `;
+}
+
+function playgroundHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Playground · ${SITE_TITLE}</title>
+  <meta name="description" content="Run the SimplySync local-first, end-to-end-encrypted engine in your browser." />
+  <link rel="stylesheet" href="playground.css" />
+</head>
+<body>
+  <a class="pg-back" href="index.html">← Docs</a>
+  <div id="app"></div>
+  <script type="module" src="playground.js"></script>
+</body>
+</html>
+`;
+}
+
+// Bundles the React playground SPA into dist/ with Bun's bundler (no extra
+// toolchain), copies sql.js's wasm next to it, and emits the host HTML.
+async function buildPlayground(): Promise<void> {
+  const result = await Bun.build({
+    entrypoints: [join(here, "playground", "main.tsx")],
+    outdir: distDir,
+    target: "browser",
+    minify: true,
+    sourcemap: "none",
+    naming: { entry: "playground.[ext]" },
+    // React (and other libs) branch on this; browsers have no `process`.
+    define: { "process.env.NODE_ENV": JSON.stringify("production") },
+  });
+  if (!result.success) {
+    for (const log of result.logs) console.error(log);
+    throw new Error("Playground bundle failed.");
+  }
+
+  // sql.js fetches its wasm at runtime via locateFile(() => "sql-wasm.wasm").
+  await copyFile(
+    Bun.resolveSync("sql.js/dist/sql-wasm.wasm", here),
+    join(distDir, "sql-wasm.wasm"),
+  );
+  await copyFile(
+    join(here, "playground", "styles.css"),
+    join(distDir, "playground.css"),
+  );
+  await writeFile(join(distDir, "playground.html"), playgroundHtml(), "utf8");
+  console.log("  playground/main.tsx → dist/playground.{js,html,css} (+ wasm)");
 }
 
 async function build(): Promise<void> {
@@ -208,7 +260,9 @@ async function build(): Promise<void> {
     "utf8",
   );
 
-  console.log(`\nBuilt ${pages.length} pages → ${distDir}`);
+  await buildPlayground();
+
+  console.log(`\nBuilt ${pages.length} pages + playground → ${distDir}`);
 }
 
 await build();

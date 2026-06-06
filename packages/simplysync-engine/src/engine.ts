@@ -4,7 +4,6 @@ import {
   SqliteAdapter,
   SqliteIntrospector,
   SqliteQueryCompiler,
-  type Compilable,
 } from "kysely";
 import {
   base64UrlEncode,
@@ -19,217 +18,29 @@ import {
   type LocalFirstIdentity,
   type SyncEnvelope,
   type SyncPayload,
-} from "@simplysync/core";
-import {
-  sqliteFalse,
-  type Id,
-  type SqliteBoolean,
-  type Type,
-} from "./type";
+} from "@simplysync/protocol";
+import { sqliteFalse, type Id, type SqliteBoolean } from "./type";
+import type {
+  AppOwner,
+  Database,
+  IndexCreate,
+  MutationOptions,
+  MutationResult,
+  Query,
+  SchemaDefinition,
+  SqliteDriver,
+  SyncEngine,
+  SyncEngineConfig,
+  SyncEngineDeps,
+  SyncError,
+  SyncState,
+  Transport,
+} from "./engine-types";
 
-// ---------------------------------------------------------------------------
-// Schema typing — derive the Kysely Database type (and insert/update shapes)
-// from a plain `{ table: { column: Type } }` schema, adding the system columns
-// every row carries (id is declared per table; isDeleted/createdAt/updatedAt
-// are implicit, by default).
-// ---------------------------------------------------------------------------
-
-export type ColumnTypes = Record<string, Type<unknown>>;
-export type SchemaDefinition = Record<string, ColumnTypes>;
-
-type DecodedOf<T> = T extends Type<infer U> ? U : never;
-
-export interface SystemColumns {
-  readonly isDeleted: SqliteBoolean;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-}
-
-export type DecodedRow<Table extends ColumnTypes> = {
-  [K in keyof Table]: DecodedOf<Table[K]>;
-};
-
-export type Row<Table extends ColumnTypes> = DecodedRow<Table> & SystemColumns;
-
-export type Database<S extends SchemaDefinition> = {
-  [T in keyof S]: Row<S[T]>;
-};
-
-/** Optional system-column overrides accepted by mutations. */
-export interface SystemColumnOverrides {
-  readonly createdAt?: string;
-  readonly updatedAt?: string;
-  readonly isDeleted?: SqliteBoolean;
-}
-
-// All columns optional on insert (partial inserts are allowed; the engine
-// fills id + system columns and leaves omitted columns NULL).
-export type InsertValues<
-  Table extends ColumnTypes,
-  R = DecodedRow<Table>,
-> = Partial<R> & SystemColumnOverrides;
-
-export type UpdateValues<
-  Table extends ColumnTypes,
-  R = DecodedRow<Table>,
-> = Partial<R> &
-  SystemColumnOverrides & {
-    id: R extends { id: infer I } ? I : Id;
-  };
-
-export interface Query<Row = unknown> {
-  readonly sql: string;
-  readonly parameters: readonly unknown[];
-  /** Phantom carrier for the row type — never read at runtime. */
-  readonly Row: Row;
-}
-
-/** Extracts the row type from a query (the `typeof query.Row` idiom). */
-export type QueryRow<Q> = Q extends Query<infer R> ? R : never;
-
-export type MutationResult =
-  | { readonly ok: true; readonly value: { readonly id: Id } }
-  | { readonly ok: false; readonly error: { readonly message: string } };
-
-// ---------------------------------------------------------------------------
-// Platform plumbing injected by each app (expo-sqlite / wa-sqlite, secure
-// storage for the recovery phrase).
-// ---------------------------------------------------------------------------
-
-export interface SqliteDriver {
-  exec(sql: string, params?: readonly unknown[]): void;
-  select<R = Record<string, unknown>>(
-    sql: string,
-    params?: readonly unknown[],
-  ): R[];
-  transaction<T>(fn: () => T): T;
-}
-
-export interface SecureStorage {
-  getItem(key: string): Promise<string | null> | string | null;
-  setItem(key: string, value: string): Promise<void> | void;
-  removeItem(key: string): Promise<void> | void;
-}
-
-export interface SyncEngineDeps {
-  readonly createSqliteDriver: (
-    name: string,
-  ) => SqliteDriver | Promise<SqliteDriver>;
-  readonly secureStorage: SecureStorage;
-  readonly fetch?: typeof fetch;
-  /**
-   * Platform reload used after restore/reset to re-evaluate app state. On web
-   * the engine falls back to `location.reload()`; React Native must provide one
-   * (e.g. expo-updates `reloadAsync`) since there's no `location`.
-   */
-  readonly reloadApp?: () => void | Promise<void>;
-}
-
-export interface Transport {
-  readonly type: "WebSocket" | "Http";
-  readonly url: string;
-}
-
-export interface IndexCreate {
-  on(table: string): IndexCreate;
-  column(column: string): IndexCreate;
-  readonly __spec: { name: string; table: string; columns: string[] };
-}
-
-export type IndexBuilder = (
-  create: (name: string) => IndexCreate,
-) => IndexCreate[];
-
-export interface AppOwner {
-  readonly id: string;
-  readonly mnemonic: string;
-  /** Bearer token presented to relays (the write key). */
-  readonly writeKey: string;
-}
-
-export interface MutationOptions {
-  readonly onComplete?: () => void;
-}
-
-export interface SyncEngineConfig {
-  readonly name: string;
-  readonly indexes?: IndexBuilder;
-  readonly transports?: readonly Transport[];
-  readonly externalAppOwner?: AppOwner | null;
-  readonly encryptionKey?: unknown;
-  /** Poll interval (ms) for pulling remote changes. Default 5000. */
-  readonly syncIntervalMs?: number;
-}
-
-export type SyncState =
-  | { readonly type: "SyncStateInitial" }
-  | { readonly type: "SyncStateIsSyncing" }
-  | { readonly type: "SyncStateIsSynced"; readonly lastSyncedAt: string }
-  | {
-      readonly type: "SyncStateIsNotSynced";
-      readonly error?: string;
-      // Set for non-retryable failures (auth/quota/bad-request). The UI should
-      // show these; the engine backs the poller off so it doesn't hammer.
-      readonly terminal?: boolean;
-      readonly status?: number;
-    };
-
-export interface SyncError {
-  readonly type: string;
-  readonly message: string;
-}
-
-export interface SyncEngine<S extends SchemaDefinition> {
-  createQuery<O>(fn: (db: Kysely<Database<S>>) => Compilable<O>): Query<O>;
-  loadQuery<R>(query: Query<R>): Promise<readonly R[]>;
-  getQueryRows<R>(query: Query<R>): readonly R[];
-  subscribeQuery(query: Query): (listener: () => void) => () => void;
-  insert<T extends keyof S & string>(
-    table: T,
-    values: InsertValues<S[T]>,
-    options?: MutationOptions,
-  ): MutationResult;
-  update<T extends keyof S & string>(
-    table: T,
-    values: UpdateValues<S[T]>,
-    options?: MutationOptions,
-  ): MutationResult;
-  upsert<T extends keyof S & string>(
-    table: T,
-    values: InsertValues<S[T]> & UpdateValues<S[T]>,
-    options?: MutationOptions,
-  ): MutationResult;
-  readonly appOwner: Promise<AppOwner | null>;
-  useOwner(options: { transports?: readonly Transport[] }): () => void;
-  /**
-   * One-time best-effort import of rows from a legacy SQLite database
-   * with the same per-table layout. Safe to call always: it no-ops if the
-   * legacy db is missing/incompatible or already imported. Imported rows are
-   * re-emitted as sync events so they propagate to the new relay.
-   */
-  importLegacy(
-    legacyDbName: string,
-  ): Promise<{ imported: number; skipped: number }>;
-  /**
-   * Restore an owner from its recovery phrase. By default this refuses to wipe
-   * local data unless the relay confirms the owner has data (so a wrong phrase
-   * or an unreachable relay can't destroy the current data). Pass
-   * `{ force: true }` to switch to an empty/new owner intentionally.
-   */
-  restoreAppOwner(
-    mnemonic: string,
-    options?: { force?: boolean },
-  ): Promise<void>;
-  resetAppOwner(): Promise<void>;
-  subscribeError(listener: () => void): () => void;
-  getError(): SyncError | null;
-  subscribeSyncState(listener: () => void): () => void;
-  getSyncState(): SyncState;
-  setTransports(transports: readonly Transport[]): void;
-  sync(): Promise<void>;
-  reloadApp(): void;
-  readonly ready: Promise<void>;
-}
+// The engine's types (schema typing, the SyncEngine surface, platform plumbing)
+// live in ./engine-types. This file is the runtime: id generation, the
+// compile-only Kysely instance, and the createSync factory that wires storage,
+// identity, mutations, and relay sync together.
 
 const SYNC_OUTBOX_TABLE = "_sync_outbox";
 const SYNC_META_TABLE = "_sync_meta";
@@ -378,6 +189,25 @@ export const createSync =
 
     const queryKey = (query: Query): string =>
       `${query.sql}::${JSON.stringify(query.parameters)}`;
+
+    // Get the cached entry for a query, creating (and hydrating) it on first
+    // use. Shared by getQueryRows and subscribeQuery so both see the same
+    // stable rows array reference.
+    const getOrCreateEntry = (query: Query) => {
+      const key = queryKey(query);
+      let entry = queries.get(key);
+      if (!entry) {
+        entry = {
+          sql: query.sql,
+          params: query.parameters,
+          tables: tablesInSql(query.sql),
+          rows: driver ? runQuery(query.sql, query.parameters) : [],
+          listeners: new Set(),
+        };
+        queries.set(key, entry);
+      }
+      return { key, entry };
+    };
 
     const runQuery = (sql: string, params: readonly unknown[]): unknown[] => {
       if (!driver) return [];
@@ -810,6 +640,28 @@ export const createSync =
       deviceId = storedDevice;
     };
 
+    // Switch to a different owner (restore an existing phrase, or reset to a
+    // fresh one): persist the phrase, wipe local data, adopt the new identity,
+    // and re-point the cached appOwner promise. Marks the one-time legacy import
+    // as done so the post-reload boot doesn't resurrect the wiped legacy db.
+    // Callers handle reload (and any post-switch sync) themselves.
+    const switchOwner = async (
+      mnemonic: string,
+      derived: LocalFirstIdentity,
+    ): Promise<void> => {
+      await deps.secureStorage.setItem(mnemonicKey, mnemonic);
+      wipeLocalData();
+      setMeta("legacyImported", String(LEGACY_IMPORT_VERSION));
+      identity = derived;
+      appOwnerValue = {
+        id: derived.ownerId,
+        mnemonic,
+        writeKey: derived.relayAuth,
+      };
+      appOwnerPromise = Promise.resolve(appOwnerValue);
+      refreshQueries(Object.keys(schema));
+    };
+
     const init = async (): Promise<void> => {
       try {
         // Open the DB and derive identity while `driver` is still null, so any
@@ -866,19 +718,7 @@ export const createSync =
       getQueryRows<R>(query: Query<R>) {
         // Return a stable array reference (cached per query) so React's
         // useSyncExternalStore doesn't loop; refreshQueries swaps it on change.
-        const key = queryKey(query);
-        let entry = queries.get(key);
-        if (!entry) {
-          entry = {
-            sql: query.sql,
-            params: query.parameters,
-            tables: tablesInSql(query.sql),
-            rows: driver ? runQuery(query.sql, query.parameters) : [],
-            listeners: new Set(),
-          };
-          queries.set(key, entry);
-        }
-        return entry.rows as readonly R[];
+        return getOrCreateEntry(query).entry.rows as readonly R[];
       },
       async loadQuery<R>(query: Query<R>) {
         await ready;
@@ -889,23 +729,12 @@ export const createSync =
         return rows as readonly R[];
       },
       subscribeQuery(query) {
-        const key = queryKey(query);
-        let entry = queries.get(key);
-        if (!entry) {
-          entry = {
-            sql: query.sql,
-            params: query.parameters,
-            tables: tablesInSql(query.sql),
-            rows: driver ? runQuery(query.sql, query.parameters) : [],
-            listeners: new Set(),
-          };
-          queries.set(key, entry);
-        }
+        const { key, entry } = getOrCreateEntry(query);
         return (listener: () => void) => {
-          entry!.listeners.add(listener);
+          entry.listeners.add(listener);
           return () => {
-            entry!.listeners.delete(listener);
-            if (entry!.listeners.size === 0) queries.delete(key);
+            entry.listeners.delete(listener);
+            if (entry.listeners.size === 0) queries.delete(key);
           };
         };
       },
@@ -1048,42 +877,17 @@ export const createSync =
             );
           }
         }
-        // Verified (or forced): switch owners — persist phrase, wipe, reload so
-        // the engine reboots with the restored owner and pulls fresh.
-        await deps.secureStorage.setItem(mnemonicKey, normalized);
-        wipeLocalData();
-        // Suppress the one-time legacy import on the post-reload boot — the user
-        // chose this owner explicitly; re-importing the old legacy db would mix
-        // stale data back in. (wipeLocalData cleared this flag.)
-        setMeta("legacyImported", String(LEGACY_IMPORT_VERSION));
-        // Soft re-init for platforms without a hard reload (RN); on web the
-        // reload below supersedes this.
-        identity = await deriveIdentity(normalized);
-        appOwnerValue = {
-          id: identity.ownerId,
-          mnemonic: normalized,
-          writeKey: identity.relayAuth,
-        };
-        appOwnerPromise = Promise.resolve(appOwnerValue);
-        refreshQueries(Object.keys(schema));
+        // Verified (or forced): switch owners (reuse the identity already
+        // derived above), then sync and reload so the engine reboots with the
+        // restored owner and pulls fresh. The soft switch also covers platforms
+        // without a hard reload (RN); on web the reload supersedes it.
+        await switchOwner(normalized, restored);
         if (transports.length > 0) void sync().catch(() => undefined);
         instance.reloadApp();
       },
       async resetAppOwner() {
         const mnemonic = createMnemonic();
-        await deps.secureStorage.setItem(mnemonicKey, mnemonic);
-        wipeLocalData();
-        // "Erase all data" must stay erased: mark the legacy import done so the
-        // post-reload boot doesn't re-import the old legacy db and bring it back.
-        setMeta("legacyImported", String(LEGACY_IMPORT_VERSION));
-        identity = await deriveIdentity(mnemonic);
-        appOwnerValue = {
-          id: identity.ownerId,
-          mnemonic,
-          writeKey: identity.relayAuth,
-        };
-        appOwnerPromise = Promise.resolve(appOwnerValue);
-        refreshQueries(Object.keys(schema));
+        await switchOwner(mnemonic, await deriveIdentity(mnemonic));
         instance.reloadApp();
       },
       subscribeError(listener) {

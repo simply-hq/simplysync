@@ -157,7 +157,7 @@ func main() {
 	}
 }
 
-// SHA-256 -> base64url (no padding). Matches @simplysync/core so blob
+// SHA-256 -> base64url (no padding). Matches @simplysync/protocol so blob
 // content-hash verification agrees with the client.
 func sha256B64(b []byte) string {
 	sum := sha256.Sum256(b)

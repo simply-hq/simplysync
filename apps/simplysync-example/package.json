@@ -11,7 +11,7 @@
     "clean": "rm -rf data/*.db data/*.db-shm data/*.db-wal"
   },
   "dependencies": {
-    "@simplysync/core": "workspace:*"
+    "@simplysync/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",

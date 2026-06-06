@@ -48,8 +48,8 @@ bun run expo                # Expo demo: expo-sqlite + expo-secure-store
 
 | Path | What it is |
 | --- | --- |
-| [`packages/simplysync-core`](packages/simplysync-core) | The protocol core: identity, key derivation, AES-GCM envelopes, HLC, encoding. Treat as **pinned** — update wholesale, don't fork. |
-| [`packages/simplysync-db`](packages/simplysync-db) | Schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted). |
+| [`packages/simplysync-protocol`](packages/simplysync-protocol) | The protocol core: identity, key derivation, AES-GCM envelopes, HLC, encoding. Treat as **pinned** — update wholesale, don't fork. |
+| [`packages/simplysync-engine`](packages/simplysync-engine) | Schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted). |
 | [`packages/simplysync-react`](packages/simplysync-react) | React hooks for binding the engine into a UI. |
 | [`apps/relay-go`](apps/relay-go) | **Canonical** self-hostable relay: Go + SQLite, stores only ciphertext. |
 | [`apps/simplysync-relay`](apps/simplysync-relay) | Bun + SQLite relay — reference implementation, wire-identical to the Go relay. |
@@ -59,7 +59,7 @@ bun run expo                # Expo demo: expo-sqlite + expo-secure-store
 
 ## Using it in your own app
 
-The protocol **core** (`@simplysync/core`, `@simplysync/db`) is the part where
+The protocol **core** (`@simplysync/protocol`, `@simplysync/engine`) is the part where
 correctness depends on everyone running the same code — the HLC clock, the
 envelope format, the wire protocol. Update it wholesale; don't fork it, or your
 clients can't sync with anyone else's.

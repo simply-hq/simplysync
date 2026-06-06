@@ -15,7 +15,7 @@ import {
   type LocalFirstIdentity,
   type SyncEnvelope,
   type SyncPayload,
-} from "@simplysync/core";
+} from "@simplysync/protocol";
 
 export interface ExampleNote {
   readonly id: string;

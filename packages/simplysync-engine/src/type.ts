@@ -4,7 +4,7 @@
 // physical tables. It is a small typed-schema DSL the shared schema and call
 // sites build on.
 
-import { isRecoveryMnemonic, normalizeMnemonic } from "@simplysync/core";
+import { isRecoveryMnemonic, normalizeMnemonic } from "@simplysync/protocol";
 
 declare const brandSymbol: unique symbol;
 export type Brand<B extends string> = { readonly [brandSymbol]: B };
@@ -214,4 +214,4 @@ export const Mnemonic = makeType<string>({
 export {
   base64UrlEncode as uint8ArrayToBase64Url,
   base64UrlDecode,
-} from "@simplysync/core";
+} from "@simplysync/protocol";

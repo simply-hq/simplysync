@@ -4,12 +4,38 @@ import {
   validateMnemonic,
 } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
+import {
+  base64UrlDecode,
+  base64UrlEncode,
+  canonicalJson,
+  concatBytes,
+  createSlip21,
+  decodeUtf8,
+  deriveBytes,
+  encodeUtf8,
+  getCrypto,
+  hmacSha256,
+  randomBytes,
+  toArrayBuffer,
+} from "./crypto";
+import type {
+  BlobChunkRef,
+  BlobManifest,
+  EncryptedBlob,
+  EncryptedBlobChunk,
+  LocalFirstIdentity,
+  SyncEnvelope,
+  SyncPayload,
+} from "./types";
+
+// The protocol data types live in ./types; the low-level crypto primitives
+// (base64url, HKDF/HMAC/SLIP-21, byte helpers) live in ./crypto. This file is
+// the public API: identity derivation, envelope encrypt/decrypt, the hybrid
+// logical clock, and blob encryption.
+export * from "./types";
+export { base64UrlEncode, base64UrlDecode } from "./crypto";
 
 const RECOVERY_KEY_PREFIX = "sf1_";
-const DERIVATION_SALT = new Uint8Array([
-  115, 98, 116, 45, 108, 111, 99, 97, 108,
-  45, 102, 105, 114, 115, 116, 45, 118, 49,
-]);
 const AES_GCM_NONCE_BYTES = 12;
 const OWNER_ID_BYTES = 16;
 const DERIVED_KEY_BYTES = 32;
@@ -26,99 +52,6 @@ const MNEMONIC_STRENGTH_BITS = 256;
 const BLOB_ID_BYTES = 16;
 /** Default plaintext bytes per blob chunk (256 KiB). */
 export const DEFAULT_BLOB_CHUNK_BYTES = 256 * 1024;
-
-/** How a {@link LocalFirstIdentity} was derived from its recovery credential. */
-export type IdentitySource = "recoveryKey" | "mnemonic";
-
-export interface LocalFirstIdentity {
-  readonly recoveryKey: string;
-  readonly ownerId: string;
-  readonly relayAuth: string;
-  readonly dataKey: CryptoKey;
-  /**
-   * Secret HMAC key used to derive a per-row {@link SyncEnvelope.streamId}. Lets
-   * a relay group an owner's events by logical row (for log compaction) without
-   * being able to reverse the id back to the table/row it came from.
-   */
-  readonly streamKey?: Uint8Array;
-  /** How this identity was derived. */
-  readonly source: IdentitySource;
-  /**
-   * The BIP39 mnemonic when the identity was derived from one (a recovery
-   * phrase). Absent for native `sf1_` recovery keys.
-   */
-  readonly mnemonic?: string;
-}
-
-export interface SyncEnvelope {
-  readonly version: 1;
-  readonly ownerId: string;
-  readonly eventId: string;
-  readonly deviceId: string;
-  readonly nonce: string;
-  readonly ciphertext: string;
-  readonly createdAt: string;
-  /**
-   * Pseudonymous, stable per-(table,row) id = HMAC(streamKey, table‖rowId).
-   * Present when the writer's identity has a {@link LocalFirstIdentity.streamKey}.
-   * A relay groups events by `(ownerId, streamId)` and keeps only the
-   * highest-`eventId` (= highest HLC = last writer) per group when compacting.
-   * Opaque to the relay: it can't recover the table or row id from it.
-   */
-  readonly streamId?: string;
-}
-
-export interface SyncPayload<T = unknown> {
-  readonly schemaVersion: 1;
-  readonly table: string;
-  readonly op: "upsert" | "delete";
-  readonly rowId: string;
-  readonly hlc: string;
-  readonly value: T;
-}
-
-/** A content-addressed reference to one encrypted blob chunk. */
-export interface BlobChunkRef {
-  /** base64url SHA-256 of the stored object (nonce ‖ ciphertext). */
-  readonly hash: string;
-  /** Stored (encrypted) byte length, what the relay accounts for. */
-  readonly size: number;
-  /** Plaintext byte length of this chunk. */
-  readonly plaintextSize: number;
-}
-
-/**
- * Small, syncable description of an encrypted binary blob. The manifest travels
- * through the normal sync log as a {@link SyncPayload} so every device learns
- * the blob exists; the chunk *bytes* are fetched lazily, by hash, on demand.
- */
-export interface BlobManifest {
-  readonly version: 1;
-  readonly ownerId: string;
-  readonly blobId: string;
-  readonly mimeType: string;
-  /** Total plaintext size in bytes. */
-  readonly byteSize: number;
-  /** Plaintext chunk size used when splitting. */
-  readonly chunkSize: number;
-  /** Chunks in order; concatenating their plaintext rebuilds the blob. */
-  readonly chunks: readonly BlobChunkRef[];
-  /** base64url SHA-256 of the whole plaintext (end-to-end integrity). */
-  readonly sha256: string;
-  readonly createdAt: string;
-}
-
-/** One encrypted chunk ready to upload: `bytes` is `nonce ‖ ciphertext`. */
-export interface EncryptedBlobChunk {
-  readonly hash: string;
-  readonly bytes: Uint8Array;
-}
-
-/** Result of {@link encryptBlob}: a syncable manifest plus uploadable chunks. */
-export interface EncryptedBlob {
-  readonly manifest: BlobManifest;
-  readonly chunks: readonly EncryptedBlobChunk[];
-}
 
 export function normalizeRecoveryKey(recoveryKey: string): string {
   return recoveryKey.trim();
@@ -194,7 +127,8 @@ export async function deriveIdentity(
 /**
  * Derives an identity from a BIP39 mnemonic — the owner id, encryption key, and
  * write key — via SLIP-21. The derivation is deterministic, so the same phrase
- * always resolves to the same {@link ownerId} on any device or platform.
+ * always resolves to the same {@link LocalFirstIdentity.ownerId} on any device
+ * or platform.
  */
 export async function deriveIdentityFromMnemonic(
   mnemonic: string,
@@ -279,7 +213,7 @@ export async function encryptPayload<T>(
     ? base64UrlEncode(
         await hmacSha256(
           identity.streamKey,
-          encodeUtf8(`${payload.table} ${payload.rowId}`),
+          encodeUtf8(`${payload.table} ${payload.rowId}`),
         ),
       ).slice(0, 22)
     : undefined;
@@ -489,47 +423,6 @@ export async function decryptBlob(
   return data;
 }
 
-function blobChunkAad(
-  ownerId: string,
-  blobId: string,
-  index: number,
-): ArrayBuffer {
-  return toArrayBuffer(
-    encodeUtf8(canonicalJson({ v: 1, ownerId, blobId, index })),
-  );
-}
-
-export function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-
-  if (typeof btoa !== "function") {
-    throw new Error("base64 encoding requires btoa in this runtime.");
-  }
-
-  const base64 = btoa(binary);
-
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
-}
-
-export function base64UrlDecode(value: string): Uint8Array {
-  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-
-  if (typeof atob !== "function") {
-    throw new Error("base64 decoding requires atob in this runtime.");
-  }
-
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
-
 function decodeRecoveryKey(recoveryKey: string): Uint8Array {
   if (!recoveryKey.startsWith(RECOVERY_KEY_PREFIX)) {
     throw new Error(`Recovery key must start with ${RECOVERY_KEY_PREFIX}.`);
@@ -542,149 +435,12 @@ function decodeRecoveryKey(recoveryKey: string): Uint8Array {
   return secret;
 }
 
-async function deriveBytes(
-  secret: Uint8Array,
-  label: string,
-  byteLength: number,
-): Promise<Uint8Array> {
-  const info = encodeUtf8(label);
-  const prk = await hmacSha256(DERIVATION_SALT, secret);
-  const output = new Uint8Array(byteLength);
-  let previous: Uint8Array<ArrayBufferLike> = new Uint8Array();
-  let offset = 0;
-  let blockIndex = 1;
-
-  while (offset < byteLength) {
-    const blockInput = concatBytes(
-      previous,
-      info,
-      new Uint8Array([blockIndex]),
-    );
-    previous = await hmacSha256(prk, blockInput);
-    output.set(previous.slice(0, byteLength - offset), offset);
-    offset += previous.length;
-    blockIndex += 1;
-  }
-
-  return output;
-}
-
-async function randomBytes(length: number): Promise<Uint8Array> {
-  const crypto = await getCrypto();
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  return bytes;
-}
-
-async function getCrypto(): Promise<Crypto> {
-  if (globalThis.crypto?.subtle) {
-    return globalThis.crypto;
-  }
-
-  throw new Error("WebCrypto is required for local-first encryption.");
-}
-
-function encodeUtf8(value: string): Uint8Array {
-  return new TextEncoder().encode(value);
-}
-
-function decodeUtf8(value: Uint8Array): string {
-  return new TextDecoder().decode(value);
-}
-
-async function digestBytes(
-  hash: "SHA-256" | "SHA-512",
-  data: Uint8Array,
-): Promise<Uint8Array> {
-  const crypto = await getCrypto();
-  return new Uint8Array(await crypto.subtle.digest(hash, toArrayBuffer(data)));
-}
-
-// HMAC implemented on top of subtle.digest (RFC 2104) rather than
-// subtle.sign/importKey. subtle.digest is universally supported, whereas some
-// runtimes (react-native-quick-crypto) have a broken subtle HMAC sign path.
-async function hmac(
-  hash: "SHA-256" | "SHA-512",
-  keyBytes: Uint8Array,
-  data: Uint8Array,
-): Promise<Uint8Array> {
-  const blockSize = hash === "SHA-512" ? 128 : 64;
-  let key = keyBytes;
-  if (key.length > blockSize) key = await digestBytes(hash, key);
-  if (key.length < blockSize) {
-    const padded = new Uint8Array(blockSize);
-    padded.set(key);
-    key = padded;
-  }
-  const ipad = new Uint8Array(blockSize);
-  const opad = new Uint8Array(blockSize);
-  for (let i = 0; i < blockSize; i += 1) {
-    ipad[i] = key[i] ^ 0x36;
-    opad[i] = key[i] ^ 0x5c;
-  }
-  const inner = await digestBytes(hash, concatBytes(ipad, data));
-  return digestBytes(hash, concatBytes(opad, inner));
-}
-
-function hmacSha256(keyBytes: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  return hmac("SHA-256", keyBytes, data);
-}
-
-/**
- * SLIP-21 hierarchical symmetric key derivation. Returns the lower 32 bytes of
- * the final node.
- */
-async function createSlip21(
-  seed: Uint8Array,
-  path: readonly string[],
-): Promise<Uint8Array> {
-  let node = await hmac("SHA-512", encodeUtf8("Symmetric key seed"), seed);
-  for (const label of path) {
-    const labelBytes = encodeUtf8(label);
-    const message = new Uint8Array(labelBytes.length + 1);
-    message[0] = 0;
-    message.set(labelBytes, 1);
-    node = await hmac("SHA-512", node.slice(0, 32), message);
-  }
-  return node.slice(32, 64);
-}
-
-function concatBytes(...chunks: readonly Uint8Array[]): Uint8Array {
-  const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-  const output = new Uint8Array(length);
-  let offset = 0;
-
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return output;
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength,
-  ) as ArrayBuffer;
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(sortJson(value));
-}
-
-function sortJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(sortJson);
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, nestedValue]) => [key, sortJson(nestedValue)]),
-    );
-  }
-
-  return value;
+function blobChunkAad(
+  ownerId: string,
+  blobId: string,
+  index: number,
+): ArrayBuffer {
+  return toArrayBuffer(
+    encodeUtf8(canonicalJson({ v: 1, ownerId, blobId, index })),
+  );
 }

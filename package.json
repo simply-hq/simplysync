@@ -20,6 +20,6 @@
     "docs:dev": "bun run --cwd apps/simplysync-docs dev"
   },
   "devDependencies": {
-    "turbo": "^2.8.2"
+    "turbo": "2.9.16"
   }
 }

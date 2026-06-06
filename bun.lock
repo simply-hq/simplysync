@@ -5,29 +5,38 @@
     "": {
       "name": "simplysync",
       "devDependencies": {
-        "turbo": "^2.8.2",
+        "turbo": "2.9.16",
       },
     },
     "apps/relay-cloudflare": {
       "name": "@simplysync/relay-cloudflare",
       "version": "0.0.1",
       "dependencies": {
-        "@simplysync/core": "workspace:*",
+        "@simplysync/protocol": "workspace:*",
       },
       "devDependencies": {
-        "@cloudflare/workers-types": "^4.20250501.0",
+        "@cloudflare/workers-types": "4.20260605.1",
         "typescript": "~5.9.2",
-        "wrangler": "^4.14.0",
+        "wrangler": "4.98.0",
       },
     },
     "apps/simplysync-docs": {
       "name": "@simplysync/docs",
       "version": "0.0.1",
       "dependencies": {
-        "marked": "^16.0.0",
+        "@simplysync/engine": "workspace:*",
+        "@simplysync/protocol": "workspace:*",
+        "@simplysync/react": "workspace:*",
+        "marked": "16.4.2",
+        "react": "19.2.0",
+        "react-dom": "19.2.0",
+        "sql.js": "1.14.1",
       },
       "devDependencies": {
-        "@types/bun": "latest",
+        "@types/bun": "1.3.14",
+        "@types/react": "~19.2.2",
+        "@types/react-dom": "~19.2.2",
+        "@types/sql.js": "1.4.11",
         "typescript": "~5.9.2",
       },
     },
@@ -35,7 +44,7 @@
       "name": "@simplysync/example",
       "version": "0.0.1",
       "dependencies": {
-        "@simplysync/core": "workspace:*",
+        "@simplysync/protocol": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "latest",
@@ -47,7 +56,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@expo/metro-runtime": "~55.0.6",
-        "@simplysync/core": "workspace:*",
+        "@simplysync/protocol": "workspace:*",
         "expo": "~55.0.5",
         "expo-clipboard": "~55.0.9",
         "expo-constants": "~55.0.9",
@@ -62,7 +71,7 @@
         "react": "19.2.0",
         "react-native": "0.83.2",
         "react-native-nitro-modules": "0.34.1",
-        "react-native-quick-crypto": "^1.0.15",
+        "react-native-quick-crypto": "1.1.5",
         "react-native-safe-area-context": "~5.6.2",
         "react-native-screens": "~4.23.0",
       },
@@ -76,29 +85,29 @@
       "name": "@simplysync/relay",
       "version": "0.0.1",
       "dependencies": {
-        "@simplysync/core": "workspace:*",
+        "@simplysync/protocol": "workspace:*",
       },
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "~5.9.2",
       },
     },
-    "packages/simplysync-core": {
-      "name": "@simplysync/core",
+    "packages/simplysync-engine": {
+      "name": "@simplysync/engine",
       "version": "0.0.1",
       "dependencies": {
-        "@scure/bip39": "^2.0.0",
+        "@simplysync/protocol": "workspace:*",
+        "kysely": "0.28.17",
       },
       "devDependencies": {
         "typescript": "~5.9.2",
       },
     },
-    "packages/simplysync-db": {
-      "name": "@simplysync/db",
+    "packages/simplysync-protocol": {
+      "name": "@simplysync/protocol",
       "version": "0.0.1",
       "dependencies": {
-        "@simplysync/core": "workspace:*",
-        "kysely": "^0.28.11",
+        "@scure/bip39": "2.2.0",
       },
       "devDependencies": {
         "typescript": "~5.9.2",
@@ -108,7 +117,7 @@
       "name": "@simplysync/react",
       "version": "0.0.1",
       "dependencies": {
-        "@simplysync/db": "workspace:*",
+        "@simplysync/engine": "workspace:*",
       },
       "devDependencies": {
         "@types/react": "*",
@@ -612,15 +621,15 @@
 
     "@scure/bip39": ["@scure/bip39@2.2.0", "", { "dependencies": { "@noble/hashes": "2.2.0", "@scure/base": "2.2.0" } }, "sha512-T/Bj/YvYMNkIPq6EENO6/rcs2e7qTNuyoUXf0KBFDmp0ZDu0H2X4Lq6yC3i0c8PcWkov5EbW+yQZZbdMmk154A=="],
 
-    "@simplysync/core": ["@simplysync/core@workspace:packages/simplysync-core"],
-
-    "@simplysync/db": ["@simplysync/db@workspace:packages/simplysync-db"],
-
     "@simplysync/docs": ["@simplysync/docs@workspace:apps/simplysync-docs"],
+
+    "@simplysync/engine": ["@simplysync/engine@workspace:packages/simplysync-engine"],
 
     "@simplysync/example": ["@simplysync/example@workspace:apps/simplysync-example"],
 
     "@simplysync/expo": ["@simplysync/expo@workspace:apps/simplysync-expo"],
+
+    "@simplysync/protocol": ["@simplysync/protocol@workspace:packages/simplysync-protocol"],
 
     "@simplysync/react": ["@simplysync/react@workspace:packages/simplysync-react"],
 
@@ -658,6 +667,8 @@
 
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
+    "@types/emscripten": ["@types/emscripten@1.41.5", "", {}, "sha512-cMQm7pxu6BxtHyqJ7mQZ2kXWV5SLmugybFdHCBbJ5eHzOo6VhBckEgAT3//rP5FwPHNPeEiq4SmQ5ucBwsOo4Q=="],
+
     "@types/graceful-fs": ["@types/graceful-fs@4.1.9", "", { "dependencies": { "@types/node": "*" } }, "sha512-olP3sd1qOEe5dXTSaFvQG+02VdRXcdytWLAZsAq1PecU8uqQAhkrnbli7DagjtXKW/Bl7YJbUsa8MPcuc8LHEQ=="],
 
     "@types/istanbul-lib-coverage": ["@types/istanbul-lib-coverage@2.0.6", "", {}, "sha512-2QF/t/auWm0lsy8XtKVPG19v3sSOQlJe/YHZgfjb/KBBHOGSV+J2q/S671rcq9uTBrLAXmZpqJiaQbMT+zNU1w=="],
@@ -669,6 +680,10 @@
     "@types/node": ["@types/node@25.9.1", "", { "dependencies": { "undici-types": ">=7.24.0 <7.24.7" } }, "sha512-xfrlY7UD5rMJk3ZVJP8BNzS28J36YJg+xp+LPXV1TdWxr8uMH5A860QNxYDGQe/ylDSgjxE52Q9VnO7p75tJxg=="],
 
     "@types/react": ["@types/react@19.2.16", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-esJiCAnl0kfpNdE69f3So4WJUXy95dLZydX0KwK46riIHDzHM7O9Vtf9xCHW0PXIqvgqNrswl522kA/5yx+F4w=="],
+
+    "@types/react-dom": ["@types/react-dom@19.2.3", "", { "peerDependencies": { "@types/react": "^19.2.0" } }, "sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ=="],
+
+    "@types/sql.js": ["@types/sql.js@1.4.11", "", { "dependencies": { "@types/emscripten": "*", "@types/node": "*" } }, "sha512-QXIx38p2ZThJaK9vP5ZdqdlRe1FG9I8SmCZOS7FHfB/2qPAjZwkL7/vlfPg6N/oWHuuOaGg/P/IRwfP2W0kWVQ=="],
 
     "@types/stack-utils": ["@types/stack-utils@2.0.3", "", {}, "sha512-9aEbYZ3TbYMznPdcdr3SmIrLXwC/AKZXQeCf9Pgao5CKb8CyHuEX5jzWPTkvregvhRJHcpRO6BFoGW9ycaOkYw=="],
 
@@ -1282,7 +1297,7 @@
 
     "react-devtools-core": ["react-devtools-core@6.1.5", "", { "dependencies": { "shell-quote": "^1.6.1", "ws": "^7" } }, "sha512-ePrwPfxAnB+7hgnEr8vpKxL9cmnp7F322t8oqcPshbIQQhDKgFDW4tjhF2wjVbdXF9O/nyuy3sQWd9JGpiLPvA=="],
 
-    "react-dom": ["react-dom@19.2.7", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ=="],
+    "react-dom": ["react-dom@19.2.0", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.0" } }, "sha512-UlbRu4cAiGaIewkPyiRGJk0imDN2T3JjieT6spoL2UeSf5od4n5LB/mQ4ejmxhCFT1tYe8IvaFulzynWovsEFQ=="],
 
     "react-fast-compare": ["react-fast-compare@3.2.2", "", {}, "sha512-nsO+KSNgo1SbJqJEYRE9ERzo7YtYbou/OqjSQKxV7jcKox7+usiUVZOAC+XnDOABXggQTno0Y1CpVnuWEc1boQ=="],
 
@@ -1393,6 +1408,8 @@
     "split-on-first": ["split-on-first@1.1.0", "", {}, "sha512-43ZssAJaMusuKWL8sKUBQXHWOpq8d6CfN/u1p4gUzfJkM05C8rxTmYrkIPTXapZpORA6LkkzcUulJ8FqA7Uudw=="],
 
     "sprintf-js": ["sprintf-js@1.0.3", "", {}, "sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g=="],
+
+    "sql.js": ["sql.js@1.14.1", "", {}, "sha512-gcj8zBWU5cFsi9WUP+4bFNXAyF1iRpA3LLyS/DP5xlrNzGmPIizUeBggKa8DbDwdqaKwUcTEnChtd2grWo/x/A=="],
 
     "stack-utils": ["stack-utils@2.0.6", "", { "dependencies": { "escape-string-regexp": "^2.0.0" } }, "sha512-XlkWvfIm6RmsWtNJx+uqtKLS8eqFbxUg0ZzLXqY0caEy9l7hruX8IpiDnjsLavoBgqCCR71TqWO8MaXYheJ3RQ=="],
 

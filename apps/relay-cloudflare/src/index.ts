@@ -14,7 +14,7 @@
  * defense ordering in `fetch()` and the layered design in README.md.
  */
 
-import type { SyncEnvelope } from "@simplysync/core";
+import type { SyncEnvelope } from "@simplysync/protocol";
 
 interface RateLimiter {
   limit(input: { key: string }): Promise<{ success: boolean }>;
@@ -74,7 +74,7 @@ export default {
         return await handlePull(request, env, cfg, url);
       }
       if (request.method === "GET" && url.pathname === "/v1/usage") {
-        return await handleUsage(request, env, url);
+        return await handleUsage(request, env, cfg, url);
       }
       if (url.pathname.startsWith(BLOB_PATH_PREFIX)) {
         const hash = decodeURIComponent(
@@ -84,9 +84,9 @@ export default {
         if (request.method === "PUT")
           return await handleBlobPut(request, env, cfg, url, hash, ip);
         if (request.method === "GET")
-          return await handleBlobGet(request, env, url, hash);
+          return await handleBlobGet(request, env, cfg, url, hash);
         if (request.method === "HEAD")
-          return await handleBlobHead(request, env, url, hash);
+          return await handleBlobHead(request, env, cfg, url, hash);
         return json({ error: "Method not allowed" }, 405);
       }
     } catch (error) {
@@ -305,6 +305,7 @@ async function handlePull(
 async function handleUsage(
   request: Request,
   env: Env,
+  cfg: Config,
   url: URL,
 ): Promise<Response> {
   const ownerId = url.searchParams.get("ownerId");
@@ -313,7 +314,7 @@ async function handleUsage(
     return json({ error: "Missing ownerId or bearer token" }, 401);
   }
 
-  const auth = await ensureOwnerAuth(env, readConfig(env), ownerId, relayAuth, {
+  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
     createIfMissing: false,
   });
   if (!auth.ok) return auth.response;
@@ -409,6 +410,7 @@ async function handleBlobPut(
 async function handleBlobGet(
   request: Request,
   env: Env,
+  cfg: Config,
   url: URL,
   hash: string,
 ): Promise<Response> {
@@ -418,7 +420,7 @@ async function handleBlobGet(
     return json({ error: "Missing ownerId or bearer token" }, 401);
   }
 
-  const auth = await ensureOwnerAuth(env, readConfig(env), ownerId, relayAuth, {
+  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
     createIfMissing: false,
   });
   if (!auth.ok) return auth.response;
@@ -443,6 +445,7 @@ async function handleBlobGet(
 async function handleBlobHead(
   request: Request,
   env: Env,
+  cfg: Config,
   url: URL,
   hash: string,
 ): Promise<Response> {
@@ -452,7 +455,7 @@ async function handleBlobHead(
     return new Response(null, { status: 401, headers: corsHeaders() });
   }
 
-  const auth = await ensureOwnerAuth(env, readConfig(env), ownerId, relayAuth, {
+  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
     createIfMissing: false,
   });
   if (!auth.ok) {
@@ -572,6 +575,9 @@ function validateEnvelope(ownerId: string, event: SyncEnvelope): string | null {
   if (!isNonEmptyString(event.nonce)) return "Missing nonce";
   if (!isNonEmptyString(event.ciphertext)) return "Missing ciphertext";
   if (!isNonEmptyString(event.createdAt)) return "Missing createdAt";
+  if (event.streamId !== undefined && typeof event.streamId !== "string") {
+    return "Invalid streamId";
+  }
   return null;
 }
 
@@ -646,7 +652,7 @@ function corsHeaders(): Record<string, string> {
   };
 }
 
-// SHA-256 -> base64url (no padding). Matches `@simplysync/core` so blob
+// SHA-256 -> base64url (no padding). Matches `@simplysync/protocol` so blob
 // content-hash verification agrees with the client. Inlined (rather than
 // importing the core helper) to keep the Worker bundle dependency-free.
 async function sha256Base64Url(value: string): Promise<string> {

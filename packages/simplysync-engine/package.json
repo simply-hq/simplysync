@@ -1,5 +1,5 @@
 {
-  "name": "@simplysync/core",
+  "name": "@simplysync/engine",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -13,7 +13,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@scure/bip39": "^2.0.0"
+    "@simplysync/protocol": "workspace:*",
+    "kysely": "0.28.17"
   },
   "devDependencies": {
     "typescript": "~5.9.2"

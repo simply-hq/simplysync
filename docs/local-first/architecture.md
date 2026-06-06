@@ -34,7 +34,7 @@ usage see [`guide.md`](./guide.md).
 
 | Path | Role | Depends on |
 | --- | --- | --- |
-| `packages/simplysync-core` | Framework-agnostic primitives: identity, key derivation, AES-GCM envelopes, HLC, encoding. | WebCrypto, `@scure/bip39` |
+| `packages/simplysync-protocol` | Framework-agnostic primitives: identity, key derivation, AES-GCM envelopes, HLC, encoding. | WebCrypto, `@scure/bip39` |
 | `apps/simplysync-relay` | Self-hostable Bun + SQLite relay (opaque event store). | core |
 | `apps/simplysync-example` | Node/Bun CLI reference client + one-shot two-client demo. | core |
 | `apps/simplysync-expo` | Native Expo demo (`expo-sqlite`, `expo-secure-store`). | core |
@@ -96,7 +96,7 @@ extra crypto dependency. The owner-id byte→string step is plain base64url of
 
 > **Stability invariant.** The SLIP-21 labels are part of the derivation, so a
 > given recovery phrase must always derive the same owner id and relay auth. A
-> locked vector in `packages/simplysync-core/test/identity.test.ts` pins this:
+> locked vector in `packages/simplysync-protocol/test/identity.test.ts` pins this:
 > if you change mnemonic derivation and that test fails, you've broken every
 > existing user's identity — don't. Add a new vector rather than editing the
 > existing one.
@@ -373,8 +373,8 @@ same contract with keyset-paginated reads and `FlatList` for large ledgers.
 bun install
 
 # Core
-bun --cwd packages/simplysync-core run typecheck   # tsc --noEmit
-bun --cwd packages/simplysync-core test            # bun test (identity vectors)
+bun --cwd packages/simplysync-protocol run typecheck   # tsc --noEmit
+bun --cwd packages/simplysync-protocol test            # bun test (identity vectors)
 
 # End-to-end
 bun run simplysync:demo            # relay + two clients + sync, one shot

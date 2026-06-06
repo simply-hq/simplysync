@@ -1,11 +1,13 @@
-import { unlinkSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import {
+  cleanExampleData,
+  cleanRelayData,
+  exampleRoot,
+  isRelayHealthy,
+  relayRoot,
+  relayUrl,
+  waitForRelay,
+} from "./demo-support";
 
-const exampleRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = resolve(exampleRoot, "../..");
-const relayRoot = resolve(repoRoot, "apps/simplysync-relay");
-const relayUrl = process.env.RELAY_URL ?? "http://localhost:4100";
 const keepOpen = Bun.argv.includes("--keep-open");
 
 async function main(): Promise<void> {
@@ -52,48 +54,6 @@ async function main(): Promise<void> {
       await relayProcess.exited.catch(() => undefined);
     }
   }
-}
-
-async function waitForRelay(): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (await isRelayHealthy()) {
-      return;
-    }
-    await sleep(100);
-  }
-
-  throw new Error(`Relay did not become healthy at ${relayUrl}.`);
-}
-
-async function isRelayHealthy(): Promise<boolean> {
-  try {
-    const response = await fetch(`${relayUrl}/health`);
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-function cleanExampleData(): void {
-  for (const client of ["alice", "bob"]) {
-    removeSqliteFiles(resolve(exampleRoot, "data", client));
-  }
-}
-
-function cleanRelayData(): void {
-  removeSqliteFiles(resolve(relayRoot, "data", "relay"));
-}
-
-function removeSqliteFiles(basePath: string): void {
-  for (const suffix of [".db", ".db-shm", ".db-wal"]) {
-    try {
-      unlinkSync(`${basePath}${suffix}`);
-    } catch {}
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
 function waitForShutdown(): Promise<void> {

@@ -1,6 +1,10 @@
-import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { LocalFirstClient } from "./client";
+import {
+  cleanExampleData,
+  exampleRoot,
+  removeSqliteFiles,
+} from "./demo-support";
 
 const DEFAULT_RELAY_URL = process.env.RELAY_URL ?? "http://localhost:4100";
 
@@ -132,7 +136,7 @@ async function inspectOutboxCommand(args: string[]): Promise<void> {
 function resetClientCommand(args: string[]): void {
   const options = parseOptions(args);
   const clientName = options.client ?? "alice";
-  removeSqliteFiles(clientName);
+  removeSqliteFiles(join(exampleRoot, "data", clientName));
   console.log(`Reset ${clientName}`);
 }
 
@@ -243,16 +247,7 @@ function parseOptions(args: string[]): ParsedOptions {
 }
 
 function resetDemoClientFiles(): void {
-  removeSqliteFiles("alice");
-  removeSqliteFiles("bob");
-}
-
-function removeSqliteFiles(clientName: string): void {
-  for (const suffix of [".db", ".db-shm", ".db-wal"]) {
-    try {
-      unlinkSync(join("data", `${clientName}${suffix}`));
-    } catch {}
-  }
+  cleanExampleData();
 }
 
 main().catch((error) => {

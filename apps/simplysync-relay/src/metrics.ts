@@ -5,7 +5,6 @@
 // disk. For longer retention, scrape /admin/stats into your own store.
 
 import os from "node:os";
-import { statSync } from "node:fs";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
@@ -107,7 +106,7 @@ function storageAggregates(db: Database): StorageAggregates {
 }
 
 /** Top owners by stored bytes — finds the heavy users / runaway accounts. */
-export function topOwners(
+function topOwners(
   db: Database,
   limit = 10,
 ): { ownerId: string; storedBytes: number }[] {
@@ -124,7 +123,7 @@ function dbBytes(dataDir: string): number {
   let total = 0;
   for (const suffix of ["", "-wal", "-shm"]) {
     try {
-      total += statSync(join(dataDir, `relay.db${suffix}`)).size;
+      total += fs.statSync(join(dataDir, `relay.db${suffix}`)).size;
     } catch {
       // file may not exist (e.g. -wal between checkpoints)
     }

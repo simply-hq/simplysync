@@ -1,4 +1,5 @@
 export * from "./type";
+export * from "./engine-types";
 export * from "./engine";
 
 // Kysely surface used by query call sites (kysely.sql, kysely.NotNull,

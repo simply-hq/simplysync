@@ -1,21 +1,19 @@
 {
-  "name": "@simplysync/db",
+  "name": "@simplysync/protocol",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./kysely": "./src/kysely.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
-    "@simplysync/core": "workspace:*",
-    "kysely": "^0.28.11"
+    "@scure/bip39": "2.2.0"
   },
   "devDependencies": {
     "typescript": "~5.9.2"

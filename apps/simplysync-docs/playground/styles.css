@@ -1,0 +1,249 @@
+:root {
+  --bg: #0f1115;
+  --card: #181b22;
+  --line: #272b35;
+  --text: #e6e9ef;
+  --muted: #98a2b3;
+  --accent: #6ea8fe;
+  --pos: #58d39c;
+  --neg: #f08a8a;
+  --danger: #e5534b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.pg-back {
+  display: inline-block;
+  max-width: 1000px;
+  margin: 0 auto 1rem;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.pg-back:hover {
+  color: var(--accent);
+}
+
+.pg-header {
+  max-width: 1000px;
+  margin: 0 auto 1.5rem;
+}
+.pg-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.7rem;
+}
+.pg-header p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+.pg-grid {
+  max-width: 1000px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+.pg-owner {
+  grid-column: 1 / -1;
+}
+@media (max-width: 760px) {
+  .pg-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.pg-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.1rem 1.2rem;
+}
+.pg-card h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.pg-sub {
+  font-weight: 400;
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-left: 0.4rem;
+}
+.pg-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+.pg-balance {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+.pg-count {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.pg-form {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.pg-form input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  background: #11141a;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+}
+button {
+  background: var(--accent);
+  color: #08111f;
+  border: none;
+  border-radius: 8px;
+  padding: 0.5rem 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pg-danger,
+button.pg-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.pg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.pg-list li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  background: #11141a;
+  border-radius: 8px;
+}
+.pg-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pg-pos {
+  color: var(--pos);
+  font-variant-numeric: tabular-nums;
+}
+.pg-neg {
+  color: var(--neg);
+  font-variant-numeric: tabular-nums;
+}
+.pg-del {
+  background: transparent;
+  color: var(--muted);
+  padding: 0 0.4rem;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.pg-empty {
+  color: var(--muted);
+  margin: 0.4rem 0;
+}
+
+.pg-cipher {
+  margin: 0;
+  background: #0b0d12;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.7rem;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #c7d0dd;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 18rem;
+}
+.pg-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0.6rem 0 0;
+}
+.pg-note code,
+.pg-owner-id code {
+  background: #0b0d12;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+
+.pg-owner-id {
+  margin: 0.2rem 0;
+  word-break: break-all;
+}
+.pg-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 0.6rem 0 0.2rem;
+}
+.pg-mnemonic {
+  margin: 0;
+  background: #0b0d12;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 0.6rem;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--accent);
+}
+.pg-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.9rem 0 0.4rem;
+  flex-wrap: wrap;
+}
+.pg-restore {
+  margin-top: 0.6rem;
+}
+.pg-restore summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+.pg-restore textarea {
+  width: 100%;
+  margin: 0.5rem 0;
+  background: #11141a;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.5rem;
+  font: 13px/1.5 ui-monospace, monospace;
+}
+.pg-error {
+  color: var(--neg);
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
+}

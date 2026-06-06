@@ -9,7 +9,7 @@ const config = getDefaultConfig(projectRoot);
 config.watchFolders = Array.from(new Set([
   ...(config.watchFolders ?? []),
   path.resolve(workspaceRoot, "node_modules"),
-  path.resolve(workspaceRoot, "packages/simplysync-core"),
+  path.resolve(workspaceRoot, "packages/simplysync-protocol"),
 ]));
 
 config.resolver.nodeModulesPaths = [

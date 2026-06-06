@@ -5,7 +5,7 @@ import {
   sha256Base64Url,
   sha256Base64UrlBytes,
   type SyncEnvelope,
-} from "@simplysync/core";
+} from "@simplysync/protocol";
 import { ADMIN_PAGE } from "./admin";
 import {
   buildStats,
@@ -512,7 +512,6 @@ async function handlePush(request: Request): Promise<Response> {
 }
 
 async function handlePull(request: Request, url: URL): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
   const after = url.searchParams.get("after") ?? "";
   const requestedLimit = Number(
     url.searchParams.get("limit") ?? DEFAULT_EVENTS_PER_PULL,
@@ -522,14 +521,10 @@ async function handlePull(request: Request, url: URL): Promise<Response> {
     DEFAULT_EVENTS_PER_PULL,
     MAX_EVENTS_PER_PULL,
   );
-  const relayAuth = getBearerToken(request);
 
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const authResult = await ensureOwnerAuth(ownerId, relayAuth, false);
-  if (!authResult.ok) return authResult.response;
+  const auth = await authOwner(request, url);
+  if (!auth.ok) return auth.response;
+  const { ownerId } = auth;
 
   // Cursor is a monotonic seq. A legacy HLC-string cursor parses to 0 -> the
   // client re-pulls once (deduped by its seen-set) then advances on seq.
@@ -542,15 +537,9 @@ async function handlePull(request: Request, url: URL): Promise<Response> {
 }
 
 async function handleUsage(request: Request, url: URL): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
-  const relayAuth = getBearerToken(request);
-
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const authResult = await ensureOwnerAuth(ownerId, relayAuth, false);
-  if (!authResult.ok) return authResult.response;
+  const auth = await authOwner(request, url);
+  if (!auth.ok) return auth.response;
+  const { ownerId } = auth;
 
   const owner = getOwner.get(ownerId);
   return json({ ownerId, storedBytes: owner?.stored_bytes ?? 0 });
@@ -561,14 +550,9 @@ async function handleBlobPut(
   url: URL,
   hash: string,
 ): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
-  const relayAuth = getBearerToken(request);
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const authResult = await ensureOwnerAuth(ownerId, relayAuth);
-  if (!authResult.ok) return authResult.response;
+  const auth = await authOwner(request, url, true);
+  if (!auth.ok) return auth.response;
+  const { ownerId } = auth;
 
   // Short-circuit before reading the body: dedupe by content hash.
   if (existsBlob.get(ownerId, hash)) {
@@ -611,14 +595,9 @@ async function handleBlobGet(
   url: URL,
   hash: string,
 ): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
-  const relayAuth = getBearerToken(request);
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const authResult = await ensureOwnerAuth(ownerId, relayAuth, false);
-  if (!authResult.ok) return authResult.response;
+  const auth = await authOwner(request, url);
+  if (!auth.ok) return auth.response;
+  const { ownerId } = auth;
 
   const row = getBlobBytes.get(ownerId, hash);
   if (!row) return json({ error: "Unknown blob" }, 404);
@@ -662,6 +641,30 @@ async function handleBlobHead(
     status: exists ? 200 : 404,
     headers: corsHeaders(),
   });
+}
+
+// Shared front door for owner-scoped JSON handlers: read the ownerId + bearer
+// token off the request and verify them, returning either the validated ownerId
+// or the error Response to send. (handleBlobHead doesn't use this — a HEAD must
+// answer with a bodiless Response, not a JSON error.)
+async function authOwner(
+  request: Request,
+  url: URL,
+  createIfMissing = false,
+): Promise<
+  { ok: true; ownerId: string } | { ok: false; response: Response }
+> {
+  const ownerId = url.searchParams.get("ownerId");
+  const relayAuth = getBearerToken(request);
+  if (!ownerId || !relayAuth) {
+    return {
+      ok: false,
+      response: json({ error: "Missing ownerId or bearer token" }, 401),
+    };
+  }
+  const authResult = await ensureOwnerAuth(ownerId, relayAuth, createIfMissing);
+  if (!authResult.ok) return authResult;
+  return { ok: true, ownerId };
 }
 
 async function ensureOwnerAuth(

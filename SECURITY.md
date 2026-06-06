@@ -30,7 +30,7 @@ Everything derives from a single secret the user holds — a recovery key
 Derivation is SLIP-21 over the mnemonic's BIP39 entropy, using SimplySync's own
 fixed labels so a given recovery phrase always resolves to the same identity.
 
-**Verify:** [`packages/simplysync-core/src/index.ts`](packages/simplysync-core/src/index.ts)
+**Verify:** [`packages/simplysync-protocol/src/index.ts`](packages/simplysync-protocol/src/index.ts)
 — `deriveIdentity`, `deriveIdentityFromMnemonic`. The `dataKey` is imported as an
 `AES-GCM` key with `["encrypt","decrypt"]` usages and is **never serialized or
 transmitted** — grep the package for the symbol and confirm it never reaches the
@@ -61,11 +61,11 @@ code path that decrypts, inspects, or transforms `ciphertext`.
 [`apps/relay-go/handlers.go`](apps/relay-go/handlers.go) — `SyncEnvelope`
 is documented as *"the opaque, end-to-end-encrypted event the relay stores"*;
 the encrypt/decrypt happens client-side in
-[`packages/simplysync-db/src/engine.ts`](packages/simplysync-db/src/engine.ts)
-(`encryptPayload` / `decryptEnvelope`, imported from `@simplysync/core`). The
+[`packages/simplysync-engine/src/engine.ts`](packages/simplysync-engine/src/engine.ts)
+(`encryptPayload` / `decryptEnvelope`, imported from `@simplysync/protocol`). The
 exact call binds the envelope header as AES-GCM **additional authenticated
 data** — see `encryptPayload` in
-[`packages/simplysync-core/src/index.ts`](packages/simplysync-core/src/index.ts).
+[`packages/simplysync-protocol/src/index.ts`](packages/simplysync-protocol/src/index.ts).
 
 ---
 
@@ -121,7 +121,7 @@ enforcement.
 ## Audit this in ten minutes
 
 1. **Confirm the key never leaves the device.** Open
-   `packages/simplysync-core/src/index.ts`, find `dataKey`, and trace it — it's
+   `packages/simplysync-protocol/src/index.ts`, find `dataKey`, and trace it — it's
    only ever used in local `crypto.subtle.encrypt/decrypt`. It is never put on
    the wire.
 2. **Confirm the relay can't read payloads.** Open `apps/relay-go/store.go` and

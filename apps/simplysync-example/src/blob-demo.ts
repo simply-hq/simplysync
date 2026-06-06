@@ -1,8 +1,13 @@
-import { unlinkSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { sha256Base64UrlBytes } from "@simplysync/core";
+import { sha256Base64UrlBytes } from "@simplysync/protocol";
 import { LocalFirstClient } from "./client";
+import {
+  cleanExampleData,
+  cleanRelayData,
+  isRelayHealthy,
+  relayRoot,
+  relayUrl,
+  waitForRelay,
+} from "./demo-support";
 
 // End-to-end demo of lazy, encrypted image sync:
 //   1. Alice encrypts + chunks an image, uploads the chunk bytes, syncs only a
@@ -11,15 +16,10 @@ import { LocalFirstClient } from "./client";
 //      exists WITHOUT downloading any pixels.
 //   3. Bob reads the image, which lazily fetches + verifies + decrypts chunks.
 
-const exampleRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repoRoot = resolve(exampleRoot, "../..");
-const relayRoot = resolve(repoRoot, "apps/simplysync-relay");
-const relayUrl = process.env.RELAY_URL ?? "http://localhost:4100";
-
 const IMAGE_BYTES = 600_000; // ~3 chunks at the 256 KiB default
 
 async function main(): Promise<void> {
-  cleanData();
+  cleanExampleData();
 
   let relayProcess: Bun.Subprocess | null = null;
   if (!(await isRelayHealthy())) {
@@ -118,44 +118,6 @@ async function fetchUsage(client: LocalFirstClient): Promise<number> {
   });
   const body = (await response.json()) as { storedBytes: number };
   return body.storedBytes;
-}
-
-async function waitForRelay(): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (await isRelayHealthy()) return;
-    await sleep(100);
-  }
-  throw new Error(`Relay did not become healthy at ${relayUrl}.`);
-}
-
-async function isRelayHealthy(): Promise<boolean> {
-  try {
-    return (await fetch(`${relayUrl}/health`)).ok;
-  } catch {
-    return false;
-  }
-}
-
-function cleanData(): void {
-  for (const client of ["alice", "bob"]) {
-    removeSqliteFiles(resolve(exampleRoot, "data", client));
-  }
-}
-
-function cleanRelayData(): void {
-  removeSqliteFiles(resolve(relayRoot, "data", "relay"));
-}
-
-function removeSqliteFiles(basePath: string): void {
-  for (const suffix of [".db", ".db-shm", ".db-wal"]) {
-    try {
-      unlinkSync(`${basePath}${suffix}`);
-    } catch {}
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
 main().catch((error) => {

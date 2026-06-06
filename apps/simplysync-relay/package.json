@@ -10,7 +10,7 @@
     "clean": "rm -rf data/relay.db data/relay.db-shm data/relay.db-wal"
   },
   "dependencies": {
-    "@simplysync/core": "workspace:*"
+    "@simplysync/protocol": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "latest",

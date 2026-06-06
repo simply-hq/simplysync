@@ -45,7 +45,7 @@ sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
 
 ## 2. Build the relay artifact (locally) and copy it up
 
-`bun build` bundles the workspace dep (`@simplysync/core`) into one file —
+`bun build` bundles the workspace dep (`@simplysync/protocol`) into one file —
 no `node_modules` on the server.
 
 ```bash
