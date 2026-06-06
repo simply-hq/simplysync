@@ -1,12 +1,16 @@
 // Backs the engine's synchronous `SqliteDriver` (see
-// packages/simplysync-engine/src/engine.ts) with sql.js — a synchronous WASM build
-// of SQLite, the one browser SQLite whose API matches the engine's sync
+// packages/simplysync-engine/src/engine.ts) with sql.js — a synchronous WASM
+// build of SQLite, the one browser SQLite whose API matches the engine's sync
 // exec/select/transaction contract. The shape mirrors the bun:sqlite test
 // wrapper in packages/simplysync-engine/test/engine.test.ts.
 //
 // Persistence: sql.js is in-memory, so after every write we snapshot
 // `db.export()` into a pluggable store (IndexedDB in the browser; an in-memory
-// store in the headless smoke test) so data survives reloads.
+// store in the headless tests) so data survives reloads.
+//
+// The playground runs TWO engines (two simulated devices), so databases are
+// tracked in a registry keyed by name. The no-argument forms of getActiveDb()
+// and persistNow() still work (last-opened / all) for single-engine callers.
 
 import initSqlJs, {
   type BindParams,
@@ -29,33 +33,52 @@ export interface SqlJsDriverOptions {
   readonly debounceMs?: number;
 }
 
-// Single active database — the playground only ever opens one. Kept at module
-// scope so the UI can read the internal `_sync_outbox` table and force a flush.
-let active: { name: string; db: Database; store: SnapshotStore } | null = null;
-let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+interface OpenDb {
+  readonly db: Database;
+  readonly store: SnapshotStore;
+}
+
+const registry = new Map<string, OpenDb>();
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let lastOpened: string | null = null;
 let sqlStaticPromise: Promise<SqlJsStatic> | null = null;
 
-/** The live sql.js handle, for reading engine-internal tables (e.g. outbox). */
-export function getActiveDb(): Database | null {
-  return active?.db ?? null;
+/**
+ * The live sql.js handle for `name` (default: the last-opened database), for
+ * reading engine-internal tables (e.g. the outbox).
+ */
+export function getActiveDb(name?: string): Database | null {
+  const key = name ?? lastOpened;
+  return key ? (registry.get(key)?.db ?? null) : null;
 }
 
-/** Flushes the current database to its store immediately (awaitable). */
-export async function persistNow(): Promise<void> {
-  if (debounceTimer !== null) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
+/**
+ * Flushes a database to its store immediately (awaitable). With no name, flushes
+ * every open database.
+ */
+export async function persistNow(name?: string): Promise<void> {
+  const names = name ? [name] : [...registry.keys()];
+  for (const key of names) {
+    const timer = debounceTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      debounceTimers.delete(key);
+    }
+    const open = registry.get(key);
+    if (open) await open.store.save(key, open.db.export());
   }
-  if (!active) return;
-  await active.store.save(active.name, active.db.export());
 }
 
-function schedulePersist(debounceMs: number): void {
-  if (debounceTimer !== null) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null;
-    void persistNow();
-  }, debounceMs);
+function schedulePersist(name: string, debounceMs: number): void {
+  const existing = debounceTimers.get(name);
+  if (existing !== undefined) clearTimeout(existing);
+  debounceTimers.set(
+    name,
+    setTimeout(() => {
+      debounceTimers.delete(name);
+      void persistNow(name);
+    }, debounceMs),
+  );
 }
 
 /**
@@ -75,12 +98,13 @@ export function createSqlJsDriverFactory(
     const SQL = await sqlStaticPromise;
     const prior = await options.store.load(name);
     const db = prior ? new SQL.Database(prior) : new SQL.Database();
-    active = { name, db, store: options.store };
+    registry.set(name, { db, store: options.store });
+    lastOpened = name;
 
     return {
       exec(sql, params) {
         db.run(sql, (params ?? []) as BindParams);
-        schedulePersist(debounceMs);
+        schedulePersist(name, debounceMs);
       },
       select<R = Record<string, unknown>>(
         sql: string,
@@ -101,7 +125,7 @@ export function createSqlJsDriverFactory(
         try {
           const result = fn();
           db.run("COMMIT");
-          schedulePersist(debounceMs);
+          schedulePersist(name, debounceMs);
           return result;
         } catch (error) {
           db.run("ROLLBACK");

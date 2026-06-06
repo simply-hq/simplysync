@@ -1,8 +1,11 @@
-// The SimplySync browser playground. Everything here runs on-device: a local
-// SQLite database (sql.js) is the source of truth, the engine encrypts each
-// write into an opaque envelope, and the UI shows your plaintext data next to
-// the ciphertext a relay would store. No relay is configured, so nothing leaves
-// the page — this is purely a "see the guarantees for yourself" demo.
+// The SimplySync browser playground — a comprehensive, two-device demo.
+//
+// Two engines ("Alice" and "Bob") share one owner and sync through a relay you
+// run locally (`bun run relay:bun`). Everything runs on-device: local SQLite
+// (sql.js) is the source of truth, the engine encrypts each write into an opaque
+// envelope, and the relay only ever moves ciphertext. Edit on one device, sync,
+// and watch the other converge — including last-writer-wins on conflicts. The
+// internals inspector exposes the outbox, cursor, HLC clock, and event log.
 
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -12,8 +15,9 @@ import {
   type AppOwner,
   type Query,
   type SyncEngine,
+  type SyncState,
 } from "@simplysync/engine";
-import { SyncProvider, createUseSync, useQuery } from "@simplysync/react";
+import { SyncProvider, useQuery, useSync, useSyncState } from "@simplysync/react";
 import { DB_NAME, schema, type PlaygroundSchema } from "./schema";
 import * as idb from "./idb";
 import {
@@ -21,8 +25,15 @@ import {
   getActiveDb,
   persistNow,
 } from "./sql-driver";
+import { deriveAppOwner, loadOrCreateMnemonic, rotateMnemonic, setMnemonic } from "./owner";
+import { httpTransport, loadRelayUrl, saveRelayUrl } from "./relay";
 
-// --- Engine wiring ---------------------------------------------------------
+type Engine = SyncEngine<PlaygroundSchema>;
+
+const DEVICES = [
+  { name: `${DB_NAME}-alice`, label: "Alice" },
+  { name: `${DB_NAME}-bob`, label: "Bob" },
+] as const;
 
 const localStorageSecureStorage = {
   getItem: (key: string) => localStorage.getItem(key),
@@ -30,42 +41,50 @@ const localStorageSecureStorage = {
   removeItem: (key: string) => localStorage.removeItem(key),
 };
 
-// Flush the snapshot BEFORE reloading so reset/restore (which wipe then reload)
-// can't lose the wipe to the debounce window — the reloaded page would otherwise
-// rehydrate stale data from IndexedDB.
 async function reloadApp(): Promise<void> {
   await persistNow();
   location.reload();
 }
 
-const engine: SyncEngine<PlaygroundSchema> = createSync({
-  createSqliteDriver: createSqlJsDriverFactory({
-    store: { load: idb.load, save: idb.save },
-    locateFile: () => "sql-wasm.wasm",
-  }),
-  secureStorage: localStorageSecureStorage,
-  reloadApp,
-})(schema, { name: DB_NAME });
-
-// Best-effort flush if the tab is closed between debounced saves.
-window.addEventListener("pagehide", () => void persistNow());
-
-const useMutations = createUseSync(engine);
+// --- Row + query types -----------------------------------------------------
 
 type EntryRow = {
   id: string;
   description: string;
   amountCents: number;
   createdAt: string;
+  categoryId: string | null;
+  categoryName: string | null;
 };
+type CategoryRow = { id: string; name: string };
 
-const entriesQuery: Query<EntryRow> = engine.createQuery((db) =>
-  db
-    .selectFrom("entry")
-    .select(["id", "description", "amountCents", "createdAt"])
-    .where("isDeleted", "=", 0)
-    .orderBy("createdAt", "desc"),
-);
+// Built once from one engine — the compiled SQL is identical for both, and the
+// leftJoin returns the category name as a flat column (no JSON parsing).
+function buildQueries(engine: Engine) {
+  const entries: Query<EntryRow> = engine.createQuery((db) =>
+    db
+      .selectFrom("entry")
+      .leftJoin("category", "category.id", "entry.categoryId")
+      .select([
+        "entry.id as id",
+        "entry.description as description",
+        "entry.amountCents as amountCents",
+        "entry.createdAt as createdAt",
+        "entry.categoryId as categoryId",
+        "category.name as categoryName",
+      ])
+      .where("entry.isDeleted", "=", 0)
+      .orderBy("entry.createdAt", "desc"),
+  );
+  const categories: Query<CategoryRow> = engine.createQuery((db) =>
+    db
+      .selectFrom("category")
+      .select(["id", "name"])
+      .where("isDeleted", "=", 0)
+      .orderBy("name", "asc"),
+  );
+  return { entries, categories };
+}
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -84,35 +103,53 @@ function parseDollarsToCents(value: string): number | null {
   return Math.round(dollars * 100);
 }
 
-/** Reads the engine-internal outbox directly — this is exactly the ciphertext a
- * relay would receive. Returns newest-first. */
-function readOutboxEnvelopes(limit: number): string[] {
-  const db = getActiveDb();
+function rawSelect(dbName: string, sql: string): Record<string, unknown>[] {
+  const db = getActiveDb(dbName);
   if (!db) return [];
   try {
-    const stmt = db.prepare(
-      `select envelope_json from "_sync_outbox" order by event_id desc limit ${limit}`,
-    );
+    const stmt = db.prepare(sql);
     try {
-      const out: string[] = [];
-      while (stmt.step()) {
-        out.push(stmt.getAsObject().envelope_json as string);
-      }
-      return out;
+      const rows: Record<string, unknown>[] = [];
+      while (stmt.step()) rows.push(stmt.getAsObject());
+      return rows;
     } finally {
       stmt.free();
     }
   } catch {
-    return []; // table not created yet (pre-init)
+    return []; // tables not created yet (pre-init)
   }
 }
 
-// --- Components ------------------------------------------------------------
+// --- Components -------------------------------------------------------------
 
-function AddEntryForm() {
-  const { insert } = useMutations();
+function SyncBadge({ state }: { state: SyncState }) {
+  const map: Record<SyncState["type"], { text: string; cls: string }> = {
+    SyncStateInitial: { text: "idle", cls: "pg-badge-idle" },
+    SyncStateIsSyncing: { text: "syncing…", cls: "pg-badge-sync" },
+    SyncStateIsSynced: { text: "synced", cls: "pg-badge-ok" },
+    SyncStateIsNotSynced: { text: "not synced", cls: "pg-badge-err" },
+  };
+  const info = map[state.type];
+  return (
+    <span
+      className={`pg-badge ${info.cls}`}
+      title={state.type === "SyncStateIsNotSynced" ? state.error : undefined}
+    >
+      {info.text}
+    </span>
+  );
+}
+
+function AddEntryForm({
+  engine,
+  categories,
+}: {
+  engine: Engine;
+  categories: readonly CategoryRow[];
+}) {
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
+  const [categoryId, setCategoryId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   function handleSubmit(event: React.FormEvent) {
@@ -122,7 +159,11 @@ function AddEntryForm() {
       setError("Enter a description and a dollar amount (e.g. -4.50).");
       return;
     }
-    const result = insert("entry", { description: description.trim(), amountCents: cents });
+    const result = engine.insert("entry", {
+      description: description.trim(),
+      amountCents: cents,
+      categoryId: categoryId || null,
+    });
     if (!result.ok) {
       setError(result.error.message);
       return;
@@ -136,209 +177,411 @@ function AddEntryForm() {
     <form className="pg-form" onSubmit={handleSubmit}>
       <input
         aria-label="Description"
-        placeholder="Description (e.g. Coffee)"
+        placeholder="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
       />
       <input
         aria-label="Amount in dollars"
-        placeholder="Amount (e.g. -4.50)"
+        placeholder="-4.50"
         value={amount}
         onChange={(e) => setAmount(e.target.value)}
       />
+      <select
+        aria-label="Category"
+        value={categoryId}
+        onChange={(e) => setCategoryId(e.target.value)}
+      >
+        <option value="">no category</option>
+        {categories.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name}
+          </option>
+        ))}
+      </select>
       <button type="submit">Add</button>
       {error ? <p className="pg-error">{error}</p> : null}
     </form>
   );
 }
 
-function EntriesPanel() {
-  const { update } = useMutations();
-  const entries = useQuery(entriesQuery);
+function EntryItem({
+  engine,
+  row,
+  categories,
+}: {
+  engine: Engine;
+  row: EntryRow;
+  categories: readonly CategoryRow[];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [description, setDescription] = useState(row.description);
+  const [amount, setAmount] = useState((row.amountCents / 100).toString());
+  const [categoryId, setCategoryId] = useState(row.categoryId ?? "");
+
+  function save() {
+    const cents = parseDollarsToCents(amount);
+    if (!description.trim() || cents === null) return;
+    engine.update("entry", {
+      id: row.id,
+      description: description.trim(),
+      amountCents: cents,
+      categoryId: categoryId || null,
+    });
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <li className="pg-list-edit">
+        <input value={description} onChange={(e) => setDescription(e.target.value)} />
+        <input value={amount} onChange={(e) => setAmount(e.target.value)} />
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+          <option value="">no category</option>
+          {categories.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <button onClick={save}>Save</button>
+        <button className="pg-ghost" onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+      </li>
+    );
+  }
+
+  return (
+    <li>
+      <span className="pg-desc">
+        {row.description}
+        {row.categoryName ? <span className="pg-chip">{row.categoryName}</span> : null}
+      </span>
+      <span className={row.amountCents < 0 ? "pg-neg" : "pg-pos"}>
+        {formatCents(row.amountCents)}
+      </span>
+      <button className="pg-ghost" aria-label="Edit" onClick={() => setEditing(true)}>
+        ✎
+      </button>
+      <button
+        className="pg-del"
+        aria-label={`Delete ${row.description}`}
+        onClick={() => engine.update("entry", { id: row.id, isDeleted: sqliteTrue })}
+      >
+        ×
+      </button>
+    </li>
+  );
+}
+
+function Internals({ name }: { name: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 750);
+    return () => clearInterval(t);
+  }, []);
+
+  const meta = Object.fromEntries(
+    rawSelect(name, `select key, value from "_sync_meta"`).map((r) => [
+      r.key as string,
+      r.value as string,
+    ]),
+  );
+  const outbox = rawSelect(
+    name,
+    `select event_id, envelope_json, pushed_at from "_sync_outbox" order by event_id desc limit 8`,
+  );
+  const pending = outbox.filter((r) => r.pushed_at === null).length;
+  const seen =
+    (rawSelect(name, `select count(*) as c from "_sync_seen"`)[0]?.c as number) ?? 0;
+  const cursors = Object.entries(meta).filter(([k]) => k.startsWith("cursor:"));
+  const latest = outbox[0]?.envelope_json as string | undefined;
+
+  let cipher = "Ciphertext appears after the first write.";
+  if (latest) {
+    try {
+      cipher = JSON.stringify(JSON.parse(latest), null, 2);
+    } catch {
+      cipher = latest;
+    }
+  }
+
+  return (
+    <details className="pg-internals">
+      <summary>Sync internals</summary>
+      <dl className="pg-stats">
+        <div><dt>HLC time</dt><dd>{meta["hlc:time"] ?? "—"}</dd></div>
+        <div><dt>HLC counter</dt><dd>{meta["hlc:counter"] ?? "—"}</dd></div>
+        <div><dt>outbox pending</dt><dd>{pending}</dd></div>
+        <div><dt>outbox total</dt><dd>{outbox.length}</dd></div>
+        <div><dt>seen events</dt><dd>{seen}</dd></div>
+        <div><dt>cursor</dt><dd>{cursors.map(([, v]) => v).join(", ") || "—"}</dd></div>
+      </dl>
+      <p className="pg-label">recent events (what the relay receives)</p>
+      <table className="pg-events">
+        <thead>
+          <tr><th>eventId (HLC)</th><th>device</th><th>pushed</th></tr>
+        </thead>
+        <tbody>
+          {outbox.map((r) => {
+            let device = "";
+            try {
+              device = (JSON.parse(r.envelope_json as string).deviceId as string) ?? "";
+            } catch {
+              device = "";
+            }
+            return (
+              <tr key={r.event_id as string}>
+                <td className="pg-mono">{(r.event_id as string).slice(0, 18)}…</td>
+                <td className="pg-mono">{device}</td>
+                <td>{r.pushed_at ? "✓" : "·"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="pg-label">latest envelope — opaque, undecryptable</p>
+      <pre className="pg-cipher">{cipher}</pre>
+    </details>
+  );
+}
+
+function DeviceBody({
+  name,
+  label,
+  queries,
+}: {
+  name: string;
+  label: string;
+  queries: { entries: Query<EntryRow>; categories: Query<CategoryRow> };
+}) {
+  const engine = useSync<PlaygroundSchema>();
+  const entries = useQuery(queries.entries);
+  const categories = useQuery(queries.categories);
+  const syncState = useSyncState();
   const balance = useMemo(
     () => entries.reduce((sum, row) => sum + row.amountCents, 0),
     [entries],
   );
 
   return (
-    <section className="pg-card">
+    <>
       <header className="pg-card-head">
-        <h2>Your data <span className="pg-sub">local SQLite · source of truth</span></h2>
-        <p className="pg-balance">{formatCents(balance)}</p>
+        <h2>
+          {label} <span className="pg-sub">device</span> <SyncBadge state={syncState} />
+        </h2>
+        <div className="pg-head-right">
+          <span className="pg-balance">{formatCents(balance)}</span>
+          <button className="pg-ghost" onClick={() => void engine.sync()}>
+            Sync now
+          </button>
+        </div>
       </header>
-      <AddEntryForm />
+      <AddEntryForm engine={engine} categories={categories} />
       {entries.length === 0 ? (
-        <p className="pg-empty">No entries yet. Add one above, or seed a few.</p>
+        <p className="pg-empty">No entries. Add one, or seed from the top bar.</p>
       ) : (
         <ul className="pg-list">
           {entries.map((row) => (
-            <li key={row.id}>
-              <span className="pg-desc">{row.description}</span>
-              <span className={row.amountCents < 0 ? "pg-neg" : "pg-pos"}>
-                {formatCents(row.amountCents)}
-              </span>
-              <button
-                className="pg-del"
-                aria-label={`Delete ${row.description}`}
-                onClick={() => update("entry", { id: row.id, isDeleted: sqliteTrue })}
-              >
-                ×
-              </button>
-            </li>
+            <EntryItem key={row.id} engine={engine} row={row} categories={categories} />
           ))}
         </ul>
       )}
-    </section>
+      <Internals name={name} />
+    </>
   );
 }
 
-function RelayViewPanel() {
-  const entries = useQuery(entriesQuery); // re-render trigger on each write
-  const [envelopes, setEnvelopes] = useState<string[]>([]);
-
-  // Poll the outbox: the envelope is written asynchronously after AES-GCM
-  // encryption, so a light poll is simpler/robuster than racing the mutation.
-  useEffect(() => {
-    const tick = () => setEnvelopes(readOutboxEnvelopes(5));
-    tick();
-    const timer = setInterval(tick, 750);
-    return () => clearInterval(timer);
-  }, [entries.length]);
-
-  const latest = envelopes[0];
-  let pretty = "Ciphertext appears here after your first write.";
-  if (latest) {
-    try {
-      pretty = JSON.stringify(JSON.parse(latest), null, 2);
-    } catch {
-      pretty = latest;
-    }
-  }
-
+function DeviceColumn({
+  engine,
+  name,
+  label,
+  queries,
+}: {
+  engine: Engine;
+  name: string;
+  label: string;
+  queries: { entries: Query<EntryRow>; categories: Query<CategoryRow> };
+}) {
   return (
-    <section className="pg-card">
-      <header className="pg-card-head">
-        <h2>What the relay sees <span className="pg-sub">opaque · undecryptable</span></h2>
-        <p className="pg-count">{envelopes.length} envelope(s) queued</p>
-      </header>
-      <pre className="pg-cipher">{pretty}</pre>
-      <p className="pg-note">
-        The relay only ever stores <code>nonce + ciphertext</code> plus routing
-        metadata. The <code>table</code>, amounts, and descriptions are inside the
-        AES-256-GCM ciphertext — the key never leaves this page.
-      </p>
+    <section className="pg-card pg-device">
+      <SyncProvider value={engine}>
+        <DeviceBody name={name} label={label} queries={queries} />
+      </SyncProvider>
     </section>
   );
 }
 
-function OwnerPanel() {
-  const { resetAppOwner, restoreAppOwner } = useMutations();
-  const [owner, setOwner] = useState<AppOwner | null>(null);
+function TopBar({
+  engines,
+  owner,
+  initialRelayUrl,
+}: {
+  engines: readonly Engine[];
+  owner: AppOwner;
+  initialRelayUrl: string;
+}) {
+  const [relayUrl, setRelayUrl] = useState(initialRelayUrl);
+  const [categoryName, setCategoryName] = useState("");
   const [phrase, setPhrase] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    void engine.appOwner.then((value) => {
-      if (active) setOwner(value);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
+  function applyRelay() {
+    saveRelayUrl(relayUrl);
+    for (const engine of engines) engine.setTransports(httpTransport(relayUrl));
+  }
 
-  async function handleRestore() {
-    setBusy(true);
-    setError(null);
+  function addCategory() {
+    if (!categoryName.trim()) return;
+    engines[0].insert("category", { name: categoryName.trim() });
+    setCategoryName("");
+  }
+
+  async function reset() {
+    if (!confirm("Reset to a brand-new owner? This wipes both devices.")) return;
+    rotateMnemonic();
+    await idb.clear();
+    location.reload();
+  }
+
+  async function restore() {
     try {
-      // force: true — with no relay configured there's no backup to verify
-      // against, so we switch to this owner on this device intentionally.
-      await restoreAppOwner(phrase.trim(), { force: true });
+      setMnemonic(phrase);
+      await idb.clear();
+      location.reload();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-      setBusy(false);
+      setRestoreError(caught instanceof Error ? caught.message : String(caught));
     }
   }
 
-  function handleSeed() {
-    const { insert } = engine;
-    insert("entry", { description: "Groceries", amountCents: -5231 });
-    insert("entry", { description: "Paycheck", amountCents: 250000 });
-    insert("entry", { description: "Coffee", amountCents: -450 });
-  }
-
   return (
-    <section className="pg-card pg-owner">
-      <h2>Your owner <span className="pg-sub">derived on-device</span></h2>
-      {owner ? (
-        <>
-          <p className="pg-owner-id">
-            <strong>ownerId:</strong> <code>{owner.id}</code>
-          </p>
-          <p className="pg-label">recovery phrase (your only credential)</p>
-          <p className="pg-mnemonic">{owner.mnemonic}</p>
-        </>
-      ) : (
-        <p className="pg-empty">Deriving identity…</p>
-      )}
-
-      <div className="pg-actions">
-        <button onClick={handleSeed}>Seed sample data</button>
-        <button
-          className="pg-danger"
-          onClick={() => {
-            if (confirm("Reset to a brand-new owner? This wipes local data."))
-              void resetAppOwner();
-          }}
-        >
-          Reset owner
-        </button>
+    <section className="pg-card pg-topbar">
+      <div className="pg-owner-block">
+        <p className="pg-owner-id"><strong>ownerId:</strong> <code>{owner.id}</code></p>
+        <p className="pg-label">shared recovery phrase (both devices)</p>
+        <p className="pg-mnemonic">{owner.mnemonic}</p>
       </div>
 
-      <details className="pg-restore">
-        <summary>Restore from a recovery phrase</summary>
-        <textarea
-          aria-label="Recovery phrase"
-          placeholder="paste a 24-word recovery phrase"
-          value={phrase}
-          onChange={(e) => setPhrase(e.target.value)}
-          rows={3}
-        />
-        <button disabled={busy || !phrase.trim()} onClick={() => void handleRestore()}>
-          {busy ? "Restoring…" : "Restore (switch owner)"}
-        </button>
-        {error ? <p className="pg-error">{error}</p> : null}
-      </details>
+      <div className="pg-controls">
+        <label className="pg-field">
+          <span>Relay URL</span>
+          <span className="pg-inline">
+            <input value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} />
+            <button onClick={applyRelay}>Connect</button>
+          </span>
+        </label>
+        <p className="pg-hint">
+          Run a relay with <code>bun run relay:bun</code>, then Connect. Without
+          one, edits stay local (local-first) and sync shows “not synced”.
+        </p>
+
+        <label className="pg-field">
+          <span>Add category</span>
+          <span className="pg-inline">
+            <input
+              value={categoryName}
+              placeholder="e.g. Food"
+              onChange={(e) => setCategoryName(e.target.value)}
+            />
+            <button onClick={addCategory}>Add</button>
+          </span>
+        </label>
+
+        <div className="pg-actions">
+          <button className="pg-danger" onClick={() => void reset()}>Reset owner</button>
+        </div>
+
+        <details className="pg-restore">
+          <summary>Restore from a recovery phrase</summary>
+          <textarea
+            aria-label="Recovery phrase"
+            placeholder="paste a 24-word recovery phrase"
+            value={phrase}
+            onChange={(e) => setPhrase(e.target.value)}
+            rows={3}
+          />
+          <button disabled={!phrase.trim()} onClick={() => void restore()}>
+            Restore (switch owner)
+          </button>
+          {restoreError ? <p className="pg-error">{restoreError}</p> : null}
+        </details>
+      </div>
     </section>
   );
 }
 
-function App() {
+function App({
+  engines,
+  owner,
+  queries,
+  initialRelayUrl,
+}: {
+  engines: readonly Engine[];
+  owner: AppOwner;
+  queries: { entries: Query<EntryRow>; categories: Query<CategoryRow> };
+  initialRelayUrl: string;
+}) {
   return (
-    <SyncProvider value={engine}>
+    <>
       <header className="pg-header">
         <h1>SimplySync Playground</h1>
         <p>
-          A local-first, end-to-end-encrypted ledger running entirely in your
-          browser. Edit on the left; watch the encrypted envelope a relay would
-          store on the right.
+          Two devices, one owner, syncing through a relay — entirely in your
+          browser. Edit on one side, hit “Sync now” (with a relay running), and
+          watch the other converge. Conflicting edits resolve last-writer-wins.
         </p>
       </header>
+      <TopBar engines={engines} owner={owner} initialRelayUrl={initialRelayUrl} />
       <main className="pg-grid">
-        <EntriesPanel />
-        <RelayViewPanel />
-        <OwnerPanel />
+        {DEVICES.map((device, i) => (
+          <DeviceColumn
+            key={device.name}
+            engine={engines[i]}
+            name={device.name}
+            label={device.label}
+            queries={queries}
+          />
+        ))}
       </main>
-    </SyncProvider>
+    </>
   );
 }
 
-const root = document.getElementById("app");
-if (root) {
-  createRoot(root).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  );
+// --- Bootstrap -------------------------------------------------------------
+
+async function bootstrap(): Promise<void> {
+  const owner = await deriveAppOwner(loadOrCreateMnemonic());
+  const relayUrl = loadRelayUrl();
+  const createSqliteDriver = createSqlJsDriverFactory({
+    store: { load: idb.load, save: idb.save },
+    locateFile: () => "sql-wasm.wasm",
+  });
+
+  const make = (name: string): Engine =>
+    createSync({ createSqliteDriver, secureStorage: localStorageSecureStorage, reloadApp })(
+      schema,
+      {
+        name,
+        externalAppOwner: owner,
+        transports: httpTransport(relayUrl),
+        syncIntervalMs: 2000,
+      },
+    );
+  const engines: Engine[] = DEVICES.map((device) => make(device.name));
+
+  const queries = buildQueries(engines[0]);
+
+  window.addEventListener("pagehide", () => void persistNow());
+
+  const root = document.getElementById("app");
+  if (root) {
+    createRoot(root).render(
+      <StrictMode>
+        <App engines={engines} owner={owner} queries={queries} initialRelayUrl={relayUrl} />
+      </StrictMode>,
+    );
+  }
 }
+
+void bootstrap();

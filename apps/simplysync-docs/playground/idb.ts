@@ -47,3 +47,18 @@ export async function save(name: string, bytes: Uint8Array): Promise<void> {
     db.close();
   }
 }
+
+/** Deletes all saved snapshots (used by reset / restore). */
+export async function clear(): Promise<void> {
+  const db = await openDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      tx.objectStore(STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
