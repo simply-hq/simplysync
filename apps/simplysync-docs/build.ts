@@ -16,7 +16,21 @@ const distDir = join(here, "dist");
 const REPO_BLOB_BASE =
   "https://github.com/simply-hq/simplysync/blob/main";
 
-const SITE_TITLE = "Local-First";
+const SITE_TITLE = "SimplySync";
+
+// One web-font request (Space Grotesk display · IBM Plex Sans body · IBM Plex
+// Mono code), preconnected and cached across every page.
+const FONT_LINKS = `<link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />`;
+
+// Sets data-theme before first paint to avoid a flash: stored choice wins,
+// otherwise follow the OS preference.
+const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("ss-theme");if(t!=="light"&&t!=="dark"){t=matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light";}document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>`;
+
+// Toggle: flip data-theme on <html> and persist. Inline so it works on the
+// static pages with no bundle.
+const THEME_TOGGLE = `<button class="theme-toggle" type="button" aria-label="Toggle dark mode" onclick="(function(d){var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('ss-theme',n)}catch(e){}})(document.documentElement)"><span class="t-sun" aria-hidden="true">☀</span><span class="t-moon" aria-hidden="true">☾</span></button>`;
 
 interface Page {
   readonly src: string; // file in docsDir
@@ -25,9 +39,9 @@ interface Page {
 }
 
 const pages: readonly Page[] = [
-  { src: "README.md", out: "index.html", nav: "Overview" },
-  { src: "guide.md", out: "guide.html", nav: "User Guide" },
-  { src: "architecture.md", out: "architecture.html", nav: "Architecture" },
+  { src: "README.md", out: "index.html", nav: "What & why" },
+  { src: "guide.md", out: "guide.html", nav: "Client API" },
+  { src: "architecture.md", out: "architecture.html", nav: "How it works" },
 ];
 
 // Map a source markdown basename to its built page (for inter-doc links).
@@ -109,15 +123,36 @@ function firstHeading(markdown: string): string {
 }
 
 function renderNav(activeOut: string): string {
+  // The docs are deliberately ordinal ("The four sections"), so the sidebar
+  // numbers them rather than presenting a flat list.
   const items = pages
-    .map((page) => {
-      const active = page.out === activeOut ? ' class="active"' : "";
-      return `<a href="${page.out}"${active}>${page.nav}</a>`;
+    .map((page, i) => {
+      const active = page.out === activeOut ? " active" : "";
+      const idx = String(i + 1).padStart(2, "0");
+      return `<a class="nav-link${active}" href="${page.out}"><span class="n-idx">${idx}</span><span>${page.nav}</span></a>`;
     })
     .join("\n        ");
-  // The playground is a bundled SPA, not a markdown page, so it's appended here
+  // The demo is a bundled SPA, not a markdown page, so it's appended here
   // rather than living in `pages`.
-  return `${items}\n        <a href="playground.html">Playground ↗</a>`;
+  return `<p class="nav-label">Documentation</p>
+        ${items}
+        <a class="nav-demo" href="demo.html">Live demo</a>`;
+}
+
+function renderFooter(): string {
+  return `<footer class="site-footer">
+      <div class="footer-inner">
+        <p class="footer-statement">Local-first. <em>End-to-end encrypted.</em> App-owned — no data hostage.</p>
+        <nav class="footer-links" aria-label="Resources">
+          <a href="index.html">What &amp; why</a>
+          <a href="guide.html">Client API</a>
+          <a href="architecture.html">How it works</a>
+          <a href="demo.html">Live demo</a>
+          <a href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
+        </nav>
+        <p class="footer-meta">MIT-licensed. Clone it, run your own relay, depend on no one. The relay only ever sees ciphertext.</p>
+      </div>
+    </footer>`;
 }
 
 function renderToc(toc: TocEntry[]): string {
@@ -147,6 +182,8 @@ function layout(options: {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${options.title} · ${SITE_TITLE} Docs</title>
   <meta name="description" content="Docs for the app-owned, end-to-end-encrypted local-first library." />
+  ${THEME_SCRIPT}
+  ${FONT_LINKS}
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -154,7 +191,9 @@ function layout(options: {
   <header class="topbar">
     <button class="menu-toggle" aria-label="Toggle navigation" onclick="document.body.classList.toggle('nav-open')">☰</button>
     <a class="brand" href="index.html">${SITE_TITLE} <span>Docs</span></a>
+    <span class="topbar-spacer"></span>
     <a class="repo-link" href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
+    ${THEME_TOGGLE}
   </header>
   <div class="shell">
     <aside class="sidebar" aria-label="Sections">
@@ -170,6 +209,7 @@ function layout(options: {
     <div class="toc-col">
       ${renderToc(options.toc)}
     </div>
+    ${renderFooter()}
   </div>
   <div class="nav-scrim" onclick="document.body.classList.remove('nav-open')"></div>
 </body>
@@ -177,41 +217,47 @@ function layout(options: {
 `;
 }
 
-function playgroundHtml(): string {
+function demoHtml(): string {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Playground · ${SITE_TITLE}</title>
+  <title>Demo · ${SITE_TITLE}</title>
   <meta name="description" content="Run the SimplySync local-first, end-to-end-encrypted engine in your browser." />
-  <link rel="stylesheet" href="playground.css" />
+  ${THEME_SCRIPT}
+  ${FONT_LINKS}
+  <link rel="stylesheet" href="demo.css" />
 </head>
 <body>
-  <a class="pg-back" href="index.html">← Docs</a>
+  <div class="pg-topnav">
+    <a class="pg-back" href="index.html">← Docs</a>
+    ${THEME_TOGGLE}
+  </div>
   <div id="app"></div>
-  <script type="module" src="playground.js"></script>
+  <script type="module" src="demo.js"></script>
 </body>
 </html>
 `;
 }
 
-// Bundles the React playground SPA into dist/ with Bun's bundler (no extra
-// toolchain), copies sql.js's wasm next to it, and emits the host HTML.
-async function buildPlayground(): Promise<void> {
+// Bundles the React demo SPA into dist/ with Bun's bundler (no extra toolchain),
+// copies sql.js's wasm next to it, and emits the host HTML. The SPA source lives
+// in playground/ but ships as demo.{js,html,css}.
+async function buildDemo(): Promise<void> {
   const result = await Bun.build({
     entrypoints: [join(here, "playground", "main.tsx")],
     outdir: distDir,
     target: "browser",
     minify: true,
     sourcemap: "none",
-    naming: { entry: "playground.[ext]" },
+    naming: { entry: "demo.[ext]" },
     // React (and other libs) branch on this; browsers have no `process`.
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
   });
   if (!result.success) {
     for (const log of result.logs) console.error(log);
-    throw new Error("Playground bundle failed.");
+    throw new Error("Demo bundle failed.");
   }
 
   // sql.js fetches its wasm at runtime via locateFile(() => "sql-wasm.wasm").
@@ -221,10 +267,10 @@ async function buildPlayground(): Promise<void> {
   );
   await copyFile(
     join(here, "playground", "styles.css"),
-    join(distDir, "playground.css"),
+    join(distDir, "demo.css"),
   );
-  await writeFile(join(distDir, "playground.html"), playgroundHtml(), "utf8");
-  console.log("  playground/main.tsx → dist/playground.{js,html,css} (+ wasm)");
+  await writeFile(join(distDir, "demo.html"), demoHtml(), "utf8");
+  console.log("  playground/main.tsx → dist/demo.{js,html,css} (+ wasm)");
 }
 
 async function build(): Promise<void> {
@@ -248,6 +294,12 @@ async function build(): Promise<void> {
     console.log(`  ${page.src} → dist/${page.out}`);
   }
 
+  // styles.css and demo.css both @import this shared token layer.
+  await writeFile(
+    join(distDir, "tokens.css"),
+    await readFile(join(here, "tokens.css"), "utf8"),
+    "utf8",
+  );
   await writeFile(
     join(distDir, "styles.css"),
     await readFile(join(here, "styles.css"), "utf8"),
@@ -260,9 +312,9 @@ async function build(): Promise<void> {
     "utf8",
   );
 
-  await buildPlayground();
+  await buildDemo();
 
-  console.log(`\nBuilt ${pages.length} pages + playground → ${distDir}`);
+  console.log(`\nBuilt ${pages.length} pages + demo → ${distDir}`);
 }
 
 await build();

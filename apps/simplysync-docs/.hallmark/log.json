@@ -1,0 +1,3 @@
+[
+  { "date": "2026-06-06", "scope": "app", "macrostructure": "Long Document", "theme": "custom", "theme_axes": "light (default) + dark / display: grotesk-sans (Space Grotesk) / accent: warm rust-amber (~48deg)", "vibe": "technical, precise, app-owned crypto docs", "enrichment": "none", "designed-as-app": true, "brief": "SimplySync docs + demo · dual-mode redesign" }
+]

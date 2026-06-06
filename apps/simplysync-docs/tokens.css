@@ -1,0 +1,121 @@
+/* Hallmark · genre: modern-minimal · macrostructure: Long Document · design-system: design.md · designed-as-app
+ * Portable token layer for the SimplySync docs + demo. Light is the default
+ * (:root); [data-theme="dark"] flips it. The no-flash script in each page's
+ * <head> sets data-theme before first paint. Every colour/font/space value the
+ * site uses is named here — page CSS references tokens, never raw values.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Surfaces — warm near-white */
+  --color-paper:    oklch(98.6% 0.006 75);
+  --color-paper-2:  oklch(96.3% 0.008 74);
+  --color-paper-3:  oklch(93.4% 0.011 72);
+
+  /* Ink — warm near-black */
+  --color-ink:      oklch(24% 0.014 58);
+  --color-ink-2:    oklch(43% 0.012 58);
+  --color-ink-3:    oklch(56% 0.010 58);
+
+  /* Rules */
+  --color-rule:     oklch(89.5% 0.012 70);
+  --color-rule-2:   oklch(83% 0.015 68);
+
+  /* Accent — rust/amber, the single chromatic note (<5% per viewport) */
+  --color-accent:      oklch(52% 0.158 48);
+  --color-accent-2:    oklch(45% 0.150 45);   /* hover / link-pressed */
+  --color-accent-soft: oklch(52% 0.158 48 / 0.12);
+  --color-accent-ink:  oklch(99% 0.004 75);   /* text on an accent fill */
+  --color-focus:       oklch(52% 0.158 48);
+  --color-scrim:       oklch(0% 0 0 / 0.5);    /* mobile nav backdrop */
+
+  /* Code — dark panel even in light mode (classic docs contrast) */
+  --code-bg:          oklch(22.5% 0.018 58);
+  --code-ink:         oklch(90% 0.012 75);
+  --code-rule:        oklch(33% 0.016 56);
+  --code-inline-bg:   oklch(95% 0.013 68);
+  --code-inline-ink:  oklch(42% 0.130 44);
+
+  /* Status (demo) */
+  --color-pos:    oklch(52% 0.130 155);
+  --color-neg:    oklch(54% 0.180 25);
+  --color-info:   oklch(52% 0.158 48);
+
+  /* Type */
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-body:    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system,
+                  "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", "JetBrains Mono",
+                  Menlo, Consolas, monospace;
+
+  --text-xs:    0.75rem;
+  --text-sm:    0.8125rem;
+  --text-base:  1.0625rem;
+  --text-md:    1.1875rem;
+  --text-lg:    1.375rem;
+  --text-xl:    1.75rem;
+  --text-2xl:   2.1rem;
+  --text-display: clamp(2.4rem, 1.7rem + 2.7vw, 3.35rem);
+
+  /* Space — 4pt scale */
+  --space-3xs: 0.25rem;
+  --space-2xs: 0.5rem;
+  --space-xs:  0.75rem;
+  --space-sm:  1rem;
+  --space-md:  1.5rem;
+  --space-lg:  2rem;
+  --space-xl:  3rem;
+  --space-2xl: 4.5rem;
+  --space-3xl: 7rem;
+
+  /* Motion */
+  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur:      200ms;
+
+  /* Shape */
+  --radius-sm:   6px;
+  --radius:      10px;
+  --radius-lg:   14px;
+  --radius-pill: 999px;
+
+  /* Layout */
+  --sidebar-w:   252px;
+  --toc-w:       220px;
+  --content-max: 744px;
+  --shell-max:   1340px;
+  --topbar-h:    60px;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --color-paper:    oklch(17.5% 0.012 58);
+  --color-paper-2:  oklch(21.5% 0.013 56);
+  --color-paper-3:  oklch(26.5% 0.014 55);
+
+  --color-ink:      oklch(92% 0.013 75);
+  --color-ink-2:    oklch(73% 0.012 66);
+  --color-ink-3:    oklch(60% 0.011 60);
+
+  --color-rule:     oklch(31% 0.013 56);
+  --color-rule-2:   oklch(38% 0.014 56);
+
+  --color-accent:      oklch(80% 0.130 68);
+  --color-accent-2:    oklch(86% 0.115 70);
+  --color-accent-soft: oklch(80% 0.130 68 / 0.15);
+  --color-accent-ink:  oklch(20% 0.020 58);
+  --color-focus:       oklch(80% 0.130 68);
+
+  --code-bg:          oklch(13.5% 0.011 58);
+  --code-ink:         oklch(88% 0.013 75);
+  --code-rule:        oklch(28% 0.013 55);
+  --code-inline-bg:   oklch(26% 0.014 56);
+  --code-inline-ink:  oklch(85% 0.100 70);
+
+  --color-pos:    oklch(78% 0.150 158);
+  --color-neg:    oklch(74% 0.150 28);
+  --color-info:   oklch(80% 0.130 68);
+}
