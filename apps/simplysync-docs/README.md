@@ -8,8 +8,7 @@ edit them, not the output.
 ## Commands
 
 ```sh
-bun run simplysync:docs        # build -> apps/simplysync-docs/dist/
-bun run simplysync:docs:dev    # build, then preview on http://localhost:4200
+bun run docs:dev   # (from repo root) build, then preview on http://localhost:4200
 ```
 
 From this directory you can also run `bun run build`, `bun run serve`, or
@@ -20,20 +19,22 @@ From this directory you can also run `bun run build`, `bun run serve`, or
 `build.ts` reads each page in `docs/local-first/`, renders it with `marked`
 (GFM), adds heading anchors + an on-this-page table of contents, rewrites links
 (inter-doc links → `.html`, cross-repo links → GitHub blob URLs), and wraps the
-result in a dark theme (`styles.css`). Output lands in `dist/` as plain static
-files plus a `404.html`.
+result in a dark theme (`styles.css`). It also bundles the interactive **Demo**
+SPA (source in `playground/`) into `demo.{js,html,css}` with Bun's bundler.
+Output lands in `dist/` as plain static files plus a `404.html`.
 
 ## Hosting
 
 `dist/` is fully static — host it on any static host:
 
-- **Vercel:** build command `bun run simplysync:docs`, output dir
-  `apps/simplysync-docs/dist`.
+- **Vercel:** build command `bun run --cwd apps/simplysync-docs build`, output
+  dir `apps/simplysync-docs/dist`.
 - **Netlify:** same build command, publish dir `apps/simplysync-docs/dist`.
 - **GitHub Pages / Cloudflare Pages / S3:** upload the contents of `dist/`.
 
-No server or runtime is required at hosting time. The only build dependency is
-`marked`; no framework, no client-side JS beyond a small nav toggle.
+No server or runtime is required at hosting time. The doc pages ship as static
+HTML; the Demo page is a self-contained client-side SPA (React + sql.js WASM,
+all on-device).
 
 ## Adding a page
 

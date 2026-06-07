@@ -42,6 +42,7 @@ const pages: readonly Page[] = [
   { src: "README.md", out: "index.html", nav: "What & why" },
   { src: "guide.md", out: "guide.html", nav: "Client API" },
   { src: "architecture.md", out: "architecture.html", nav: "How it works" },
+  { src: "sync.md", out: "sync.html", nav: "Sync & relay" },
 ];
 
 // Map a source markdown basename to its built page (for inter-doc links).
@@ -147,6 +148,7 @@ function renderFooter(): string {
           <a href="index.html">What &amp; why</a>
           <a href="guide.html">Client API</a>
           <a href="architecture.html">How it works</a>
+          <a href="sync.html">Sync &amp; relay</a>
           <a href="demo.html">Live demo</a>
           <a href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
         </nav>

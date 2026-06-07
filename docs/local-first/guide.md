@@ -1,47 +1,45 @@
-# SimplySync — User Guide
+# Client API
 
-A guide for building apps on SimplySync (the `@simplysync/protocol` package):
-an app-owned, end-to-end-encrypted local-first stack. Users own their
-data, the app works offline-first, and sync runs through a relay you can
-self-host. For how the internals work and how to contribute, see
-[`architecture.md`](./architecture.md).
+This is everything an app developer touches: define a typed schema, create the
+engine, read and write data, bind it into React, and connect a relay. The engine
+(`@simplysync/engine`) owns the local SQLite database, the outbox, the clock, and
+the sync loop — you write app code, not plumbing.
+
+For what happens beneath this API, see **[How it works](./architecture.md)** (the
+on-device store, clock, and read/write paths) and
+**[Sync & the relay](./sync.md)** (the encrypted envelope, the wire protocol, the
+relay).
 
 ## Mental model
 
-```
-   your app                              relay (dumb, opaque store)
-┌────────────┐   encrypted envelopes    ┌──────────────────────────┐
-│ local      │  ───── push ──────────▶  │ events keyed by           │
-│ SQLite     │  ◀──── pull (cursor) ──   │ (ownerId, eventId)        │
-│ (source of │                          │ stores ciphertext only    │
-│  truth)    │                          └──────────────────────────┘
-└────────────┘
-```
+- **The local SQLite database is the source of truth.** Reads come from it;
+  writes land in it first. The app is fully usable offline.
+- **Every write also produces an encrypted sync event.** The engine queues it in
+  a local outbox and pushes it when a relay is configured and reachable.
+- **Sync is automatic and opportunistic.** The engine polls, pushes the outbox,
+  pulls remote events, decrypts them, and applies them last-writer-wins. You
+  rarely call `sync()` yourself.
+- **Queries are reactive.** A `useQuery` re-renders when the rows it depends on
+  change — whether the change came from a local write or an incoming sync.
 
-- **The local database is the source of truth.** Every write lands in local
-  SQLite first and the UI reads from it. The app is fully usable offline.
-- **Every write also produces an encrypted sync event** ("envelope"). Envelopes
-  are queued in a local outbox and pushed when a relay is reachable.
-- **The relay never sees your data.** It stores opaque ciphertext plus an owner
-  id and an auth hash. It cannot read table names, row values, notes, or
-  amounts.
-- **Conflicts resolve last-writer-wins** by a Hybrid Logical Clock (HLC), so two
-  devices editing offline converge deterministically once they sync.
+```
+ engine.insert(...) ──▶ local SQLite row  ──▶ useQuery re-renders (instant)
+                   └──▶ encrypted envelope ──▶ outbox ──▶ relay (background)
 
-The core library gives you the cryptographic and protocol primitives. *You*
-own the local schema, the outbox, and the apply loop — there's no hidden ORM.
-`apps/simplysync-example` is a ~500-line reference client you can copy.
+ relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ useQuery re-renders
+```
 
 ## Install
 
-The core is a workspace package (`@simplysync/protocol`). In this monorepo,
-depend on it with the workspace protocol:
+The engine and React bindings are workspace packages. In this monorepo, depend
+on them with the workspace protocol:
 
 ```jsonc
 // package.json
 {
   "dependencies": {
-    "@simplysync/protocol": "workspace:*"
+    "@simplysync/engine": "workspace:*",
+    "@simplysync/react": "workspace:*"
   }
 }
 ```
@@ -50,355 +48,364 @@ depend on it with the workspace protocol:
 bun install
 ```
 
-**Runtime requirements:** the core needs WebCrypto (`globalThis.crypto.subtle`)
+**Runtime requirements:** the engine needs WebCrypto (`globalThis.crypto.subtle`)
 and `btoa`/`atob`. These exist in modern browsers, Node 20+, and Bun. In React
 Native they do not exist by default — install `react-native-quick-crypto` and a
-base64 polyfill and load them before the library (see
+base64 polyfill and load them *before* the engine (see
 `apps/simplysync-expo/crypto-setup.js` for a working setup).
 
-## 1. Identity & recovery keys
+## 1. Define a schema
 
-A user's entire account is derived from a single secret. The library supports
-two interchangeable credential formats and auto-detects which one it's given.
-
-### Native recovery key (`sf1_…`)
+A schema is a plain `{ table: { column: Type } }` object. Column types come from
+the engine's small typed-schema DSL and double as runtime validators.
 
 ```ts
-import { createRecoveryKey, deriveIdentity } from "@simplysync/protocol";
+import { FiniteNumber, id, NonEmptyString, nullOr } from "@simplysync/engine";
 
-const recoveryKey = await createRecoveryKey(); // "sf1_…" — 32 bytes of entropy
-const identity = await deriveIdentity(recoveryKey);
-
-identity.ownerId;   // public id used for routing on the relay
-identity.relayAuth; // bearer token presented to the relay
-identity.dataKey;   // AES-GCM CryptoKey (never leaves the device)
-identity.source;    // "recoveryKey"
-```
-
-### BIP39 mnemonic
-
-`createMnemonic()` mints a standard 24-word BIP39 phrase. A mnemonic
-deterministically derives the same owner identity (owner id, encryption key, and
-write key) every time, so a user who saved their recovery phrase can restore
-their identity on any device with no re-onboarding.
-
-```ts
-import { createMnemonic, deriveIdentity, isRecoveryMnemonic } from "@simplysync/protocol";
-
-const phrase = createMnemonic(); // "<generated 24-word recovery phrase>"
-
-isRecoveryMnemonic(phrase);                 // true
-const identity = await deriveIdentity(phrase);
-identity.source;   // "mnemonic"
-identity.mnemonic; // the normalized phrase (lowercased, single-spaced)
-```
-
-`deriveIdentity()` accepts either format, so a single "paste your recovery key
-or phrase" input works for both. Mnemonic detection is whitespace- and
-case-tolerant.
-
-### Storing the secret
-
-The recovery key/phrase is the only thing that can decrypt the user's data —
-**store it in the platform secret store, never in app state or plain SQLite.**
-
-- React Native: `expo-secure-store`
-- Web: a password-derived key or platform credential store; never `localStorage`
-- The CLI example stores it in SQLite only because it's a local demo
-
-If the user loses it, their encrypted data is unrecoverable by design. Surface
-it during onboarding and let them re-enter it to restore on a new device.
-
-## 2. Devices & the Hybrid Logical Clock
-
-Each install is a "device" with its own id. Writes are stamped with an HLC so
-edits from different devices order deterministically.
-
-```ts
-import { createDeviceId, createHlc, compareHlc } from "@simplysync/protocol";
-
-const deviceId = await createDeviceId(); // persist this per install
-
-// Generate a monotonic HLC per write. Track the last (time, counter) yourself
-// (see the reference client's nextHlc()) so repeated writes in the same ms
-// still increase.
-const hlc = createHlc(deviceId, Date.now(), counter);
-
-compareHlc(a, b); // <0, 0, or >0 — use for last-writer-wins
-```
-
-## 3. Writing data (local-first + outbox)
-
-A write does two things atomically-ish: update the local row, and enqueue an
-encrypted envelope. `encryptPayload` turns a domain change into a `SyncEnvelope`.
-
-```ts
-import { encryptPayload, type SyncPayload } from "@simplysync/protocol";
-
-const payload: SyncPayload = {
-  schemaVersion: 1,
-  table: "ledger",
-  op: "upsert",          // or "delete"
-  rowId: id,
-  hlc,
-  value: row,            // your row object; encrypted, relay never sees it
+export const schema = {
+  category: {
+    id: id("category"),
+    name: NonEmptyString,
+  },
+  entry: {
+    id: id("entry"),
+    description: NonEmptyString,
+    amountCents: FiniteNumber,
+    categoryId: nullOr(id("category")), // nullable foreign key
+  },
 };
 
-const envelope = await encryptPayload(
-  identity,
-  { eventId: hlc, deviceId },  // eventId is typically the HLC
-  payload,
-);
-
-// 1) upsert the row in local SQLite
-// 2) insert JSON.stringify(envelope) into your local `sync_outbox` table
+export type AppSchema = typeof schema;
 ```
 
-**Deletes are soft.** In a distributed system you can't delete an individual
-change — you mark the row deleted (e.g. set a `deletedAtHlc`) and emit a
-`"delete"` envelope. Whole-owner deletion is a separate, real-delete concern
-handled at the relay.
+You declare `id` per table. The engine adds three **system columns** to every
+table automatically: `createdAt`, `updatedAt` (both ISO strings), and
+`isDeleted` (a `0 | 1` SQLite boolean). You never write the physical `CREATE
+TABLE` — the engine derives it from the schema.
 
-## 4. Syncing
+**Built-in column types:** `String`, `NonEmptyString`, `NonEmptyString1000`,
+`PositiveInt`, `FiniteNumber`, `SqliteBoolean`, `SimpleName`, `Mnemonic`, and
+`id("Table")`. Wrap any of them with `nullOr(...)` to allow `null`, or
+`maxLength(n)(...)` to bound a string. Each type validates on write and rejects
+bad values with a typed error.
 
-Sync is two phases — push the outbox, then pull and apply — both safe to call
-repeatedly (e.g. on app focus, on an interval, after each write when online).
+## 2. Create the engine
 
-**Push:** `POST {relayUrl}/v1/events` with the unpushed envelopes, then mark
-them pushed locally.
+`createSync(deps)` takes the platform plumbing once, then returns a factory you
+call with your schema and config.
 
 ```ts
-await fetch(`${relayUrl}/v1/events`, {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${identity.relayAuth}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({ ownerId: identity.ownerId, events: envelopes }),
+import { createSync } from "@simplysync/engine";
+
+const engine = createSync({
+  createSqliteDriver, // (name) => SqliteDriver — platform SQLite (see §8)
+  secureStorage,      // stores the recovery phrase in the OS secret store (§8)
+  reloadApp,          // optional: re-evaluate app state after restore/reset
+})(schema, {
+  name: "my-app",
+  transports: [{ type: "Http", url: "http://localhost:4100" }], // optional relay
+  syncIntervalMs: 5000, // poll cadence; default 5000
 });
-// → { accepted, duplicate }
+
+await engine.ready; // resolves once the DB is open and the owner is loaded
 ```
 
-**Pull & apply:** `GET {relayUrl}/v1/events?ownerId=…&after=<cursor>`, decrypt
-each envelope, apply with last-writer-wins, then persist `nextCursor`.
+On first run the engine mints a new owner (a fresh recovery phrase, stored via
+`secureStorage`). On later runs it loads the existing one. Pass
+`externalAppOwner` to supply an owner you derived yourself instead.
+
+## 3. Writing data
+
+Mutations are synchronous against local SQLite and return a `MutationResult`.
+Each one also enqueues an encrypted envelope for sync — you don't manage that.
 
 ```ts
-const url = new URL(`${relayUrl}/v1/events`);
-url.searchParams.set("ownerId", identity.ownerId);
-url.searchParams.set("after", cursor); // "" on first sync
-const { events, nextCursor } = await (
-  await fetch(url, { headers: { Authorization: `Bearer ${identity.relayAuth}` } })
-).json();
-
-for (const envelope of events) {
-  if (seen(envelope.eventId)) continue;       // idempotent: dedupe by eventId
-  const payload = await decryptEnvelope(identity, envelope);
-  applyLastWriterWins(payload);               // compareHlc(existing, payload.hlc)
-  markSeen(envelope.eventId);
-}
-persistCursor(nextCursor);
-```
-
-Applying with last-writer-wins:
-
-```ts
-const existing = getRow(payload.rowId);
-if (existing && compareHlc(existing.updatedAtHlc, payload.hlc) >= 0) return; // ours is newer
-upsertRow(payload.value);
-```
-
-The cursor is keyset-based (`eventId`), so pulls are bounded and resumable even
-with hundreds of thousands of events. Keep a local `sync_seen` set so re-pulled
-events are no-ops.
-
-### Restore on a new device
-
-Restore is just "boot with the user's recovery key/phrase, then sync from an
-empty cursor": derive the identity, pull everything, apply. Because envelopes
-are content-addressed by `(ownerId, eventId)` and applies are idempotent, the
-device rebuilds the full state.
-
-## 5. Images & binary blobs
-
-Photos and other binaries don't belong inside JSON sync payloads (base64 inflates
-them ~33% and bloats the log). Instead the library stores them as **encrypted,
-content-addressed chunks** and syncs them lazily — the iCloud model:
-
-1. **`encryptBlob`** splits the bytes into chunks, encrypts each with the data
-   key, and returns a small **manifest** (id, mime, size, per-chunk hashes) plus
-   the encrypted chunk bytes.
-2. **Upload the chunk bytes** to the relay by hash (`PUT /v1/blobs/:hash`),
-   skipping any it already has (`HEAD`).
-3. **Sync the manifest as a normal event** (a `SyncPayload` with `table: "blob"`)
-   so every device learns the image exists — without downloading a single pixel.
-4. **On read, fetch chunks on demand** (`GET /v1/blobs/:hash`), verify each hash,
-   decrypt, and cache locally.
-
-```ts
-import { encryptBlob, decryptBlob } from "@simplysync/protocol";
-
-// Upload
-const { manifest, chunks } = await encryptBlob(identity, bytes, {
-  mimeType: "image/jpeg",
+// insert — the engine generates the id and system columns
+const result = engine.insert("entry", {
+  description: "Coffee",
+  amountCents: -450,
+  categoryId: null,
 });
-for (const chunk of chunks) {
-  // PUT chunk.bytes to /v1/blobs/${chunk.hash} (skip if HEAD says it exists)
-}
-// then enqueue `manifest` as a normal SyncPayload (table: "blob")
+if (!result.ok) console.error(result.error.message);
+else console.log(result.value.id);
 
-// Read (on any device, after the manifest has synced)
-const orderedChunkBytes = await Promise.all(
-  manifest.chunks.map((c) => fetchChunkBytes(c.hash)), // from cache or relay
+// update — requires the id; updates only the fields you pass
+engine.update("entry", { id, amountCents: -500 });
+
+// upsert — insert or update by id
+engine.upsert("entry", { id, description: "Latte", amountCents: -500 });
+```
+
+**Deletes are soft.** In a distributed log you can't truly delete one change —
+you mark the row deleted and let it sync. Set the `isDeleted` system column and
+filter it out in your queries:
+
+```ts
+import { sqliteTrue } from "@simplysync/engine";
+
+engine.update("entry", { id, isDeleted: sqliteTrue });
+```
+
+Inserts allow partial values (omitted columns are left `NULL`); updates require
+the `id`. Values are validated against the schema, so an invalid write returns
+`{ ok: false, error }` rather than corrupting the row.
+
+## 4. Querying data
+
+Build a query once with `createQuery` using the full [Kysely](https://kysely.dev)
+builder — joins, filters, ordering, aggregates. The compiled SQL is reused, and
+the row type is inferred.
+
+```ts
+import type { Query } from "@simplysync/engine";
+
+type EntryRow = {
+  id: string;
+  description: string;
+  amountCents: number;
+  categoryName: string | null;
+};
+
+const entriesQuery: Query<EntryRow> = engine.createQuery((db) =>
+  db
+    .selectFrom("entry")
+    .leftJoin("category", "category.id", "entry.categoryId")
+    .select([
+      "entry.id as id",
+      "entry.description as description",
+      "entry.amountCents as amountCents",
+      "category.name as categoryName",
+    ])
+    .where("entry.isDeleted", "=", 0)
+    .orderBy("entry.createdAt", "desc"),
 );
-const data = await decryptBlob(identity, manifest, orderedChunkBytes);
 ```
 
-The reference client wraps this as `putBlob(bytes, mimeType)` / `getBlob(blobId)`
-(see `apps/simplysync-example/src/client.ts`), and
-`bun run simplysync:blob-demo` shows a full cross-device round-trip.
+Read it imperatively, or (preferably) reactively in React (§5):
 
-**Why this scales to 1GB on a phone:** devices sync kilobytes of manifests, not
-gigabytes of pixels. Image bytes are fetched only when actually viewed, stored as
-binary BLOBs (no base64 overhead), content-addressed for dedup, and cached
-locally. Use `decryptBlobChunk` for streaming if you don't want to hold a whole
-blob in memory. Each chunk is bound by AEAD to its owner + blob + index, and its
-hash is verified before decryption, so the relay cannot swap or forge bytes.
-
-## 6. Running a relay
-
-The relay (`@simplysync/relay`) is a single Bun + SQLite file. It's the
-piece you self-host (or run in the cloud). It is deliberately dumb: opaque
-storage, per-owner quotas, no plaintext.
-
-```sh
-bun run simplysync:relay            # http://localhost:4100
+```ts
+const rows = await engine.loadQuery(entriesQuery); // one-shot read
+const rows = engine.getQueryRows(entriesQuery);    // cached snapshot (sync)
 ```
 
-For Android emulators point the client at `http://10.0.2.2:4100`; iOS simulators
-use `http://localhost:4100`.
+## 5. React bindings
 
-**Configuration (env vars):**
+`@simplysync/react` wires the engine into components. Wrap your tree in a
+`SyncProvider`, then read the engine with `useSync` and rows with the reactive
+`useQuery`.
 
-| Variable | Default | Purpose |
+```tsx
+import {
+  SyncProvider,
+  useSync,
+  useQuery,
+  useSyncState,
+} from "@simplysync/react";
+
+function App() {
+  return (
+    <SyncProvider value={engine}>
+      <Ledger />
+    </SyncProvider>
+  );
+}
+
+function Ledger() {
+  const engine = useSync<AppSchema>();
+  const entries = useQuery(entriesQuery); // re-renders on any relevant change
+  const state = useSyncState();
+
+  return (
+    <>
+      <SyncBadge state={state} />
+      <button onClick={() => engine.insert("entry", { description: "Tea", amountCents: -300 })}>
+        Add
+      </button>
+      <ul>
+        {entries.map((e) => (
+          <li key={e.id}>{e.description}: {e.amountCents}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+```
+
+- **`useQuery(query)`** — subscribes to the query and returns the current rows.
+  Re-renders when matching rows change, from a local write *or* an incoming sync.
+- **`useSyncState()`** — the current `SyncState` (see §7).
+- **`useSyncError()`** — the last `SyncError | null`, for surfacing failures.
+- **`useSync<S>()`** — the engine instance, for mutations and `engine.sync()`.
+
+## 6. Identity & recovery
+
+A user's whole account derives from one secret. The engine manages it through
+`secureStorage` and exposes the owner:
+
+```ts
+const owner = await engine.appOwner; // AppOwner | null
+owner.id;       // public owner id used for relay routing
+owner.mnemonic; // the 24-word BIP39 recovery phrase — show this for backup
+owner.writeKey; // bearer token presented to the relay (a capability)
+```
+
+Surface `owner.mnemonic` during onboarding so the user can save it. It is the
+**only** thing that can decrypt their data — if they lose it, the data is
+unrecoverable by design. Never store it in app state or plain SQLite; the engine
+keeps it in the platform secret store.
+
+**Restore on a new device** — boot with the saved phrase and sync from scratch:
+
+```ts
+await engine.restoreAppOwner(mnemonic);
+// By default this refuses to wipe local data unless the relay confirms the owner
+// has data — so a wrong phrase or an unreachable relay can't destroy what's here.
+// Pass { force: true } to switch to an empty/new owner intentionally.
+await engine.restoreAppOwner(mnemonic, { force: true });
+```
+
+**Reset** mints a brand-new owner and wipes local data:
+
+```ts
+await engine.resetAppOwner();
+```
+
+Both `restoreAppOwner` and `resetAppOwner` call your `reloadApp` afterward so the
+UI re-evaluates against the new owner.
+
+## 7. Connecting a relay & sync state
+
+A relay is **optional** — without one, the app is purely local-first and every
+edit stays on-device. Configure one (or several) via `transports`, either at
+creation or at runtime:
+
+```ts
+engine.setTransports([{ type: "Http", url: "https://relay.example.com" }]);
+```
+
+Setting transports triggers an immediate sync and starts the background poller.
+You can still force a sync (e.g. on a "Sync now" button):
+
+```ts
+await engine.sync(); // push the outbox, then pull + apply remote events
+```
+
+The engine also syncs opportunistically after local writes and on web
+focus/online. Watch progress with `useSyncState()`:
+
+| `SyncState.type` | Meaning |
+| --- | --- |
+| `SyncStateInitial` | Idle, nothing synced yet. |
+| `SyncStateIsSyncing` | A push/pull is in flight. |
+| `SyncStateIsSynced` | Up to date (`lastSyncedAt` set). |
+| `SyncStateIsNotSynced` | Failed (`error`, optional `status`, and `terminal`). |
+
+A **terminal** failure (auth/quota/bad request — 400/401/403/413) won't fix
+itself by retrying the same batch, so the engine backs the poller off (but still
+retries on focus/online/write). Network and 5xx/429 errors are retried normally.
+
+> **For Android emulators** point the relay URL at `http://10.0.2.2:4100`; iOS
+> simulators and the web use `http://localhost:4100`.
+
+## 8. Platform drivers
+
+The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+
+**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
+
+```ts
+interface SqliteDriver {
+  exec(sql: string, params?: readonly unknown[]): void;
+  select<R>(sql: string, params?: readonly unknown[]): R[];
+  transaction<T>(fn: () => T): T;
+}
+```
+
+- **Web:** `sql.js` (WASM) is what the browser [Demo](../../apps/simplysync-docs)
+  uses — see `apps/simplysync-docs/playground/sql-driver.ts`.
+- **React Native:** `expo-sqlite` — see `apps/simplysync-expo`.
+
+**`SecureStorage`** — stores the recovery phrase in the OS secret store:
+
+```ts
+interface SecureStorage {
+  getItem(key: string): Promise<string | null> | string | null;
+  setItem(key: string, value: string): Promise<void> | void;
+  removeItem(key: string): Promise<void> | void;
+}
+```
+
+- **React Native:** `expo-secure-store`.
+- **Web:** a password-derived key or a platform credential store. Avoid
+  `localStorage` for anything beyond a demo.
+
+## 9. Importing legacy data
+
+If you're migrating from a previous SQLite database with the same per-table
+layout, `importLegacy` does a one-time, best-effort import and re-emits the rows
+as sync events so they propagate to the relay:
+
+```ts
+const { imported, skipped } = await engine.importLegacy("old-db-name");
+```
+
+It's safe to call on every boot — it no-ops if the legacy DB is missing,
+incompatible, or already imported.
+
+## Engine API reference
+
+| Member | Signature | Notes |
 | --- | --- | --- |
-| `PORT` | `4100` | Listen port |
-| `MAX_EVENT_BYTES` | `262144` (256 KiB) | Max size of one envelope |
-| `MAX_OWNER_BYTES` | `1073741824` (1 GiB) | Per-owner storage quota |
-| `MAX_EVENTS_PER_PUSH` | `1000` | Max envelopes per push request |
-| `MAX_EVENTS_PER_PULL` | `5000` | Hard cap on pull page size |
-| `DEFAULT_EVENTS_PER_PULL` | `1000` | Pull page size when client omits `limit` |
-| `MAX_BLOB_BYTES` | `8388608` (8 MiB) | Max size of one uploaded blob chunk |
+| `createSync` | `(deps) => (schema, config) => SyncEngine` | Wire platform deps once, then build engines. |
+| `engine.ready` | `Promise<void>` | Resolves when the DB is open and owner loaded. |
+| `engine.insert` | `(table, values, opts?) => MutationResult` | Generates id + system columns. |
+| `engine.update` | `(table, values & { id }, opts?) => MutationResult` | Updates passed fields only. |
+| `engine.upsert` | `(table, values & { id }, opts?) => MutationResult` | Insert or update by id. |
+| `engine.createQuery` | `((db) => Compilable<O>) => Query<O>` | Build a reusable Kysely query. |
+| `engine.loadQuery` | `(query) => Promise<readonly R[]>` | One-shot async read. |
+| `engine.getQueryRows` | `(query) => readonly R[]` | Cached snapshot (sync). |
+| `engine.subscribeQuery` | `(query) => (listener) => unsubscribe` | Low-level reactive primitive (`useQuery` wraps it). |
+| `engine.appOwner` | `Promise<AppOwner \| null>` | `{ id, mnemonic, writeKey }`. |
+| `engine.restoreAppOwner` | `(mnemonic, { force? }) => Promise<void>` | Restore from a recovery phrase. |
+| `engine.resetAppOwner` | `() => Promise<void>` | New owner, wipes local data. |
+| `engine.setTransports` | `(transports) => void` | Set relays; triggers sync + polling. |
+| `engine.sync` | `() => Promise<void>` | Push outbox, pull + apply. |
+| `engine.getSyncState` / `subscribeSyncState` | — | Backing store for `useSyncState`. |
+| `engine.getError` / `subscribeError` | — | Backing store for `useSyncError`. |
+| `engine.importLegacy` | `(name) => Promise<{ imported, skipped }>` | One-time legacy row import. |
 
-The per-owner quota (`MAX_OWNER_BYTES`) counts blob chunk bytes too, so 1 GiB is
-shared across structured events and image chunks. Because chunks are stored as
-binary BLOBs (not base64), 1 GiB of quota holds ≈1 GiB of real data.
-
-Sizing for a large (≈500k-record) profile:
-
-```sh
-MAX_OWNER_BYTES=1073741824 \
-MAX_EVENTS_PER_PUSH=1000 \
-MAX_EVENTS_PER_PULL=5000 \
-DEFAULT_EVENTS_PER_PULL=1000 \
-bun run simplysync:relay
-```
-
-The relay stores data in `apps/simplysync-relay/data/relay.db`. Back that file
-up to back up all owners. There's no vendor lock-in — any host that runs Bun (or
-a port of the ~300-line server) works.
-
-## 7. Try it end to end
-
-```sh
-# One-shot: starts a relay, runs two clients (Alice, Bob), syncs them, exits
-bun run simplysync:demo
-
-# Lazy encrypted image sync across two devices (upload, manifest-only sync, lazy read)
-bun run simplysync:blob-demo
-
-# Or run the pieces manually
-bun run simplysync:relay         # terminal 1
-bun run simplysync:client-demo   # terminal 2
-
-# Native Expo demo (needs a relay running)
-bun run simplysync:expo:ios
-```
-
-Restore a second client from a recovery phrase to watch sync rebuild state:
-
-```sh
-bun run --cwd apps/simplysync-example start init  --client bob --recovery-key "<sf1_… or 24-word phrase>"
-bun run --cwd apps/simplysync-example start sync  --client bob
-bun run --cwd apps/simplysync-example start list  --client bob
-```
-
-## API reference (core)
-
-### Identity
+### React bindings
 
 | Export | Signature | Notes |
 | --- | --- | --- |
-| `createRecoveryKey` | `() => Promise<string>` | New native `sf1_` key (32 bytes). |
-| `createMnemonic` | `() => string` | New 24-word BIP39 phrase. |
-| `deriveIdentity` | `(recoveryKey: string) => Promise<LocalFirstIdentity>` | Accepts `sf1_` key **or** mnemonic (auto-detected). |
-| `deriveIdentityFromMnemonic` | `(mnemonic: string) => Promise<LocalFirstIdentity>` | Forces SLIP-21 derivation from a BIP39 mnemonic. Throws on invalid phrase. |
-| `isRecoveryMnemonic` | `(value: string) => boolean` | True for a valid BIP39 phrase. |
-| `normalizeMnemonic` | `(mnemonic: string) => string` | Trim, lowercase, collapse whitespace. |
-| `normalizeRecoveryKey` | `(recoveryKey: string) => string` | Trim an `sf1_` key. |
+| `SyncProvider` | `({ value, children })` | Provides the engine to the tree. |
+| `useSync<S>` | `() => SyncEngine<S>` | The engine; throws outside a provider. |
+| `useQuery` | `(query) => readonly R[]` | Reactive rows. |
+| `useSyncState` | `() => SyncState` | Reactive sync status. |
+| `useSyncError` | `() => SyncError \| null` | Reactive last error. |
+| `createUseSync` | `(engine) => () => mutations` | Hook bound to one engine's mutations + owner helpers. |
 
-### Devices & clocks
-
-| Export | Signature | Notes |
-| --- | --- | --- |
-| `createDeviceId` | `() => Promise<string>` | Random per-install id. Persist it. |
-| `createHlc` | `(deviceId, now?, counter?) => string` | Build an HLC string. |
-| `compareHlc` | `(left: string \| null, right: string) => number` | Order two HLCs. |
-
-### Crypto envelope
-
-| Export | Signature | Notes |
-| --- | --- | --- |
-| `encryptPayload` | `(identity, { eventId, deviceId, createdAt? }, payload) => Promise<SyncEnvelope>` | AES-GCM encrypt; envelope header is authenticated. |
-| `decryptEnvelope` | `(identity, envelope) => Promise<SyncPayload<T>>` | Verifies the envelope belongs to this owner. |
-| `sha256Base64Url` | `(value: string) => Promise<string>` | Used by the relay to hash the auth token. |
-| `sha256Base64UrlBytes` | `(bytes: Uint8Array) => Promise<string>` | Content hash of raw bytes. |
-| `base64UrlEncode` / `base64UrlDecode` | `(bytes) ↔ (string)` | URL-safe, unpadded. |
-
-### Binary blobs
-
-| Export | Signature | Notes |
-| --- | --- | --- |
-| `encryptBlob` | `(identity, data: Uint8Array, { mimeType, chunkSize?, blobId? }) => Promise<EncryptedBlob>` | Chunk + encrypt; returns manifest + uploadable chunks. |
-| `decryptBlob` | `(identity, manifest, storedChunks: Uint8Array[]) => Promise<Uint8Array>` | Reassemble; verifies every chunk hash and the whole-blob hash. |
-| `decryptBlobChunk` | `(identity, manifest, index, storedBytes) => Promise<Uint8Array>` | Single chunk (streaming/lazy); verifies hash first. |
-| `createBlobId` | `() => Promise<string>` | Random blob id. |
-| `DEFAULT_BLOB_CHUNK_BYTES` | `number` | 256 KiB plaintext per chunk. |
-
-### Types
+### Key types
 
 | Type | Shape |
 | --- | --- |
-| `LocalFirstIdentity` | `{ recoveryKey, ownerId, relayAuth, dataKey, source, mnemonic? }` |
-| `IdentitySource` | `"recoveryKey" \| "mnemonic"` |
-| `SyncEnvelope` | `{ version, ownerId, eventId, deviceId, nonce, ciphertext, createdAt }` |
-| `SyncPayload<T>` | `{ schemaVersion, table, op: "upsert" \| "delete", rowId, hlc, value: T }` |
-| `BlobManifest` | `{ version, ownerId, blobId, mimeType, byteSize, chunkSize, chunks, sha256, createdAt }` |
-| `BlobChunkRef` | `{ hash, size, plaintextSize }` |
-| `EncryptedBlob` | `{ manifest, chunks: EncryptedBlobChunk[] }` |
-| `EncryptedBlobChunk` | `{ hash, bytes: Uint8Array }` |
+| `MutationResult` | `{ ok: true, value: { id } } \| { ok: false, error: { message } }` |
+| `AppOwner` | `{ id, mnemonic, writeKey }` |
+| `Transport` | `{ type: "Http" \| "WebSocket", url }` |
+| `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, indexes? }` |
+| `SyncState` | `Initial \| IsSyncing \| IsSynced{lastSyncedAt} \| IsNotSynced{error?,status?,terminal?}` |
+| `Query<R>` | `{ sql, parameters, Row }` (the `Row` field is a phantom type carrier) |
 
 ## Common pitfalls
 
 - **Calling crypto before polyfills load (RN).** Import your crypto setup first
-  (`index.js` → `crypto-setup.js`) or `deriveIdentity` throws "WebCrypto is
-  required".
-- **Not deduping on pull.** Without a `sync_seen` set you'll re-apply events;
-  applies are idempotent under LWW but you waste work. Always dedupe by
-  `eventId`.
-- **Non-monotonic HLCs.** Persist the last `(time, counter)` and bump the
-  counter within the same millisecond, or concurrent writes can tie.
-- **Hard-deleting rows.** Use soft deletes (a `deletedAtHlc`) so a delete can
-  lose to a later edit and so other devices learn about the deletion.
-- **Trusting the relay.** It can withhold or reorder events (availability), but
-  cannot read or forge payloads. Design for "eventually consistent", not
-  "transactional".
+  (`index.js` → `crypto-setup.js`) or engine boot throws "WebCrypto is required".
+- **Forgetting to filter `isDeleted`.** Soft-deleted rows stay in the table; add
+  `.where("isDeleted", "=", 0)` to every query that should hide them.
+- **Hard-deleting rows.** Use soft deletes so a delete can lose to a later edit
+  and so other devices learn about the deletion.
+- **Expecting field-level merges.** Conflicts resolve row-level last-writer-wins;
+  two offline edits to different fields of one row keep one row wholesale.
+- **Treating the relay as authoritative.** It can withhold or reorder events
+  (availability), but cannot read or forge payloads. Design for eventual
+  consistency.

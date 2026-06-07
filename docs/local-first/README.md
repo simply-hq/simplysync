@@ -1,53 +1,122 @@
-# SimplySync Docs
+# What is SimplySync?
 
-SimplySync is a small, app-owned local-first platform for building apps where
-users own their data. Offline-first on SQLite, end-to-end encrypted by
-default, sync via self-hostable or cloud relays, no vendor lock-in.
+A small, app-owned **local-first sync engine**. Your app writes to a local SQLite
+database first — instant, fully offline-capable — and those writes sync between a
+user's devices through a relay that only ever sees ciphertext.
 
-**Open source, MIT-licensed — clone it and use it as you see fit.** It's built
-to be lifted into your own local-first apps. The point of open-sourcing it is
-trust: you don't have to take the "local-first, end-to-end encrypted" claim on
-faith. **[SECURITY.md](../../SECURITY.md)** walks the exact source files that
-enforce it, and you can [run your own relay](./self-hosting.md) so you depend on
-no one.
+> Think of it like **iCloud or Google Drive for your app's data — except the
+> server can't read any of it.**
 
-## Start here
+Open source and MIT-licensed: **clone it, [run your own relay](./self-hosting.md),
+and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
+**[SECURITY.md](../../SECURITY.md)** walks the exact source that enforces it.
 
-- **[User Guide](./guide.md)** — for app developers building on
-  `@simplysync/protocol`: identity & recovery keys (incl. BIP39 mnemonics),
-  writing data, syncing, running a relay, and the core API reference.
-- **[Architecture & Contributor Guide](./architecture.md)** — for people
-  working on the library: cryptographic design, the envelope format, the sync
-  HTTP protocol, the relay's storage and threat model, repo layout, and how to
-  build, test, and extend it.
-- **[Self-Hosting a Sync Server](./self-hosting.md)** — for end users (and the
-  developers documenting it): run your own relay via Docker and point the app at
-  it over Tailscale, Caddy, Cloudflare Tunnel, or LAN.
-- **[Security & Threat Model](../../SECURITY.md)** — what a relay can and cannot
-  see, with links to the exact source that enforces each guarantee. Start here
-  if you're evaluating whether the local-first claim holds up.
+```
+  your app                         relay (dumb, opaque store — optional)
+┌──────────────┐  encrypted      ┌───────────────────────────────────┐
+│ local SQLite │ ── push ──────▶ │ events keyed by (ownerId, eventId) │
+│ (source of   │ ◀── pull ────── │ stores ciphertext only            │
+│  truth)      │   (cursor)      └───────────────────────────────────┘
+└──────────────┘
+```
 
-## TL;DR
+## Use it when
+
+- You're building an **offline-first app where the user owns their data** — notes, journaling, finance/health trackers, personal tools.
+- It's **single-user across their own devices** (sync a phone, laptop, tablet).
+- **Privacy matters** and you'd rather *not be able* to read user data at all.
+- You want **no backend to run** beyond a tiny, self-hostable relay.
+
+## Don't use it when
+
+- You need **real-time collaboration or field-level merges** → use a CRDT (Yjs, Automerge).
+- You need **multi-user sharing, permissions, or teams** → there's one owner per client.
+- You need **server-side queries, search, or aggregation** → the relay can't read your data.
+- The **server must validate or act on data** (payments, authoritative game state).
+- You need **strong consistency or cross-device transactions** → sync is eventually consistent.
+
+## Why use this
+
+- **Local-first & fast** — writes hit local SQLite; the network is never on the critical path.
+- **End-to-end encrypted** — AES-256-GCM on-device; the relay only ever holds ciphertext + routing metadata.
+- **No lock-in** — the relay is a few hundred lines that run anywhere (Go / Bun / Cloudflare) over plain SQLite.
+- **No accounts to phish** — identity derives from one secret (a recovery key or a BIP39 phrase).
+- **A real database** — typed schema, [Kysely](https://kysely.dev) queries (joins, filters, ordering), and a reactive `useQuery` for React.
+- **Scales past memory** — keyset-paginated, resumable sync; images sync as tiny manifests with lazily fetched encrypted chunks.
+
+## Good to know
+
+- **Conflicts resolve row-level last-writer-wins** (by an HLC), not field-level.
+- **Capability auth, not identity** — anyone with the relay-auth token can sync that owner; no login, no key rotation.
+- **Availability, not confidentiality** — a bad relay can stall or reorder sync, never read or forge data ([threat model](./sync.md#threat-model)).
+- **Per-owner storage quota** (default 1 GiB) — at the cap the relay returns `413`; reclaim space with compaction or raise it on your own relay ([managing storage](./sync.md#relay-configuration)).
+- **Lose the secret, lose the data** — the recovery phrase is the only key.
+
+## Read next
+
+1. **[Client API](./guide.md)** — schema, mutations, reactive queries, React hooks, identity & relays.
+2. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
+3. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
+4. **[Demo](./demo.html)** — a two-device sync demo in your browser.
+
+Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat model](../../SECURITY.md)**.
+
+## Try it in 30 seconds
 
 ```sh
 bun install
-bun run simplysync:demo   # spins up a relay, syncs two clients, prints the
-                           # decrypted state on each + a sample opaque envelope
+bun run demo                 # CLI: relay + two clients sync, one shot
+
+# Or the browser demo, two devices side by side:
+bun run relay:bun            # terminal 1 — relay on :4100
+bun run docs:dev             # terminal 2 — docs + demo on :4200
 ```
 
-## Where the code lives
+## Components
 
-| Path | What it is |
+**On the device** (the part you ship in your app):
+
+| Package | What it is |
 | --- | --- |
-| `packages/simplysync-protocol` | The library: identity, key derivation, AES-GCM envelopes, HLC, encoding. |
-| `packages/simplysync-engine` | Schema + Kysely query layer + the sync engine (where payloads get encrypted/decrypted). |
-| `packages/simplysync-react` | React hooks for binding the engine into a UI. |
-| `apps/relay-go` | Canonical self-hostable relay: Go + SQLite, stores only ciphertext. See its [README](../../apps/relay-go/README.md). |
-| `apps/simplysync-relay` | Bun + SQLite relay (reference implementation, wire-identical to the Go relay). |
-| `apps/relay-cloudflare` | Serverless relay on Cloudflare Workers + D1 + R2, hardened against wallet-DDoS. See its [README](../../apps/relay-cloudflare/README.md). |
-| `apps/simplysync-example` | CLI reference client + one-shot two-client sync demo. |
-| `apps/simplysync-expo` | Native Expo demo (`expo-sqlite` + `expo-secure-store`). |
+| `@simplysync/engine` | **The client API** — typed schema, local SQLite store, Kysely queries, mutations, and the sync loop. |
+| `@simplysync/react` | React bindings: `SyncProvider`, `useQuery`, `useSyncState`. |
+| `@simplysync/protocol` | The crypto/wire primitives the engine builds on: identity, key derivation, AES-GCM envelopes, HLC, blobs. |
 
-Each app also has its own README with run instructions. The package-level
-overview lives in
-[`packages/simplysync-protocol/README.md`](../../packages/simplysync-protocol/README.md).
+**The relay — optional.** Without one, the app is purely local-first and every
+edit stays on-device. Add one to sync across devices. It's a dumb, opaque event
+store (ciphertext only), and all three implementations are wire-identical — pick
+one or [self-host](./self-hosting.md):
+
+| Relay | Stack |
+| --- | --- |
+| `apps/relay-go` | Go + SQLite — the canonical implementation. |
+| `apps/simplysync-relay` | Bun + SQLite — reference implementation. |
+| `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
+
+**Reference clients:** `apps/simplysync-example` (CLI) and `apps/simplysync-expo`
+(native Expo) — read and copy them.
+
+## Credits & prior art
+
+SimplySync is heavily inspired by **[Evolu](https://evolu.dev)**. The typed
+schema, [Kysely](https://kysely.dev) queries, BIP39-mnemonic identity,
+HLC-timestamped changes, and the reactive `useQuery` all follow trails Evolu
+blazed. It's a mature, excellent project — **if you're choosing a local-first
+stack, evaluate Evolu first.**
+
+We built our own because we wanted a few specific things:
+
+- **A tiny core you read and copy, not a platform you import.** The protocol is a
+  few hundred lines over WebCrypto + `@scure/bip39`; the client is meant to be
+  copied into your app and owned, so you can audit every line. (Evolu is a fuller,
+  more featureful platform with a larger surface.)
+- **A deliberately dumb relay over plain HTTP** (keyset-paginated pull + cursor),
+  shipped as three wire-identical implementations — Go, Bun, and Cloudflare — so
+  you can self-host on whatever you already run. (Evolu syncs over WebSocket;
+  also self-hostable, just more to reimplement.)
+- **First-class encrypted binary blobs** — lazy, content-addressed, chunked — for
+  image-heavy apps.
+
+The trade-off we accepted: **row-level last-writer-wins** instead of Evolu's finer
+**cell-level** merge. If two devices must edit *different fields* of the same row
+offline and have both survive, **prefer Evolu.**

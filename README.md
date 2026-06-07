@@ -71,10 +71,19 @@ reference client, and the [User Guide](docs/local-first/guide.md).
 
 ## Docs
 
-- **[User Guide](docs/local-first/guide.md)** — building on the library
-- **[Architecture & Wire Spec](docs/local-first/architecture.md)** — crypto, envelope, sync protocol, storage
-- **[Self-Hosting a Relay](docs/local-first/self-hosting.md)** — run your own over Docker / Tailscale / Caddy / Cloudflare Tunnel / LAN
-- **[Security & Threat Model](SECURITY.md)** — what a relay can and cannot see, with source citations
+The docs are split into clear sections (and render as a small static site —
+`bun run docs:dev`):
+
+1. **[What & why](docs/local-first/README.md)** — what this is, why use it, and its limitations
+2. **[Client API](docs/local-first/guide.md)** — schema, mutations, reactive queries, React hooks, identity & relays
+3. **[How it works](docs/local-first/architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths
+4. **[Sync & the relay](docs/local-first/sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model
+5. **Demo** — a two-device browser sync demo (`bun run docs:dev`, then open the Demo page)
+
+Also: **[Self-Hosting a Relay](docs/local-first/self-hosting.md)** (Docker /
+Tailscale / Caddy / Cloudflare Tunnel / LAN) and the
+**[Security & Threat Model](SECURITY.md)** (what a relay can and cannot see, with
+source citations).
 
 ## License
 

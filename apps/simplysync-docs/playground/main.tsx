@@ -1,4 +1,4 @@
-// The SimplySync browser playground — a comprehensive, two-device demo.
+// The SimplySync browser demo — a comprehensive, two-device sync demo.
 //
 // Two engines ("Alice" and "Bob") share one owner and sync through a relay you
 // run locally (`bun run relay:bun`). Everything runs on-device: local SQLite
@@ -525,7 +525,7 @@ function App({
   return (
     <>
       <header className="pg-header">
-        <h1>SimplySync Playground</h1>
+        <h1>SimplySync Demo</h1>
         <p>
           Two devices, one owner, syncing through a relay — entirely in your
           browser. Edit on one side, hit “Sync now” (with a relay running), and

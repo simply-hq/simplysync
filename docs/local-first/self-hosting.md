@@ -194,4 +194,4 @@ The server stores only:
 A malicious or compromised server can refuse to sync or drop events, but it
 **cannot read or forge your data**. Running your own server simply means *you*
 are the one who can't read it either — it's just encrypted storage you control.
-See [Architecture](./architecture.md) for the full cryptographic design.
+See [Sync & the relay](./sync.md) for the full cryptographic design.
