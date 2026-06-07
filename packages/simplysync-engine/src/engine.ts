@@ -155,6 +155,14 @@ export const createSync =
       resetAppOwner() {
         return lifecycle.resetAppOwner(instance.reloadApp);
       },
+      async exportDatabase(passphrase) {
+        await ready;
+        return lifecycle.exportDatabase(passphrase);
+      },
+      async importDatabase(envelope, passphrase) {
+        await ready;
+        return lifecycle.importDatabase(envelope, passphrase, instance.reloadApp);
+      },
       subscribeError(listener) {
         state.errorListeners.add(listener);
         return () => state.errorListeners.delete(listener);

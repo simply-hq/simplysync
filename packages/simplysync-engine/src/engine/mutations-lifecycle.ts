@@ -1,10 +1,14 @@
 import {
   base64UrlEncode,
   createMnemonic,
+  decryptStringWithPassphrase,
   deriveIdentity,
   encryptPayload,
+  encryptStringWithPassphrase,
+  InvalidBackupEnvelopeError,
   isRecoveryMnemonic,
   normalizeMnemonic,
+  type EncryptedEnvelopeV1,
   type LocalFirstIdentity,
   type SyncPayload,
 } from "@simplysync/protocol";
@@ -14,6 +18,7 @@ import {
   type SqliteBoolean,
 } from "../type";
 import type {
+  DbSnapshot,
   MutationOptions,
   MutationResult,
   SchemaDefinition,
@@ -392,5 +397,106 @@ export function createLifecycle(
     reloadApp();
   };
 
-  return { init, importLegacy, restoreAppOwner, resetAppOwner };
+  const kdf = deps.deriveKeyFromPassphrase;
+
+  // Build a passphrase-encrypted, portable snapshot of the whole database
+  // (every table + the recovery phrase + sync cursors). Returns the envelope;
+  // file I/O (download / share sheet) stays with the caller.
+  const exportDatabase = async (
+    passphrase: string,
+  ): Promise<EncryptedEnvelopeV1> => {
+    const owner = state.appOwnerValue;
+    if (!owner?.mnemonic) {
+      throw new Error(
+        "The recovery phrase isn't ready yet. Try again in a moment.",
+      );
+    }
+    const snapshot = store.exportSnapshot(owner.mnemonic);
+    return encryptStringWithPassphrase(passphrase, JSON.stringify(snapshot), {
+      kdf,
+    });
+  };
+
+  const isDbSnapshot = (value: unknown): value is DbSnapshot => {
+    if (!value || typeof value !== "object") return false;
+    const s = value as Partial<DbSnapshot>;
+    return (
+      s.format === "simplysync-db-snapshot" &&
+      s.version === 1 &&
+      typeof s.mnemonic === "string" &&
+      typeof s.tables === "object" &&
+      s.tables !== null &&
+      typeof s.meta === "object" &&
+      s.meta !== null
+    );
+  };
+
+  // Adopt the backup's identity and replace all local data with the snapshot,
+  // then reload. The encrypted file proves ownership, so — unlike
+  // restoreAppOwner — no relay is consulted. Ordering (persist phrase -> wipe +
+  // write rows + restore meta -> swap identity -> reload) means there's no
+  // post-reload re-import dance: the data is already in place.
+  const restoreSnapshot = async (
+    snapshot: DbSnapshot,
+    reloadApp: () => void,
+  ): Promise<void> => {
+    const normalized = normalizeMnemonic(snapshot.mnemonic);
+    if (!isRecoveryMnemonic(normalized)) {
+      throw new Error("Backup contains an invalid recovery phrase.");
+    }
+    const derived = await deriveIdentity(normalized);
+    await deps.secureStorage.setItem(mnemonicKey, normalized);
+    store.importSnapshot({ ...snapshot, mnemonic: normalized });
+    state.identity = derived;
+    state.appOwnerValue = {
+      id: derived.ownerId,
+      mnemonic: normalized,
+      writeKey: derived.relayAuth,
+    };
+    state.appOwnerPromise = Promise.resolve(state.appOwnerValue);
+    // Re-seed the in-memory HLC high-water mark from the restored metadata so
+    // the clock stays monotonic (see createClock).
+    state.hlcTime = Number(store.getMeta("hlc:time") ?? "0") || 0;
+    state.hlcCounter = Number(store.getMeta("hlc:counter") ?? "0") || 0;
+    queryCache.refreshQueries(Object.keys(schema));
+    if (state.transports.length > 0) void relay.sync().catch(() => undefined);
+    reloadApp();
+  };
+
+  const importDatabase = async (
+    envelope: EncryptedEnvelopeV1 | string,
+    passphrase: string,
+    reloadApp: () => void,
+  ): Promise<void> => {
+    let parsed: unknown = envelope;
+    if (typeof parsed === "string") {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        throw new InvalidBackupEnvelopeError();
+      }
+    }
+    const json = await decryptStringWithPassphrase(passphrase, parsed, { kdf });
+    let body: unknown;
+    try {
+      body = JSON.parse(json);
+    } catch {
+      throw new InvalidBackupEnvelopeError("Backup contents are corrupted.");
+    }
+    if (!isDbSnapshot(body)) {
+      throw new InvalidBackupEnvelopeError(
+        "Backup contents are not recognized.",
+      );
+    }
+    await restoreSnapshot(body, reloadApp);
+  };
+
+  return {
+    init,
+    importLegacy,
+    restoreAppOwner,
+    resetAppOwner,
+    exportDatabase,
+    importDatabase,
+  };
 }

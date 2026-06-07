@@ -33,6 +33,7 @@ import type {
 // the public API: identity derivation, envelope encrypt/decrypt, the hybrid
 // logical clock, and blob encryption.
 export * from "./types";
+export * from "./passphrase";
 export { base64UrlEncode, base64UrlDecode } from "./crypto";
 
 const RECOVERY_KEY_PREFIX = "sf1_";

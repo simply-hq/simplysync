@@ -4,6 +4,7 @@
 // in ./engine.
 
 import { type Kysely, type Compilable } from "kysely";
+import { type EncryptedEnvelopeV1 } from "@simplysync/protocol";
 import { type Id, type SqliteBoolean, type Type } from "./type";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,37 @@ export interface SyncEngineDeps {
    * (e.g. expo-updates `reloadAsync`) since there's no `location`.
    */
   readonly reloadApp?: () => void | Promise<void>;
+  /**
+   * Override the passphrase key-derivation used by exportDatabase /
+   * importDatabase. The default uses WebCrypto PBKDF2 (browsers / Bun / Node).
+   * React Native's subtle PBKDF2 is unreliable, so RN apps should inject a
+   * native one (e.g. react-native-quick-crypto's `pbkdf2Sync`). It must honour
+   * the given salt + iterations and return `keyBytes` bytes.
+   */
+  readonly deriveKeyFromPassphrase?: (
+    passphrase: string,
+    salt: Uint8Array,
+    iterations: number,
+    keyBytes: number,
+  ) => Uint8Array | Promise<Uint8Array>;
+}
+
+/**
+ * A portable, driver-agnostic snapshot of the whole local database: the
+ * recovery phrase (so the data decrypts on a new device), every row of every
+ * table (including soft-deleted rows and the system columns), and the sync
+ * metadata (HLC high-water mark + per-relay pull cursors). Produced by
+ * `exportDatabase` and consumed by `importDatabase`.
+ */
+export interface DbSnapshot {
+  readonly format: "simplysync-db-snapshot";
+  readonly version: 1;
+  readonly exportedAt: string;
+  /** Recovery phrase — the identity root needed to decrypt the data. */
+  readonly mnemonic: string;
+  readonly tables: Record<string, Record<string, unknown>[]>;
+  /** Selected `_sync_meta` keys: `hlc:time`, `hlc:counter`, `cursor:*`. */
+  readonly meta: Record<string, string>;
 }
 
 export interface Transport {
@@ -200,6 +232,23 @@ export interface SyncEngine<S extends SchemaDefinition> {
     options?: { force?: boolean },
   ): Promise<void>;
   resetAppOwner(): Promise<void>;
+  /**
+   * Build a passphrase-encrypted, portable full-database snapshot (every table
+   * + the recovery phrase + sync cursors). The returned envelope is the file
+   * the caller writes or shares — for users who switch their main device
+   * without relying on a relay. Pair with {@link importDatabase}.
+   */
+  exportDatabase(passphrase: string): Promise<EncryptedEnvelopeV1>;
+  /**
+   * Restore a snapshot produced by {@link exportDatabase}: decrypt, adopt the
+   * backup's identity (recovery phrase), REPLACE all local data, and reload.
+   * Throws on a wrong passphrase or an unrecognized file. The encrypted file
+   * itself proves ownership, so no relay is consulted.
+   */
+  importDatabase(
+    envelope: EncryptedEnvelopeV1 | string,
+    passphrase: string,
+  ): Promise<void>;
   subscribeError(listener: () => void): () => void;
   getError(): SyncError | null;
   subscribeSyncState(listener: () => void): () => void;

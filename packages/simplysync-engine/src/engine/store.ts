@@ -1,10 +1,12 @@
 import { createHlc } from "@simplysync/protocol";
 import type {
+  DbSnapshot,
   IndexCreate,
   SchemaDefinition,
   SyncEngineConfig,
 } from "../engine-types";
 import {
+  LEGACY_IMPORT_VERSION,
   SYNC_META_TABLE,
   SYNC_OUTBOX_TABLE,
   SYNC_SEEN_TABLE,
@@ -139,7 +141,70 @@ export function createStore(
     return { row, error: null };
   };
 
-  return { ensureSchema, getMeta, setMeta, wipeLocalData, writeRow, coerceValues };
+  // A driver-agnostic full snapshot: every row of every schema table (including
+  // soft-deleted rows + system columns) and the sync metadata worth preserving
+  // across a device switch — the HLC high-water mark (so the clock can't
+  // regress) and per-relay pull cursors. The recovery phrase is supplied by the
+  // caller (the store has no identity).
+  const exportSnapshot = (mnemonic: string): DbSnapshot => {
+    const { driver } = state;
+    const tables: Record<string, Record<string, unknown>[]> = {};
+    const meta: Record<string, string> = {};
+    if (driver) {
+      for (const table of Object.keys(schema)) {
+        tables[table] = driver.select<Record<string, unknown>>(
+          `select * from "${table}"`,
+        );
+      }
+      // Everything except the legacy-import marker, which is owned by the
+      // restore flow (see importSnapshot) — not carried from the source device.
+      const metaRows = driver.select<{ key: string; value: string }>(
+        `select key, value from "${SYNC_META_TABLE}" where key != ?`,
+        ["legacyImported"],
+      );
+      for (const { key, value } of metaRows) meta[key] = value;
+    }
+    return {
+      format: "simplysync-db-snapshot",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      mnemonic,
+      tables,
+      meta,
+    };
+  };
+
+  // Replace all local data with a snapshot. Atomic: wipe, re-write every row
+  // verbatim (preserving each row's `updatedAt` HLC so LWW stays correct),
+  // restore the sync metadata, and re-assert the legacy-import marker so the
+  // one-time importer doesn't resurrect a wiped legacy db on the next boot
+  // (mirrors switchOwner). Identity is handled by the caller.
+  const importSnapshot = (snapshot: DbSnapshot): void => {
+    const { driver } = state;
+    if (!driver) return;
+    driver.transaction(() => {
+      wipeLocalData();
+      for (const [table, rows] of Object.entries(snapshot.tables)) {
+        if (!schema[table]) continue; // ignore tables not in the current schema
+        for (const row of rows) writeRow(table, row);
+      }
+      for (const [key, value] of Object.entries(snapshot.meta)) {
+        setMeta(key, value);
+      }
+      setMeta("legacyImported", String(LEGACY_IMPORT_VERSION));
+    });
+  };
+
+  return {
+    ensureSchema,
+    getMeta,
+    setMeta,
+    wipeLocalData,
+    writeRow,
+    coerceValues,
+    exportSnapshot,
+    importSnapshot,
+  };
 }
 
 export type Clock = ReturnType<typeof createClock>;
