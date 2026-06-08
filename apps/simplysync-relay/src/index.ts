@@ -533,7 +533,11 @@ async function handlePull(request: Request, url: URL): Promise<Response> {
   const events = rows.map((row) => JSON.parse(row.envelope_json) as SyncEnvelope);
   const nextCursor = String(rows.at(-1)?.seq ?? afterSeq);
 
-  return json({ events, nextCursor });
+  // Pull is the one large response (a full page of envelopes), so it's the only
+  // one worth compressing. The ciphertext is incompressible, but gzip still
+  // recovers most of the base64 inflation plus the repeated JSON scaffolding
+  // (field names, ownerId/deviceId, ISO timestamps) on every event.
+  return jsonMaybeGzip(request, { events, nextCursor });
 }
 
 async function handleUsage(request: Request, url: URL): Promise<Response> {
@@ -718,6 +722,39 @@ function getBearerToken(request: Request): string | null {
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: corsHeaders() });
+}
+
+// Below this, gzip's header/CPU overhead isn't worth it — small responses go
+// out as-is. (Bun.gzipSync handles the compression; the client's fetch sends
+// Accept-Encoding and transparently inflates, so no client change is needed.)
+const GZIP_MIN_BYTES = 1024;
+
+function acceptsGzip(request: Request): boolean {
+  return /\bgzip\b/iu.test(request.headers.get("accept-encoding") ?? "");
+}
+
+// Like json(), but gzips the body when the client advertises gzip support and
+// the payload is large enough to benefit. Vary: Accept-Encoding keeps any
+// intermediary cache from serving a gzipped body to a client that can't decode.
+function jsonMaybeGzip(
+  request: Request,
+  body: unknown,
+  status = 200,
+): Response {
+  const text = JSON.stringify(body);
+  const headers: Record<string, string> = {
+    ...(corsHeaders() as Record<string, string>),
+    "Content-Type": "application/json; charset=utf-8",
+    Vary: "Accept-Encoding",
+  };
+  if (text.length >= GZIP_MIN_BYTES && acceptsGzip(request)) {
+    headers["Content-Encoding"] = "gzip";
+    return new Response(Bun.gzipSync(new TextEncoder().encode(text)), {
+      status,
+      headers,
+    });
+  }
+  return new Response(text, { status, headers });
 }
 
 function corsHeaders(): HeadersInit {

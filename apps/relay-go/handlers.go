@@ -1,12 +1,17 @@
 package main
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 )
+
+// Below this, gzip's header/CPU overhead isn't worth it — small responses go
+// out uncompressed.
+const gzipMinBytes = 1024
 
 // SyncEnvelope is the opaque, end-to-end-encrypted event the relay stores. It
 // never decrypts ciphertext; streamId (plaintext, pseudonymous) only groups
@@ -148,7 +153,10 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 	if events == nil {
 		events = []json.RawMessage{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events, "nextCursor": cursor})
+	// Pull is the one large response; gzip it when the client supports it. The
+	// ciphertext won't shrink, but the base64 inflation + repeated JSON
+	// scaffolding across a full page of envelopes does.
+	writeJSONMaybeGzip(w, r, http.StatusOK, map[string]any{"events": events, "nextCursor": cursor})
 }
 
 func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {
@@ -346,6 +354,34 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+func acceptsGzip(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")
+}
+
+// Like writeJSON, but gzips the body when the client advertises gzip support
+// and the payload is large enough to benefit. Vary: Accept-Encoding keeps a
+// cache from serving a gzipped body to a client that can't decode it.
+func writeJSONMaybeGzip(w http.ResponseWriter, r *http.Request, status int, body any) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errBody("Internal error"))
+		return
+	}
+	writeCORS(w)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Vary", "Accept-Encoding")
+	if len(data) >= gzipMinBytes && acceptsGzip(r) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(status)
+		gz := gzip.NewWriter(w)
+		_, _ = gz.Write(data)
+		_ = gz.Close()
+		return
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(data)
 }
 
 func errBody(msg string) map[string]any { return map[string]any{"error": msg} }

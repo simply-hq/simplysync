@@ -299,7 +299,10 @@ async function handlePull(
     (row) => JSON.parse(row.envelope_json) as SyncEnvelope,
   );
   const nextCursor = String(rows.at(-1)?.seq ?? afterSeq);
-  return json({ events, nextCursor });
+  // Pull is the one large response; gzip it when the client supports it. The
+  // ciphertext won't shrink, but the base64 inflation + repeated JSON
+  // scaffolding across a full page of envelopes does.
+  return jsonMaybeGzip(request, { events, nextCursor });
 }
 
 async function handleUsage(
@@ -642,6 +645,43 @@ function clampPositiveInteger(
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: corsHeaders() });
+}
+
+// Below this, gzip's header/CPU overhead isn't worth it — small responses go
+// out as-is. The client's fetch sends Accept-Encoding and inflates the body
+// transparently, so no client change is needed.
+const GZIP_MIN_BYTES = 1024;
+
+function acceptsGzip(request: Request): boolean {
+  return /\bgzip\b/iu.test(request.headers.get("accept-encoding") ?? "");
+}
+
+// Like json(), but streams the body through gzip when the client advertises
+// support and it's large enough to benefit. Vary: Accept-Encoding keeps a
+// cache from handing a gzipped body to a client that can't decode it.
+function jsonMaybeGzip(
+  request: Request,
+  body: unknown,
+  status = 200,
+): Response {
+  const text = JSON.stringify(body);
+  const headers: Record<string, string> = {
+    ...corsHeaders(),
+    "Content-Type": "application/json; charset=utf-8",
+    Vary: "Accept-Encoding",
+  };
+  if (
+    text.length >= GZIP_MIN_BYTES &&
+    acceptsGzip(request) &&
+    typeof CompressionStream !== "undefined"
+  ) {
+    headers["Content-Encoding"] = "gzip";
+    const stream = new Response(text).body!.pipeThrough(
+      new CompressionStream("gzip"),
+    );
+    return new Response(stream, { status, headers });
+  }
+  return new Response(text, { status, headers });
 }
 
 function corsHeaders(): Record<string, string> {
