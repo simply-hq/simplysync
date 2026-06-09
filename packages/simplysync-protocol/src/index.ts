@@ -33,7 +33,7 @@ import type {
 // the public API: identity derivation, envelope encrypt/decrypt, the hybrid
 // logical clock, and blob encryption.
 export * from "./types";
-export * from "./passphrase";
+export * from "./snapshot-crypto";
 export { base64UrlEncode, base64UrlDecode } from "./crypto";
 
 const RECOVERY_KEY_PREFIX = "sf1_";
@@ -47,6 +47,7 @@ const DERIVED_KEY_BYTES = 32;
 const OWNER_ID_PATH = ["SimplySync", "OwnerIdBytes"] as const;
 const ENCRYPTION_KEY_PATH = ["SimplySync", "OwnerEncryptionKey"] as const;
 const WRITE_KEY_PATH = ["SimplySync", "OwnerWriteKey"] as const;
+const BACKUP_KEY_PATH = ["SimplySync", "BackupKey"] as const;
 const WRITE_KEY_BYTES = 16;
 const MNEMONIC_STRENGTH_BITS = 256;
 
@@ -177,6 +178,26 @@ export async function deriveIdentityFromMnemonic(
     streamKey,
     source: "mnemonic",
   };
+}
+
+/**
+ * Derives a dedicated 32-byte key for encrypting a full DB backup from a
+ * recovery phrase (BIP39 mnemonic or native `sf1_` key). A distinct
+ * SLIP-21/HKDF label keeps backup ciphertext from being confused with row
+ * ciphertext. This is the key behind the default, passphrase-free
+ * `exportDatabase()` — stretching this already-high-entropy secret with PBKDF2
+ * would add nothing, so it doesn't.
+ */
+export async function deriveBackupKeyBytes(
+  recoveryKey: string,
+): Promise<Uint8Array> {
+  const trimmed = recoveryKey.trim();
+  if (!trimmed.startsWith(RECOVERY_KEY_PREFIX) && isRecoveryMnemonic(trimmed)) {
+    const entropy = mnemonicToEntropy(normalizeMnemonic(trimmed), wordlist);
+    return createSlip21(entropy, BACKUP_KEY_PATH);
+  }
+  const secret = decodeRecoveryKey(normalizeRecoveryKey(trimmed));
+  return deriveBytes(secret, "backup-key", DERIVED_KEY_BYTES);
 }
 
 export async function createDeviceId(): Promise<string> {

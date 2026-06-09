@@ -62,3 +62,9 @@ test-results/
 .claude/settings.local.json
 
 *.aab
+
+# Compiled relay-go binary (build artifact)
+apps/relay-go/simplysync-relay-go
+
+# Installed agent skills (reproducible from skills-lock.json)
+.agents/skills/

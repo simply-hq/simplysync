@@ -233,21 +233,32 @@ export interface SyncEngine<S extends SchemaDefinition> {
   ): Promise<void>;
   resetAppOwner(): Promise<void>;
   /**
-   * Build a passphrase-encrypted, portable full-database snapshot (every table
-   * + the recovery phrase + sync cursors). The returned envelope is the file
-   * the caller writes or shares — for users who switch their main device
-   * without relying on a relay. Pair with {@link importDatabase}.
+   * Build an encrypted, portable full-database snapshot (every table + the
+   * recovery phrase + sync cursors) — the file a user carries to a new main
+   * device without relying on a relay. Pair with {@link importDatabase}.
+   *
+   * By default the file is encrypted with a key derived from the owner's
+   * recovery phrase: no extra secret to manage, and restoring just requires the
+   * phrase (which the user already safeguards). Pass `{ passphrase }` for the
+   * optional mode where a separate passphrase protects the file instead — a
+   * second, independent secret that survives loss of the recovery phrase.
    */
-  exportDatabase(passphrase: string): Promise<EncryptedEnvelopeV1>;
+  exportDatabase(options?: {
+    passphrase?: string;
+  }): Promise<EncryptedEnvelopeV1>;
   /**
    * Restore a snapshot produced by {@link exportDatabase}: decrypt, adopt the
-   * backup's identity (recovery phrase), REPLACE all local data, and reload.
-   * Throws on a wrong passphrase or an unrecognized file. The encrypted file
-   * itself proves ownership, so no relay is consulted.
+   * backup's identity, REPLACE all local data, and reload. The file proves
+   * ownership, so no relay is consulted. Throws on the wrong secret or an
+   * unrecognized file.
+   *
+   * For a recovery-phrase-keyed file, pass `{ recoveryPhrase }` (defaults to the
+   * current device's phrase if it matches). For a passphrase-keyed file, pass
+   * `{ passphrase }`.
    */
   importDatabase(
     envelope: EncryptedEnvelopeV1 | string,
-    passphrase: string,
+    options?: { passphrase?: string; recoveryPhrase?: string },
   ): Promise<void>;
   subscribeError(listener: () => void): () => void;
   getError(): SyncError | null;

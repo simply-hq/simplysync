@@ -1,11 +1,15 @@
 import {
   base64UrlEncode,
   createMnemonic,
+  decryptStringWithKey,
   decryptStringWithPassphrase,
+  deriveBackupKeyBytes,
   deriveIdentity,
   encryptPayload,
+  encryptStringWithKey,
   encryptStringWithPassphrase,
   InvalidBackupEnvelopeError,
+  isEncryptedEnvelope,
   isRecoveryMnemonic,
   normalizeMnemonic,
   type EncryptedEnvelopeV1,
@@ -399,22 +403,26 @@ export function createLifecycle(
 
   const kdf = deps.deriveKeyFromPassphrase;
 
-  // Build a passphrase-encrypted, portable snapshot of the whole database
-  // (every table + the recovery phrase + sync cursors). Returns the envelope;
-  // file I/O (download / share sheet) stays with the caller.
-  const exportDatabase = async (
-    passphrase: string,
-  ): Promise<EncryptedEnvelopeV1> => {
+  // Build an encrypted, portable snapshot of the whole database (every table +
+  // the recovery phrase + sync cursors). Returns the envelope; file I/O
+  // (download / share sheet) stays with the caller. Default keying derives the
+  // file key from the owner's recovery phrase; `passphrase` opts into the
+  // separate-secret mode instead.
+  const exportDatabase = async (options?: {
+    passphrase?: string;
+  }): Promise<EncryptedEnvelopeV1> => {
     const owner = state.appOwnerValue;
     if (!owner?.mnemonic) {
       throw new Error(
         "The recovery phrase isn't ready yet. Try again in a moment.",
       );
     }
-    const snapshot = store.exportSnapshot(owner.mnemonic);
-    return encryptStringWithPassphrase(passphrase, JSON.stringify(snapshot), {
-      kdf,
-    });
+    const json = JSON.stringify(store.exportSnapshot(owner.mnemonic));
+    if (options?.passphrase) {
+      return encryptStringWithPassphrase(options.passphrase, json, { kdf });
+    }
+    const keyBytes = await deriveBackupKeyBytes(owner.mnemonic);
+    return encryptStringWithKey(keyBytes, json, { ownerId: owner.id });
   };
 
   const isDbSnapshot = (value: unknown): value is DbSnapshot => {
@@ -465,7 +473,7 @@ export function createLifecycle(
 
   const importDatabase = async (
     envelope: EncryptedEnvelopeV1 | string,
-    passphrase: string,
+    options: { passphrase?: string; recoveryPhrase?: string } | undefined,
     reloadApp: () => void,
   ): Promise<void> => {
     let parsed: unknown = envelope;
@@ -476,7 +484,36 @@ export function createLifecycle(
         throw new InvalidBackupEnvelopeError();
       }
     }
-    const json = await decryptStringWithPassphrase(passphrase, parsed, { kdf });
+    if (!isEncryptedEnvelope(parsed)) {
+      throw new InvalidBackupEnvelopeError();
+    }
+
+    let json: string;
+    if (parsed.keying === "passphrase") {
+      if (!options?.passphrase) {
+        throw new Error("This backup is passphrase-protected.");
+      }
+      json = await decryptStringWithPassphrase(options.passphrase, parsed, {
+        kdf,
+      });
+    } else {
+      const phrase = options?.recoveryPhrase ?? state.appOwnerValue?.mnemonic;
+      if (!phrase) {
+        throw new Error("This backup needs its recovery phrase to restore.");
+      }
+      const normalized = normalizeMnemonic(phrase);
+      if (!isRecoveryMnemonic(normalized)) {
+        throw new Error("Invalid recovery phrase.");
+      }
+      // Reject a wrong phrase up front (clearer than a generic decrypt failure).
+      const derived = await deriveIdentity(normalized);
+      if (derived.ownerId !== parsed.ownerId) {
+        throw new Error("This backup belongs to a different recovery phrase.");
+      }
+      const keyBytes = await deriveBackupKeyBytes(normalized);
+      json = await decryptStringWithKey(keyBytes, parsed);
+    }
+
     let body: unknown;
     try {
       body = JSON.parse(json);
