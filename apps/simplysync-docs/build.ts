@@ -32,22 +32,51 @@ const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("ss-the
 // static pages with no bundle.
 const THEME_TOGGLE = `<button class="theme-toggle" type="button" aria-label="Toggle dark mode" onclick="(function(d){var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('ss-theme',n)}catch(e){}})(document.documentElement)"><span class="t-sun" aria-hidden="true">☀</span><span class="t-moon" aria-hidden="true">☾</span></button>`;
 
+interface LangTab {
+  readonly label: string; // tab label (React / Swift / Kotlin)
+  readonly out: string; // page the tab links to
+}
+
 interface Page {
   readonly src: string; // file in docsDir
   readonly out: string; // file in dist
   readonly nav: string; // sidebar label
+  // A language switcher rendered above the prose (Client API variants share one).
+  readonly langTabs?: readonly LangTab[];
+  // Which sidebar entry to highlight; defaults to `out`. Variant pages point at
+  // their primary so the single sidebar entry stays active across the tabs.
+  readonly navActive?: string;
 }
+
+// The Client API page ships in three language variants. Only the React one sits
+// in the numbered sidebar; all three render this switcher and link to each other.
+const CLIENT_API_TABS: readonly LangTab[] = [
+  { label: "React", out: "guide.html" },
+  { label: "Swift", out: "guide-swift.html" },
+  { label: "Kotlin", out: "guide-kotlin.html" },
+];
 
 const pages: readonly Page[] = [
   { src: "README.md", out: "index.html", nav: "What & why" },
-  { src: "guide.md", out: "guide.html", nav: "Client API" },
+  { src: "guide.md", out: "guide.html", nav: "Client API", langTabs: CLIENT_API_TABS },
   { src: "architecture.md", out: "architecture.html", nav: "How it works" },
   { src: "sync.md", out: "sync.html", nav: "Sync & relay" },
+  { src: "native.md", out: "native.html", nav: "Native clients" },
 ];
+
+// Language variants of the Client API: built and cross-linked via the switcher,
+// but not given their own sidebar slot — they highlight "Client API".
+const variantPages: readonly Page[] = [
+  { src: "guide.swift.md", out: "guide-swift.html", nav: "Client API", langTabs: CLIENT_API_TABS, navActive: "guide.html" },
+  { src: "guide.kotlin.md", out: "guide-kotlin.html", nav: "Client API", langTabs: CLIENT_API_TABS, navActive: "guide.html" },
+];
+
+// Every page that gets rendered (sidebar pages + the hidden language variants).
+const allPages: readonly Page[] = [...pages, ...variantPages];
 
 // Map a source markdown basename to its built page (for inter-doc links).
 const pageByMarkdown = new Map(
-  pages.map((page) => [page.src.toLowerCase(), page.out]),
+  allPages.map((page) => [page.src.toLowerCase(), page.out]),
 );
 
 interface TocEntry {
@@ -140,6 +169,22 @@ function renderNav(activeOut: string): string {
         <a class="nav-demo" href="demo.html">Live demo</a>`;
 }
 
+// A segmented control above the prose that switches the Client API page between
+// its language variants. The active tab is inert text; the others are links.
+function renderLangTabs(
+  tabs: readonly LangTab[],
+  activeOut: string,
+): string {
+  const items = tabs
+    .map((tab) =>
+      tab.out === activeOut
+        ? `<span class="lang-tab active" aria-current="page">${tab.label}</span>`
+        : `<a class="lang-tab" href="${tab.out}">${tab.label}</a>`,
+    )
+    .join("");
+  return `<div class="lang-tabs" role="tablist" aria-label="Client language">${items}</div>`;
+}
+
 function renderFooter(): string {
   return `<footer class="site-footer">
       <div class="footer-inner">
@@ -149,6 +194,7 @@ function renderFooter(): string {
           <a href="guide.html">Client API</a>
           <a href="architecture.html">How it works</a>
           <a href="sync.html">Sync &amp; relay</a>
+          <a href="native.html">Native clients</a>
           <a href="demo.html">Live demo</a>
           <a href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
         </nav>
@@ -173,10 +219,15 @@ function renderToc(toc: TocEntry[]): string {
 
 function layout(options: {
   title: string;
-  activeOut: string;
+  activeOut: string; // sidebar highlight
   content: string;
   toc: TocEntry[];
+  langTabs?: readonly LangTab[];
+  langActiveOut?: string; // which language tab is active
 }): string {
+  const langBar = options.langTabs
+    ? renderLangTabs(options.langTabs, options.langActiveOut ?? options.activeOut)
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -205,6 +256,7 @@ function layout(options: {
     </aside>
     <main id="content" class="content">
       <article class="prose">
+        ${langBar}
         ${options.content}
       </article>
     </main>
@@ -281,14 +333,16 @@ async function build(): Promise<void> {
 
   marked.setOptions({ gfm: true });
 
-  for (const page of pages) {
+  for (const page of allPages) {
     const markdown = await readFile(join(docsDir, page.src), "utf8");
     const rendered = await marked.parse(markdown);
     const { html: withAnchors, toc } = addHeadingAnchors(rendered);
     const content = rewriteLinks(withAnchors);
     const html = layout({
       title: firstHeading(markdown),
-      activeOut: page.out,
+      activeOut: page.navActive ?? page.out, // sidebar highlight
+      langTabs: page.langTabs,
+      langActiveOut: page.out, // active tab is this page
       content,
       toc,
     });
@@ -316,7 +370,7 @@ async function build(): Promise<void> {
 
   await buildDemo();
 
-  console.log(`\nBuilt ${pages.length} pages + demo → ${distDir}`);
+  console.log(`\nBuilt ${allPages.length} pages + demo → ${distDir}`);
 }
 
 await build();

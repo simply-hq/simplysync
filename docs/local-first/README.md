@@ -57,7 +57,8 @@ and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
 1. **[Client API](./guide.md)** — schema, mutations, reactive queries, React hooks, identity & relays.
 2. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
 3. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
-4. **[Demo](./demo.html)** — a two-device sync demo in your browser.
+4. **[Native clients](./native.md)** — the Swift & Kotlin ports: what's shared, the API surface, and the identity interop boundary.
+5. **[Demo](./demo.html)** — a two-device sync demo in your browser.
 
 Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat model](../../SECURITY.md)**.
 
@@ -94,7 +95,10 @@ one or [self-host](./self-hosting.md):
 | `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
 
 **Reference clients:** `apps/simplysync-example` (CLI) and `apps/simplysync-expo`
-(native Expo) — read and copy them.
+(native Expo) — read and copy them. For fully native, JavaScript-free clients
+there are clean-room **Swift** (`apps/simplysync-ios-swift`) and **Kotlin/JVM**
+(`apps/simplysync-android-kotlin`) ports of the protocol — see
+[Native clients](./native.md).
 
 ## Credits & prior art
 

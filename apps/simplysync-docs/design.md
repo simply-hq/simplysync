@@ -82,6 +82,9 @@ named tokens, never raw values.
 ## Per-page allowances
 
 - Content pages: typography only — no enrichment.
+- Client API page: one **language segmented control** (React · Swift · Kotlin)
+  above the prose — mono labels, accent-soft active tab, plain links otherwise,
+  same active treatment as the sidebar. Static (the tabs are links); no JS.
 - App page (demo): functional UI only — cards, badges, inspector. No enrichment.
 
 ## What pages MUST share

@@ -242,6 +242,38 @@ a:hover { text-decoration: underline; text-underline-offset: 2px; }
 .prose h3:hover .anchor,
 .anchor:focus-visible { opacity: 1; }
 
+/* ── Language tabs (Client API: React / Swift / Kotlin) ──────────────── */
+.lang-tabs {
+  display: inline-flex;
+  gap: 0.15rem;
+  margin: 0 0 var(--space-lg);
+  padding: 0.25rem;
+  background: var(--color-paper-2);
+  border: 1px solid var(--color-rule);
+  border-radius: var(--radius);
+}
+.lang-tab {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+  color: var(--color-ink-2);
+  padding: 0.3rem 0.85rem;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+.lang-tab:hover {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  text-decoration: none;
+}
+.lang-tab.active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-2);
+  font-weight: 600;
+}
+[data-theme="dark"] .lang-tab.active { color: var(--color-accent); }
+
 /* ── Code ────────────────────────────────────────────────────────────── */
 code {
   font-family: var(--font-mono);
