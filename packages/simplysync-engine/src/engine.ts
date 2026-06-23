@@ -63,6 +63,7 @@ export const createSync =
     const relay = createRelaySync(
       state,
       store,
+      clock,
       queryCache,
       schema,
       deps,
@@ -176,6 +177,12 @@ export const createSync =
       },
       getSyncState() {
         return state.syncState;
+      },
+      getSyncLog(limit) {
+        return store.recentSyncLog(limit);
+      },
+      getPendingOutboxCount() {
+        return store.pendingOutboxCount();
       },
       setTransports(next) {
         relay.setTransports(next);

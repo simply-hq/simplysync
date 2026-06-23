@@ -37,6 +37,9 @@ interface Env {
 }
 
 const BLOB_PATH_PREFIX = "/v1/blobs/";
+// Reported by /health and /v1/status so clients can tell which relay build
+// they're talking to when diagnosing sync issues. Keep in sync with relay-go.
+const RELAY_VERSION = "1.0.0";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -53,7 +56,12 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       // Intentionally does NOT touch D1 — health checks must stay free so they
       // can't be turned into a metered-read amplifier.
-      return json({ ok: true, service: "simplysync-relay" });
+      return json({
+        ok: true,
+        service: "simplysync-relay",
+        version: RELAY_VERSION,
+        serverTime: new Date().toISOString(),
+      });
     }
 
     const cfg = readConfig(env);
@@ -75,6 +83,9 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/v1/usage") {
         return await handleUsage(request, env, cfg, url);
+      }
+      if (request.method === "GET" && url.pathname === "/v1/status") {
+        return await handleStatus(request, env, cfg, url);
       }
       if (url.pathname.startsWith(BLOB_PATH_PREFIX)) {
         const hash = decodeURIComponent(
@@ -323,6 +334,58 @@ async function handleUsage(
   if (!auth.ok) return auth.response;
 
   return json({ ownerId, storedBytes: auth.storedBytes });
+}
+
+// Per-owner health + quota surface a client app polls to tell apart "relay
+// down" / "network" / "quota" / "auth" / "healthy-but-behind". Mirrors relay-go
+// + the Bun relay. A reachable-but-never-synced owner gets 404 from auth, which
+// the client reads as "relay up, account empty".
+async function handleStatus(
+  request: Request,
+  env: Env,
+  cfg: Config,
+  url: URL,
+): Promise<Response> {
+  const ownerId = url.searchParams.get("ownerId");
+  const relayAuth = getBearerToken(request);
+  if (!ownerId || !relayAuth) {
+    return json({ error: "Missing ownerId or bearer token" }, 401);
+  }
+
+  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
+    createIfMissing: false,
+  });
+  if (!auth.ok) return auth.response;
+
+  const ownerRow = await env.DB.prepare(
+    `select created_at from owners where owner_id = ?`,
+  )
+    .bind(ownerId)
+    .first<{ created_at: string }>();
+  const agg = await env.DB.prepare(
+    `select coalesce(max(seq), 0) as head_seq, count(*) as events,
+            count(distinct stream_id) as streams
+     from events where owner_id = ?`,
+  )
+    .bind(ownerId)
+    .first<{ head_seq: number; events: number; streams: number }>();
+
+  const usedBytes = auth.storedBytes;
+  const usedPct =
+    cfg.maxOwnerBytes > 0 ? (usedBytes / cfg.maxOwnerBytes) * 100 : 0;
+  return json({
+    server: { version: RELAY_VERSION, serverTime: new Date().toISOString() },
+    account: {
+      ownerId,
+      quotaBytes: cfg.maxOwnerBytes,
+      usedBytes,
+      usedPct,
+      headSeq: agg?.head_seq ?? 0,
+      streams: agg?.streams ?? 0,
+      events: agg?.events ?? 0,
+      createdAt: ownerRow?.created_at ?? "",
+    },
+  });
 }
 
 // -----------------------------------------------------------------------------

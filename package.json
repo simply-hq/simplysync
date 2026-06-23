@@ -17,7 +17,8 @@
     "relay:bun": "bun run --cwd apps/simplysync-relay dev",
     "demo": "bun run --cwd apps/simplysync-example demo:with-relay",
     "expo": "bun run --cwd apps/simplysync-expo start",
-    "docs:dev": "bun run --cwd apps/simplysync-docs dev"
+    "docs:dev": "bun run --cwd apps/simplysync-docs dev",
+    "kotlin:test": "cd apps/simplysync-android-kotlin && ./gradlew test"
   },
   "devDependencies": {
     "turbo": "2.9.16"

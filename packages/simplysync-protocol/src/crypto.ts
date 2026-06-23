@@ -9,34 +9,81 @@ const DERIVATION_SALT = new Uint8Array([
   45, 102, 105, 114, 115, 116, 45, 118, 49,
 ]);
 
+// Pure-JS base64url so the protocol runs on any runtime (Node, Bun, browsers,
+// React Native/Hermes) without depending on the browser globals btoa/atob,
+// which are absent on bare React Native and older Node.
+const BASE64_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+const BASE64_LOOKUP = (() => {
+  const table = new Int16Array(128).fill(-1);
+  for (let i = 0; i < BASE64_ALPHABET.length; i += 1) {
+    table[BASE64_ALPHABET.charCodeAt(i)] = i;
+  }
+  // Accept standard base64 input too, so callers can pass either alphabet.
+  table["+".charCodeAt(0)] = 62;
+  table["/".charCodeAt(0)] = 63;
+  return table;
+})();
+
 export function base64UrlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+  let output = "";
+  let index = 0;
+
+  for (; index + 2 < bytes.length; index += 3) {
+    const chunk = (bytes[index] << 16) | (bytes[index + 1] << 8) | bytes[index + 2];
+    output +=
+      BASE64_ALPHABET[(chunk >> 18) & 63] +
+      BASE64_ALPHABET[(chunk >> 12) & 63] +
+      BASE64_ALPHABET[(chunk >> 6) & 63] +
+      BASE64_ALPHABET[chunk & 63];
   }
 
-  if (typeof btoa !== "function") {
-    throw new Error("base64 encoding requires btoa in this runtime.");
+  const remaining = bytes.length - index;
+  if (remaining === 1) {
+    const chunk = bytes[index] << 16;
+    output += BASE64_ALPHABET[(chunk >> 18) & 63] + BASE64_ALPHABET[(chunk >> 12) & 63];
+  } else if (remaining === 2) {
+    const chunk = (bytes[index] << 16) | (bytes[index + 1] << 8);
+    output +=
+      BASE64_ALPHABET[(chunk >> 18) & 63] +
+      BASE64_ALPHABET[(chunk >> 12) & 63] +
+      BASE64_ALPHABET[(chunk >> 6) & 63];
   }
 
-  const base64 = btoa(binary);
-
-  return base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
+  return output;
 }
 
 export function base64UrlDecode(value: string): Uint8Array {
-  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
-
-  if (typeof atob !== "function") {
-    throw new Error("base64 decoding requires atob in this runtime.");
+  // Tolerate standard base64 padding and either alphabet.
+  let length = value.length;
+  while (length > 0 && value.charCodeAt(length - 1) === 0x3d) {
+    length -= 1;
   }
 
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
+  const byteLength = Math.floor((length * 6) / 8);
+  const bytes = new Uint8Array(byteLength);
+
+  let buffer = 0;
+  let bits = 0;
+  let outIndex = 0;
+
+  for (let index = 0; index < length; index += 1) {
+    const code = value.charCodeAt(index);
+    const sextet = code < 128 ? BASE64_LOOKUP[code] : -1;
+    if (sextet === -1) {
+      throw new Error("invalid base64url input.");
+    }
+
+    buffer = (buffer << 6) | sextet;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes[outIndex] = (buffer >> bits) & 0xff;
+      outIndex += 1;
+    }
   }
+
   return bytes;
 }
 

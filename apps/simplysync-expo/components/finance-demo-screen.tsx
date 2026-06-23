@@ -3,10 +3,12 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   type ListRenderItem,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -36,6 +38,7 @@ export function FinanceDemoScreen() {
     syncSummary,
     addEntry,
     deleteEntry,
+    dismissError,
     loadMoreEntries,
     resetDemo,
     restoreFromRecoveryKey,
@@ -45,10 +48,13 @@ export function FinanceDemoScreen() {
   } = useLocalFirstDemo();
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
+  const [entryKind, setEntryKind] = useState<"expense" | "income">("expense");
   const [relayDraft, setRelayDraft] = useState(relayUrl);
+  const [relaySaved, setRelaySaved] = useState(false);
   const [restoreKey, setRestoreKey] = useState("");
   const [showRecoveryKey, setShowRecoveryKey] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const canSubmit =
     description.trim().length > 0 && parseAmountToCents(amount) !== null;
@@ -62,9 +68,40 @@ export function FinanceDemoScreen() {
     const amountCents = parseAmountToCents(amount);
     if (!description.trim() || amountCents === null) return;
 
-    await addEntry(description.trim(), amountCents);
-    setDescription("");
-    setAmount("");
+    // The sign comes from the Expense/Income toggle: iOS's decimal pad has no
+    // minus key, so a typed sign can't be the only way to record an expense.
+    const signedCents =
+      entryKind === "expense" ? -Math.abs(amountCents) : Math.abs(amountCents);
+
+    try {
+      await addEntry(description.trim(), signedCents);
+      setDescription("");
+      setAmount("");
+    } catch {
+      // Keep the drafts so the user can retry; the error banner explains why.
+    }
+  }
+
+  async function handleSaveRelayUrl() {
+    Keyboard.dismiss();
+    try {
+      await saveRelayUrl(relayDraft);
+      setRelaySaved(true);
+      setTimeout(() => setRelaySaved(false), 1400);
+    } catch {
+      // Surfaced via the error banner.
+    }
+  }
+
+  async function handleRefresh() {
+    setIsRefreshing(true);
+    try {
+      await syncNow();
+    } catch {
+      // Surfaced via the error banner.
+    } finally {
+      setIsRefreshing(false);
+    }
   }
 
   async function handleCopyRecoveryKey() {
@@ -73,6 +110,26 @@ export function FinanceDemoScreen() {
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
   }
+
+  const handleDeleteEntry = useCallback(
+    (entry: FinanceEntry) => {
+      Alert.alert(
+        "Delete entry?",
+        `"${entry.description}" (${formatCents(entry.amountCents)}) will be removed from every synced device.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Delete",
+            style: "destructive",
+            onPress: () => {
+              void deleteEntry(entry.id).catch(() => undefined);
+            },
+          },
+        ],
+      );
+    },
+    [deleteEntry],
+  );
 
   function handleReset() {
     Alert.alert(
@@ -132,9 +189,10 @@ export function FinanceDemoScreen() {
           {formatCents(item.amountCents)}
         </Text>
         <Pressable
-          onPress={() => {
-            void deleteEntry(item.id);
-          }}
+          accessibilityLabel={`Delete ${item.description}`}
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => handleDeleteEntry(item)}
           style={({ pressed }) => [
             styles.deleteButton,
             pressed && styles.buttonPressed,
@@ -144,7 +202,7 @@ export function FinanceDemoScreen() {
         </Pressable>
       </View>
     ),
-    [deleteEntry],
+    [handleDeleteEntry],
   );
 
   if (isBooting) {
@@ -169,6 +227,7 @@ export function FinanceDemoScreen() {
         ListFooterComponent={
           hasMoreEntries ? (
             <Pressable
+              accessibilityRole="button"
               disabled={isLoadingMoreEntries}
               onPress={() => {
                 void loadMoreEntries();
@@ -205,7 +264,22 @@ export function FinanceDemoScreen() {
               </View>
             </View>
 
-            {error ? <Text selectable style={styles.errorText}>{error}</Text> : null}
+            {error ? (
+              <View style={styles.errorBanner}>
+                <Text selectable style={styles.errorText}>
+                  {error}
+                </Text>
+                <Pressable
+                  accessibilityLabel="Dismiss error"
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={dismissError}
+                  style={({ pressed }) => [pressed && styles.buttonPressed]}
+                >
+                  <Text style={styles.errorDismiss}>✕</Text>
+                </Pressable>
+              </View>
+            ) : null}
 
             <View style={styles.surface}>
               <Text style={styles.sectionTitle}>Relay</Text>
@@ -220,20 +294,24 @@ export function FinanceDemoScreen() {
               />
               <View style={styles.actionRow}>
                 <Pressable
+                  accessibilityRole="button"
                   onPress={() => {
-                    void saveRelayUrl(relayDraft);
+                    void handleSaveRelayUrl();
                   }}
                   style={({ pressed }) => [
                     styles.secondaryButton,
                     pressed && styles.buttonPressed,
                   ]}
                 >
-                  <Text style={styles.secondaryButtonText}>Save URL</Text>
+                  <Text style={styles.secondaryButtonText}>
+                    {relaySaved ? "Saved" : "Save URL"}
+                  </Text>
                 </Pressable>
                 <Pressable
+                  accessibilityRole="button"
                   disabled={isSyncing}
                   onPress={() => {
-                    void syncNow();
+                    void syncNow().catch(() => undefined);
                   }}
                   style={({ pressed }) => [
                     styles.primaryButton,
@@ -261,17 +339,56 @@ export function FinanceDemoScreen() {
                 style={styles.input}
                 value={description}
               />
+              <View style={styles.segmentRow}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: entryKind === "expense" }}
+                  onPress={() => setEntryKind("expense")}
+                  style={[
+                    styles.segment,
+                    entryKind === "expense" && styles.segmentActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      entryKind === "expense" && styles.segmentTextActive,
+                    ]}
+                  >
+                    Expense
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: entryKind === "income" }}
+                  onPress={() => setEntryKind("income")}
+                  style={[
+                    styles.segment,
+                    entryKind === "income" && styles.segmentActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.segmentText,
+                      entryKind === "income" && styles.segmentTextActive,
+                    ]}
+                  >
+                    Income
+                  </Text>
+                </Pressable>
+              </View>
               <TextInput
                 keyboardType="decimal-pad"
                 onChangeText={setAmount}
-                placeholder="-12.34"
+                placeholder="12.34"
                 style={styles.input}
                 value={amount}
               />
               <View style={styles.actionRow}>
                 <Pressable
+                  accessibilityRole="button"
                   onPress={() => {
-                    void seedSample();
+                    void seedSample().catch(() => undefined);
                   }}
                   style={({ pressed }) => [
                     styles.secondaryButton,
@@ -281,6 +398,7 @@ export function FinanceDemoScreen() {
                   <Text style={styles.secondaryButtonText}>Seed Sample</Text>
                 </Pressable>
                 <Pressable
+                  accessibilityRole="button"
                   disabled={!canSubmit}
                   onPress={() => {
                     void handleAddEntry();
@@ -303,6 +421,11 @@ export function FinanceDemoScreen() {
                   {showRecoveryKey ? recoveryKey : maskSecret(recoveryKey)}
                 </Text>
                 <Pressable
+                  accessibilityLabel={
+                    showRecoveryKey ? "Hide recovery key" : "Reveal recovery key"
+                  }
+                  accessibilityRole="button"
+                  hitSlop={8}
                   onPress={() => setShowRecoveryKey((visible) => !visible)}
                   style={({ pressed }) => [
                     styles.smallButton,
@@ -316,6 +439,8 @@ export function FinanceDemoScreen() {
               </View>
               <View style={styles.actionRow}>
                 <Pressable
+                  accessibilityLabel="Copy recovery key"
+                  accessibilityRole="button"
                   onPress={() => {
                     void handleCopyRecoveryKey();
                   }}
@@ -329,6 +454,7 @@ export function FinanceDemoScreen() {
                   </Text>
                 </Pressable>
                 <Pressable
+                  accessibilityRole="button"
                   onPress={handleReset}
                   style={({ pressed }) => [
                     styles.destructiveButton,
@@ -349,6 +475,7 @@ export function FinanceDemoScreen() {
                   value={restoreKey}
                 />
                 <Pressable
+                  accessibilityRole="button"
                   disabled={!canRestore}
                   onPress={handleRestore}
                   style={({ pressed }) => [
@@ -388,6 +515,14 @@ export function FinanceDemoScreen() {
             : undefined
         }
         onEndReachedThreshold={0.6}
+        refreshControl={
+          <RefreshControl
+            onRefresh={() => {
+              void handleRefresh();
+            }}
+            refreshing={isRefreshing}
+          />
+        }
         renderItem={renderEntry}
       />
     </KeyboardAvoidingView>
@@ -573,15 +708,26 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
   },
-  errorText: {
+  errorBanner: {
+    alignItems: "flex-start",
     backgroundColor: "#fff2cc",
     borderColor: "#f0d885",
     borderRadius: 8,
     borderWidth: 1,
+    flexDirection: "row",
+    gap: 10,
+    padding: 12,
+  },
+  errorDismiss: {
     color: "#715900",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  errorText: {
+    color: "#715900",
+    flex: 1,
     fontSize: 13,
     lineHeight: 18,
-    padding: 12,
   },
   eyebrow: {
     color: "#657079",
@@ -674,6 +820,33 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "space-between",
+  },
+  segment: {
+    alignItems: "center",
+    borderRadius: 6,
+    flex: 1,
+    justifyContent: "center",
+    minHeight: 36,
+  },
+  segmentActive: {
+    backgroundColor: "#ffffff",
+    borderColor: "#d8e0e5",
+    borderWidth: 1,
+  },
+  segmentRow: {
+    backgroundColor: "#eef2f5",
+    borderRadius: 8,
+    flexDirection: "row",
+    gap: 4,
+    padding: 3,
+  },
+  segmentText: {
+    color: "#687076",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  segmentTextActive: {
+    color: "#182027",
   },
   sectionTitle: {
     color: "#182027",

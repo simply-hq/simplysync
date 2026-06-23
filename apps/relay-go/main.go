@@ -38,6 +38,10 @@ type Config struct {
 
 const blobPathPrefix = "/v1/blobs/"
 
+// relayVersion is reported by /health and /v1/status so clients can tell which
+// relay build they're talking to when diagnosing sync issues.
+const relayVersion = "1.0.0"
+
 func loadConfig() Config {
 	token := os.Getenv("ADMIN_TOKEN")
 	cfg := Config{

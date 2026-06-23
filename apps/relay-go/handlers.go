@@ -38,7 +38,12 @@ func routeHandler(cfg Config, st *store) http.Handler {
 		}
 
 		if r.Method == http.MethodGet && path == "/health" {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "simplysync-relay"})
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":         true,
+				"service":    "simplysync-relay",
+				"version":    relayVersion,
+				"serverTime": nowISO(),
+			})
 			return
 		}
 
@@ -55,6 +60,8 @@ func routeHandler(cfg Config, st *store) http.Handler {
 			handlePull(cfg, st, w, r)
 		case r.Method == http.MethodGet && path == "/v1/usage":
 			handleUsage(st, w, r)
+		case r.Method == http.MethodGet && path == "/v1/status":
+			handleStatus(cfg, st, w, r)
 		case strings.HasPrefix(path, blobPathPrefix):
 			handleBlob(cfg, st, w, r, path)
 		default:
@@ -173,6 +180,49 @@ func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {
 	}
 	n, _ := st.ownerStoredBytes(ownerID)
 	writeJSON(w, http.StatusOK, map[string]any{"ownerId": ownerID, "storedBytes": n})
+}
+
+// handleStatus is the per-owner health + quota surface a client app polls to
+// tell apart "relay down" / "network" / "quota" / "auth" / "healthy-but-behind".
+// A reachable-but-never-synced owner gets 404 (Unknown owner) from auth, which
+// the client reads as "relay up, account empty".
+func handleStatus(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
+	ownerID := r.URL.Query().Get("ownerId")
+	relayAuth := bearerToken(r)
+	if ownerID == "" || relayAuth == "" {
+		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
+		return
+	}
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
+	if !auth.ok {
+		writeJSON(w, auth.status, errBody(auth.msg))
+		return
+	}
+	status, err := st.ownerStatus(ownerID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errBody("Internal error"))
+		return
+	}
+	usedPct := 0.0
+	if cfg.MaxOwnerBytes > 0 {
+		usedPct = float64(status.StoredBytes) / float64(cfg.MaxOwnerBytes) * 100
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"server": map[string]any{
+			"version":    relayVersion,
+			"serverTime": nowISO(),
+		},
+		"account": map[string]any{
+			"ownerId":    ownerID,
+			"quotaBytes": cfg.MaxOwnerBytes,
+			"usedBytes":  status.StoredBytes,
+			"usedPct":    usedPct,
+			"headSeq":    status.HeadSeq,
+			"streams":    status.Streams,
+			"events":     status.Events,
+			"createdAt":  status.CreatedAt,
+		},
+	})
 }
 
 func handleBlob(cfg Config, st *store, w http.ResponseWriter, r *http.Request, path string) {

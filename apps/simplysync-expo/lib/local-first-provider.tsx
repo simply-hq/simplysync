@@ -35,6 +35,7 @@ interface LocalFirstDemoContextValue {
   readonly syncSummary: SyncSummary | null;
   readonly addEntry: (description: string, amountCents: number) => Promise<void>;
   readonly deleteEntry: (id: string) => Promise<void>;
+  readonly dismissError: () => void;
   readonly loadMoreEntries: () => Promise<void>;
   readonly resetDemo: () => Promise<void>;
   readonly restoreFromRecoveryKey: (recoveryKey: string) => Promise<void>;
@@ -266,18 +267,29 @@ export function LocalFirstDemoProvider({ children }: PropsWithChildren) {
 
   const saveRelayUrl = useCallback(
     async (nextRelayUrl: string) => {
-      const normalizedRelayUrl = normalizeRelayUrl(nextRelayUrl);
-      await SecureStore.setItemAsync(RELAY_URL_STORAGE_KEY, normalizedRelayUrl);
+      try {
+        setError(null);
+        const normalizedRelayUrl = normalizeRelayUrl(nextRelayUrl);
+        await SecureStore.setItemAsync(RELAY_URL_STORAGE_KEY, normalizedRelayUrl);
 
-      if (client) {
-        client.setRelayUrl(normalizedRelayUrl);
-        await publishClientState(client);
-      } else {
-        setRelayUrl(normalizedRelayUrl);
+        if (client) {
+          client.setRelayUrl(normalizedRelayUrl);
+          await publishClientState(client);
+        } else {
+          setRelayUrl(normalizedRelayUrl);
+        }
+      } catch (caughtError) {
+        const message = getErrorMessage(caughtError);
+        setError(message);
+        throw new Error(message);
       }
     },
     [client, publishClientState],
   );
+
+  const dismissError = useCallback(() => {
+    setError(null);
+  }, []);
 
   const value = useMemo<LocalFirstDemoContextValue>(
     () => ({
@@ -297,6 +309,7 @@ export function LocalFirstDemoProvider({ children }: PropsWithChildren) {
       syncSummary,
       addEntry,
       deleteEntry,
+      dismissError,
       loadMoreEntries,
       resetDemo,
       restoreFromRecoveryKey,
@@ -308,6 +321,7 @@ export function LocalFirstDemoProvider({ children }: PropsWithChildren) {
       addEntry,
       balanceCents,
       deleteEntry,
+      dismissError,
       entries,
       entryCount,
       envelopeSample,

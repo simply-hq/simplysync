@@ -172,6 +172,20 @@ export interface SyncEngineConfig {
   readonly syncIntervalMs?: number;
 }
 
+/** Structured reason a sync attempt failed, so a consumer can show *why*. */
+export type SyncFailureKind =
+  | "offline"
+  | "unreachable"
+  | "timeout"
+  | "authRejected"
+  | "quotaExceeded"
+  | "rateLimited"
+  | "badRequest"
+  | "serverError"
+  | "decryptFailed"
+  | "applyFailed"
+  | "unknown";
+
 export type SyncState =
   | { readonly type: "SyncStateInitial" }
   | { readonly type: "SyncStateIsSyncing" }
@@ -179,11 +193,26 @@ export type SyncState =
   | {
       readonly type: "SyncStateIsNotSynced";
       readonly error?: string;
+      readonly kind?: SyncFailureKind;
       // Set for non-retryable failures (auth/quota/bad-request). The UI should
       // show these; the engine backs the poller off so it doesn't hammer.
       readonly terminal?: boolean;
       readonly status?: number;
     };
+
+/** One persisted row of the sync diagnostics log. */
+export interface SyncLogEntry {
+  readonly seq: number;
+  readonly at: string; // ISO8601
+  readonly relay: string;
+  readonly phase: string; // "sync" | "push" | "pull"
+  readonly result: "ok" | "fail";
+  readonly kind?: SyncFailureKind;
+  readonly message?: string;
+  readonly pushed: number;
+  readonly pulled: number;
+  readonly applied: number;
+}
 
 export interface SyncError {
   readonly type: string;
@@ -264,6 +293,10 @@ export interface SyncEngine<S extends SchemaDefinition> {
   getError(): SyncError | null;
   subscribeSyncState(listener: () => void): () => void;
   getSyncState(): SyncState;
+  /** Most-recent-first slice of the on-device sync diagnostics log. */
+  getSyncLog(limit?: number): SyncLogEntry[];
+  /** Count of unpushed events still in the outbox (0 = drained). */
+  getPendingOutboxCount(): number;
   setTransports(transports: readonly Transport[]): void;
   sync(): Promise<void>;
   reloadApp(): void;

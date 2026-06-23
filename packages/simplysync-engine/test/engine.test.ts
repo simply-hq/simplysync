@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 
+import { createHlc, compareHlc } from "@simplysync/protocol";
+
 import {
   createSync,
   FiniteNumber,
@@ -11,6 +13,9 @@ import {
   type SecureStorage,
   type SqliteDriver,
 } from "../src/index";
+import { createEngineState } from "../src/engine/state";
+import { createClock, createStore, type Store } from "../src/engine/store";
+import { SYNC_LOG_CAP } from "../src/engine/constants";
 
 function wrapDriver(db: Database): SqliteDriver {
   return {
@@ -68,6 +73,50 @@ function makeEngine() {
     secureStorage: memoryStorage(),
   })(schema, { name: "test-db" });
 }
+
+describe("hlc clock", () => {
+  function makeClock() {
+    const state = createEngineState({ name: "clock-test" });
+    state.deviceId = "devA";
+    const meta = new Map<string, string>();
+    const store = {
+      setMeta: (k: string, v: string) => {
+        meta.set(k, v);
+      },
+      getMeta: (k: string) => meta.get(k) ?? null,
+    } as unknown as Store;
+    return { clock: createClock(state, store), state, meta };
+  }
+
+  test("absorbs an observed future HLC so the next local HLC sorts above it", () => {
+    const { clock, meta } = makeClock();
+    // A remote edit stamped a minute in the future (a device with a fast clock).
+    const future = createHlc("devB", Date.now() + 60_000, 3);
+    clock.observeHlc(future);
+
+    const local = clock.nextHlc();
+    expect(compareHlc(future, local)).toBeLessThan(0); // local sorts strictly after
+    expect(Number(meta.get("hlc:time"))).toBeGreaterThan(Date.now()); // persisted
+  });
+
+  test("breaks a same-millis tie by lifting the counter", () => {
+    const { clock } = makeClock();
+    const t = Date.now() + 60_000;
+    clock.observeHlc(createHlc("devB", t, 9));
+    const local = clock.nextHlc();
+    expect(compareHlc(createHlc("devB", t, 9), local)).toBeLessThan(0);
+  });
+
+  test("ignores a malformed HLC rather than poisoning the clock", () => {
+    const { clock, state } = makeClock();
+    clock.observeHlc("not-an-hlc");
+    clock.observeHlc("");
+    expect(state.hlcTime).toBe(0); // untouched
+    const local = clock.nextHlc();
+    expect(local.split("-")[0]).toHaveLength(10); // still a well-formed HLC
+    expect(state.hlcTime).toBeGreaterThan(0); // clock recovered normally
+  });
+});
 
 describe("engine", () => {
   test("compiles a Kysely query to SQL", () => {
@@ -311,5 +360,66 @@ describe("engine", () => {
       ),
     );
     expect(rows).toHaveLength(0); // stays erased
+  });
+});
+
+describe("sync diagnostics log", () => {
+  function makeStore() {
+    const state = createEngineState({ name: "log-test" });
+    state.driver = makeDriver();
+    const store = createStore(state, schema, { name: "log-test" });
+    store.ensureSchema();
+    return { state, store };
+  }
+
+  test("records ok/fail entries most-recent-first with structured kind", () => {
+    const { store } = makeStore();
+    store.appendSyncLog({
+      relay: "https://a",
+      phase: "sync",
+      result: "ok",
+      pushed: 2,
+      pulled: 3,
+      applied: 1,
+    });
+    store.appendSyncLog({
+      relay: "https://b",
+      phase: "sync",
+      result: "fail",
+      kind: "authRejected",
+      message: "push failed: 401",
+    });
+
+    const log = store.recentSyncLog(10);
+    expect(log).toHaveLength(2);
+    expect(log[0]?.relay).toBe("https://b"); // newest first
+    expect(log[0]?.result).toBe("fail");
+    expect(log[0]?.kind).toBe("authRejected");
+    expect(log[1]?.pushed).toBe(2);
+    expect(log[1]?.kind).toBeUndefined(); // ok entries carry no kind
+  });
+
+  test("is a bounded ring buffer (drops oldest past the cap)", () => {
+    const { store } = makeStore();
+    const total = SYNC_LOG_CAP + 5;
+    for (let i = 0; i < total; i++) {
+      store.appendSyncLog({ relay: `https://r${i}`, phase: "sync", result: "ok" });
+    }
+    const log = store.recentSyncLog(total);
+    expect(log).toHaveLength(SYNC_LOG_CAP);
+    expect(log[0]?.relay).toBe(`https://r${total - 1}`); // newest survives
+  });
+
+  test("pendingOutboxCount counts only unpushed rows", () => {
+    const { state, store } = makeStore();
+    state.driver?.exec(
+      `insert into "_sync_outbox" (event_id, envelope_json, pushed_at) values (?, ?, ?)`,
+      ["e1", "{}", null],
+    );
+    state.driver?.exec(
+      `insert into "_sync_outbox" (event_id, envelope_json, pushed_at) values (?, ?, ?)`,
+      ["e2", "{}", new Date().toISOString()],
+    );
+    expect(store.pendingOutboxCount()).toBe(1);
   });
 });

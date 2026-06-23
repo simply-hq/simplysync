@@ -8,12 +8,13 @@ import type {
   SchemaDefinition,
   SyncEngineConfig,
   SyncEngineDeps,
+  SyncFailureKind,
   Transport,
 } from "../engine-types";
 import { SYNC_OUTBOX_TABLE, SYNC_SEEN_TABLE } from "./constants";
 import type { QueryCache } from "./query-cache";
 import type { EngineState } from "./state";
-import type { Store } from "./store";
+import type { Clock, Store } from "./store";
 
 export type RelaySync = ReturnType<typeof createRelaySync>;
 
@@ -25,15 +26,13 @@ export type RelaySync = ReturnType<typeof createRelaySync>;
 export function createRelaySync(
   state: EngineState,
   store: Store,
+  clock: Clock,
   queryCache: QueryCache,
   schema: SchemaDefinition,
   deps: SyncEngineDeps,
   config: SyncEngineConfig,
   fetchImpl: typeof fetch,
 ) {
-  // Relay HTTP errors carry their status so sync() can tell a retryable failure
-  // (network / 5xx / 429) from a terminal one (400/401/403/413).
-  const TERMINAL_STATUSES = new Set([400, 401, 403, 413]);
   const DEFAULT_POLL_MS =
     typeof config.syncIntervalMs === "number" && config.syncIntervalMs > 0
       ? config.syncIntervalMs
@@ -59,18 +58,50 @@ export function createRelaySync(
     return err;
   };
 
+  // Terminal kinds need user/operator action (re-auth, free quota, fix request),
+  // so the poller backs off rather than hammering. rateLimited also backs off
+  // but is not "terminal" (it self-heals).
+  const TERMINAL_KINDS = new Set<SyncFailureKind>([
+    "authRejected",
+    "quotaExceeded",
+    "badRequest",
+  ]);
+
+  // Map a thrown sync error to the structured taxonomy. HTTP errors carry a
+  // status; a fetch that rejects has none (network-level), which we read as
+  // offline (when the platform tells us) or otherwise unreachable.
+  const classifyError = (
+    caught: unknown,
+  ): { kind: SyncFailureKind; status?: number; message: string } => {
+    const status = (caught as { status?: number } | undefined)?.status;
+    const message = caught instanceof Error ? caught.message : String(caught);
+    if (typeof status === "number") {
+      let kind: SyncFailureKind = "unknown";
+      if (status === 401 || status === 403) kind = "authRejected";
+      else if (status === 413) kind = "quotaExceeded";
+      else if (status === 429) kind = "rateLimited";
+      else if (status >= 500) kind = "serverError";
+      else if (status >= 400) kind = "badRequest";
+      return { kind, status, message };
+    }
+    const offline =
+      typeof navigator !== "undefined" &&
+      (navigator as { onLine?: boolean }).onLine === false;
+    return { kind: offline ? "offline" : "unreachable", message };
+  };
+
   const relayBaseUrls = (): string[] =>
     state.transports.map((t) =>
       t.url.replace(/^wss:\/\//u, "https://").replace(/^ws:\/\//u, "http://"),
     );
 
-  const pushOutbox = async (baseUrl: string): Promise<void> => {
+  const pushOutbox = async (baseUrl: string): Promise<number> => {
     const { identity, driver } = state;
-    if (!identity || !driver) return;
+    if (!identity || !driver) return 0;
     const events = driver.select<{ event_id: string; envelope_json: string }>(
       `select event_id, envelope_json from "${SYNC_OUTBOX_TABLE}" where pushed_at is null order by event_id asc limit 1000`,
     );
-    if (events.length === 0) return;
+    if (events.length === 0) return 0;
     const response = await fetchImpl(`${baseUrl}/v1/events`, {
       method: "POST",
       headers: {
@@ -90,23 +121,43 @@ export function createRelaySync(
         [pushedAt, event.event_id],
       );
     }
+    return events.length;
   };
 
-  const applyRemoteRow = (payload: SyncPayload<Record<string, unknown>>) => {
+  // Returns true when the row was written, false when the local copy wins (LWW).
+  const applyRemoteRow = (
+    payload: SyncPayload<Record<string, unknown>>,
+  ): boolean => {
     const { driver } = state;
-    if (!driver) return;
+    if (!driver) return false;
     const existing = driver.select<{ updatedAt: string }>(
       `select updatedAt from "${payload.table}" where id = ?`,
       [payload.rowId],
     )[0];
-    if (existing && compareHlc(existing.updatedAt, payload.hlc) >= 0) return;
+    if (existing && compareHlc(existing.updatedAt, payload.hlc) >= 0)
+      return false;
     store.writeRow(payload.table, { ...payload.value, id: payload.rowId });
+    return true;
   };
 
-  const pullAndApply = async (baseUrl: string): Promise<Set<string>> => {
-    const changed = new Set<string>();
+  interface PullResult {
+    changed: Set<string>;
+    pulled: number;
+    applied: number;
+    decryptFailures: number;
+    applyFailures: number;
+  }
+
+  const pullAndApply = async (baseUrl: string): Promise<PullResult> => {
+    const result: PullResult = {
+      changed: new Set<string>(),
+      pulled: 0,
+      applied: 0,
+      decryptFailures: 0,
+      applyFailures: 0,
+    };
     const { identity, driver } = state;
-    if (!identity || !driver) return changed;
+    if (!identity || !driver) return result;
     const cursorKey = `cursor:${baseUrl}`;
     const after = store.getMeta(cursorKey) ?? "";
     const url = new URL(`${baseUrl}/v1/events`);
@@ -120,19 +171,34 @@ export function createRelaySync(
       events: SyncEnvelope[];
       nextCursor: string;
     };
+    result.pulled = body.events.length;
     for (const envelope of body.events) {
       const seen = driver.select(
         `select 1 from "${SYNC_SEEN_TABLE}" where event_id = ?`,
         [envelope.eventId],
       );
       if (seen.length > 0) continue;
-      const payload = await decryptEnvelope<Record<string, unknown>>(
-        identity,
-        envelope,
-      );
+      let payload: SyncPayload<Record<string, unknown>>;
+      try {
+        payload = await decryptEnvelope<Record<string, unknown>>(
+          identity,
+          envelope,
+        );
+      } catch {
+        // A bad envelope shouldn't wedge the batch — count it and move on.
+        result.decryptFailures += 1;
+        continue;
+      }
+      // Absorb every event's time into our clock (even tables we don't apply)
+      // so future local writes always sort above what we've already seen.
+      clock.observeHlc(payload.hlc);
       if (payload.table in schema) {
-        applyRemoteRow(payload);
-        changed.add(payload.table);
+        try {
+          if (applyRemoteRow(payload)) result.applied += 1;
+          result.changed.add(payload.table);
+        } catch {
+          result.applyFailures += 1;
+        }
       }
       driver.exec(
         `insert or ignore into "${SYNC_SEEN_TABLE}" (event_id) values (?)`,
@@ -140,7 +206,7 @@ export function createRelaySync(
       );
     }
     store.setMeta(cursorKey, body.nextCursor);
-    return changed;
+    return result;
   };
 
   const pruneSeen = () => {
@@ -164,41 +230,83 @@ export function createRelaySync(
     if (bases.length === 0) return;
     state.syncing = true;
     state.setSyncState({ type: "SyncStateIsSyncing" });
+    const changed = new Set<string>();
+    let anySuccess = false;
+    let firstFailure:
+      | { kind: SyncFailureKind; status?: number; message: string }
+      | undefined;
     try {
-      const changed = new Set<string>();
+      // Contact every relay so each one's health is recorded independently
+      // (per-relay log entries, not collapsed to the first failure).
       for (const base of bases) {
-        await pushOutbox(base);
-        for (const table of await pullAndApply(base)) changed.add(table);
+        try {
+          const pushed = await pushOutbox(base);
+          const r = await pullAndApply(base);
+          for (const table of r.changed) changed.add(table);
+          anySuccess = true;
+          store.appendSyncLog({
+            relay: base,
+            phase: "sync",
+            result: "ok",
+            pushed,
+            pulled: r.pulled,
+            applied: r.applied,
+          });
+          // Decrypt/apply failures are non-fatal (the row is skipped) but worth
+          // surfacing — they signal a key mismatch or schema drift.
+          if (r.decryptFailures > 0 || r.applyFailures > 0) {
+            store.appendSyncLog({
+              relay: base,
+              phase: "pull",
+              result: "fail",
+              kind: r.decryptFailures > 0 ? "decryptFailed" : "applyFailed",
+              message: `decrypt: ${r.decryptFailures}, apply: ${r.applyFailures}`,
+            });
+          }
+        } catch (caught) {
+          const failure = classifyError(caught);
+          if (!firstFailure) firstFailure = failure;
+          store.appendSyncLog({
+            relay: base,
+            phase: "sync",
+            result: "fail",
+            kind: failure.kind,
+            message: failure.message,
+          });
+        }
       }
       if (changed.size > 0) queryCache.refreshQueries(changed);
       pruneSeen();
-      state.setSyncState({
-        type: "SyncStateIsSynced",
-        lastSyncedAt: new Date().toISOString(),
-      });
-      // Recovered — restore the normal poll cadence if we'd backed off.
-      if (pollIntervalMs !== DEFAULT_POLL_MS) {
-        pollIntervalMs = DEFAULT_POLL_MS;
-        stopPolling();
-        startPolling();
-      }
-    } catch (caught) {
-      const status = (caught as { status?: number } | undefined)?.status;
-      const terminal =
-        typeof status === "number" && TERMINAL_STATUSES.has(status);
-      state.setSyncState({
-        type: "SyncStateIsNotSynced",
-        error: caught instanceof Error ? caught.message : String(caught),
-        terminal,
-        status,
-      });
-      // A terminal failure (auth/quota/bad event) won't self-heal by retrying
-      // the same batch — slow the poller so it stops hammering, but keep
-      // retrying occasionally (and immediately on focus/online/write).
-      if (terminal && pollIntervalMs !== BACKOFF_POLL_MS) {
-        pollIntervalMs = BACKOFF_POLL_MS;
-        stopPolling();
-        startPolling();
+
+      if (anySuccess || !firstFailure) {
+        state.setSyncState({
+          type: "SyncStateIsSynced",
+          lastSyncedAt: new Date().toISOString(),
+        });
+        // Recovered — restore the normal poll cadence if we'd backed off.
+        if (pollIntervalMs !== DEFAULT_POLL_MS) {
+          pollIntervalMs = DEFAULT_POLL_MS;
+          stopPolling();
+          startPolling();
+        }
+      } else {
+        const terminal = TERMINAL_KINDS.has(firstFailure.kind);
+        state.setSyncState({
+          type: "SyncStateIsNotSynced",
+          error: firstFailure.message,
+          kind: firstFailure.kind,
+          terminal,
+          status: firstFailure.status,
+        });
+        // A terminal failure (auth/quota/bad event) or rate-limit won't self-heal
+        // by retrying the same batch immediately — slow the poller so it stops
+        // hammering (focus/online/write still trigger an immediate retry).
+        const backoff = terminal || firstFailure.kind === "rateLimited";
+        if (backoff && pollIntervalMs !== BACKOFF_POLL_MS) {
+          pollIntervalMs = BACKOFF_POLL_MS;
+          stopPolling();
+          startPolling();
+        }
       }
     } finally {
       state.syncing = false;

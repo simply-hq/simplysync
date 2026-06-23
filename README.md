@@ -56,6 +56,8 @@ bun run expo                # Expo demo: expo-sqlite + expo-secure-store
 | [`apps/relay-cloudflare`](apps/relay-cloudflare) | Serverless relay on Cloudflare Workers + D1 + R2. |
 | [`apps/simplysync-example`](apps/simplysync-example) | CLI reference client + one-shot two-client sync demo. |
 | [`apps/simplysync-expo`](apps/simplysync-expo) | Native Expo demo. |
+| [`apps/simplysync-ios-swift`](apps/simplysync-ios-swift) | Native Swift port of the protocol core. |
+| [`apps/simplysync-android-kotlin`](apps/simplysync-android-kotlin) | Native Kotlin/Android port of the protocol core — wire-compatible, pure-JVM, unit-tested. |
 
 ## Using it in your own app
 

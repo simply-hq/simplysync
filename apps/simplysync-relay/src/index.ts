@@ -16,6 +16,9 @@ import {
 } from "./metrics";
 
 const PORT = Number(process.env.PORT ?? 4100);
+// Reported by /health and /v1/status so clients can tell which relay build
+// they're talking to when diagnosing sync issues. Keep in sync with relay-go.
+const RELAY_VERSION = "1.0.0";
 // When set, the ops dashboard (+ its /stats JSON) is enabled and gated by this
 // bearer token. Unset => the admin endpoints don't exist at all (404, same as
 // any unknown path — there's no signal a dashboard exists).
@@ -151,6 +154,18 @@ const getOwner = db.query<{
   stored_bytes: number;
 }, [string]>(
   `select owner_id, relay_auth_hash, stored_bytes from owners where owner_id = ?`,
+);
+const getOwnerCreatedAt = db.query<{ created_at: string }, [string]>(
+  `select created_at from owners where owner_id = ?`,
+);
+// Head cursor + entity counts for /v1/status (owner-scoped indexes keep it cheap).
+const getOwnerEventStats = db.query<
+  { head_seq: number; events: number; streams: number },
+  [string]
+>(
+  `select coalesce(max(seq), 0) as head_seq, count(*) as events,
+          count(distinct stream_id) as streams
+   from events where owner_id = ?`,
 );
 const insertOwner = db.prepare(
   `insert into owners (owner_id, relay_auth_hash, stored_bytes, created_at)
@@ -309,7 +324,12 @@ async function route(request: Request, url: URL): Promise<Response> {
   }
 
   if (request.method === "GET" && url.pathname === "/health") {
-    return json({ ok: true, service: "simplysync-relay" });
+    return json({
+      ok: true,
+      service: "simplysync-relay",
+      version: RELAY_VERSION,
+      serverTime: new Date().toISOString(),
+    });
   }
 
   if (
@@ -331,6 +351,10 @@ async function route(request: Request, url: URL): Promise<Response> {
 
   if (request.method === "GET" && url.pathname === "/v1/usage") {
     return handleUsage(request, url);
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/status") {
+    return handleStatus(request, url);
   }
 
   if (url.pathname.startsWith(BLOB_PATH_PREFIX)) {
@@ -547,6 +571,39 @@ async function handleUsage(request: Request, url: URL): Promise<Response> {
 
   const owner = getOwner.get(ownerId);
   return json({ ownerId, storedBytes: owner?.stored_bytes ?? 0 });
+}
+
+// Per-owner health + quota surface a client app polls to tell apart "relay
+// down" / "network" / "quota" / "auth" / "healthy-but-behind". Mirrors
+// relay-go's handleStatus. A reachable-but-never-synced owner gets 404 from
+// authOwner, which the client reads as "relay up, account empty".
+async function handleStatus(request: Request, url: URL): Promise<Response> {
+  const auth = await authOwner(request, url);
+  if (!auth.ok) return auth.response;
+  const { ownerId } = auth;
+
+  const owner = getOwner.get(ownerId);
+  const createdAt = getOwnerCreatedAt.get(ownerId)?.created_at ?? "";
+  const stats = getOwnerEventStats.get(ownerId) ?? {
+    head_seq: 0,
+    events: 0,
+    streams: 0,
+  };
+  const usedBytes = owner?.stored_bytes ?? 0;
+  const usedPct = MAX_OWNER_BYTES > 0 ? (usedBytes / MAX_OWNER_BYTES) * 100 : 0;
+  return json({
+    server: { version: RELAY_VERSION, serverTime: new Date().toISOString() },
+    account: {
+      ownerId,
+      quotaBytes: MAX_OWNER_BYTES,
+      usedBytes,
+      usedPct,
+      headSeq: stats.head_seq,
+      streams: stats.streams,
+      events: stats.events,
+      createdAt,
+    },
+  });
 }
 
 async function handleBlobPut(

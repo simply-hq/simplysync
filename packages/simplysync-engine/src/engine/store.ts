@@ -7,10 +7,13 @@ import type {
 } from "../engine-types";
 import {
   LEGACY_IMPORT_VERSION,
+  SYNC_LOG_CAP,
+  SYNC_LOG_TABLE,
   SYNC_META_TABLE,
   SYNC_OUTBOX_TABLE,
   SYNC_SEEN_TABLE,
 } from "./constants";
+import type { SyncFailureKind, SyncLogEntry } from "../engine-types";
 import type { EngineState } from "./state";
 
 function makeIndexCreate(name: string): IndexCreate {
@@ -79,6 +82,93 @@ export function createStore(
     driver.exec(
       `create table if not exists "${SYNC_META_TABLE}" (key text primary key, value text not null);`,
     );
+    driver.exec(
+      `create table if not exists "${SYNC_LOG_TABLE}" (` +
+        `seq integer primary key autoincrement, at text not null, relay text not null, ` +
+        `phase text not null, result text not null, kind text, message text, ` +
+        `pushed integer not null default 0, pulled integer not null default 0, ` +
+        `applied integer not null default 0);`,
+    );
+  };
+
+  // --- Sync diagnostics log (device-local; not synced) -----------------------
+
+  const appendSyncLog = (entry: {
+    relay: string;
+    phase: string;
+    result: "ok" | "fail";
+    kind?: SyncFailureKind;
+    message?: string;
+    pushed?: number;
+    pulled?: number;
+    applied?: number;
+  }) => {
+    const { driver } = state;
+    if (!driver) return;
+    driver.exec(
+      `insert into "${SYNC_LOG_TABLE}" (at, relay, phase, result, kind, message, pushed, pulled, applied) ` +
+        `values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        new Date().toISOString(),
+        entry.relay,
+        entry.phase,
+        entry.result,
+        entry.kind ?? null,
+        entry.message ?? null,
+        entry.pushed ?? 0,
+        entry.pulled ?? 0,
+        entry.applied ?? 0,
+      ],
+    );
+    // Ring buffer: drop everything older than the most recent SYNC_LOG_CAP rows.
+    driver.exec(
+      `delete from "${SYNC_LOG_TABLE}" where seq <= ` +
+        `(select seq from "${SYNC_LOG_TABLE}" order by seq desc limit 1 offset ?)`,
+      [SYNC_LOG_CAP],
+    );
+  };
+
+  const recentSyncLog = (limit = 100): SyncLogEntry[] => {
+    const { driver } = state;
+    if (!driver) return [];
+    return driver
+      .select<{
+        seq: number;
+        at: string;
+        relay: string;
+        phase: string;
+        result: "ok" | "fail";
+        kind: SyncFailureKind | null;
+        message: string | null;
+        pushed: number;
+        pulled: number;
+        applied: number;
+      }>(
+        `select * from "${SYNC_LOG_TABLE}" order by seq desc limit ?`,
+        [limit],
+      )
+      .map((row) => ({
+        seq: row.seq,
+        at: row.at,
+        relay: row.relay,
+        phase: row.phase,
+        result: row.result,
+        kind: row.kind ?? undefined,
+        message: row.message ?? undefined,
+        pushed: row.pushed,
+        pulled: row.pulled,
+        applied: row.applied,
+      }));
+  };
+
+  const pendingOutboxCount = (): number => {
+    const { driver } = state;
+    if (!driver) return 0;
+    return (
+      driver.select<{ c: number }>(
+        `select count(*) as c from "${SYNC_OUTBOX_TABLE}" where pushed_at is null`,
+      )[0]?.c ?? 0
+    );
   };
 
   const getMeta = (key: string): string | null => {
@@ -106,6 +196,7 @@ export function createStore(
     driver.exec(`delete from "${SYNC_OUTBOX_TABLE}"`);
     driver.exec(`delete from "${SYNC_SEEN_TABLE}"`);
     driver.exec(`delete from "${SYNC_META_TABLE}"`);
+    driver.exec(`delete from "${SYNC_LOG_TABLE}"`);
   };
 
   const writeRow = (table: string, row: Record<string, unknown>): void => {
@@ -204,6 +295,9 @@ export function createStore(
     coerceValues,
     exportSnapshot,
     importSnapshot,
+    appendSyncLog,
+    recentSyncLog,
+    pendingOutboxCount,
   };
 }
 
@@ -214,16 +308,50 @@ export type Clock = ReturnType<typeof createClock>;
  * clock stays monotonic across restarts (a backward wall clock or a restart that
  * reset `hlcTime` to 0 could otherwise mint HLCs that sort below existing rows —
  * LWW would then discard the newer edit).
+ *
+ * `observeHlc` is the HLC "receive" step: it absorbs the physical time of every
+ * remote HLC we pull so a later local write can never mint an HLC that sorts
+ * below an edit we've already seen (e.g. one stamped by a device whose wall
+ * clock runs ahead). Without it that edit would silently lose the LWW compare.
+ * The Swift engine does the same on its apply path so the two stay convergent.
  */
 export function createClock(state: EngineState, store: Store) {
+  const persist = (): void => {
+    store.setMeta("hlc:time", String(state.hlcTime));
+    store.setMeta("hlc:counter", String(state.hlcCounter));
+  };
+
   const nextHlc = (): string => {
     const now = Date.now();
     const nextTime = Math.max(now, state.hlcTime);
     state.hlcCounter = nextTime === state.hlcTime ? state.hlcCounter + 1 : 0;
     state.hlcTime = nextTime;
-    store.setMeta("hlc:time", String(state.hlcTime));
-    store.setMeta("hlc:counter", String(state.hlcCounter));
+    persist();
     return createHlc(state.deviceId || "local", nextTime, state.hlcCounter);
   };
-  return { nextHlc };
+
+  const observeHlc = (remote: string): void => {
+    // A well-formed HLC is `<10-char base36 millis>-<base36 counter>-<deviceId>`.
+    // Parse defensively: anything malformed is ignored rather than risk poisoning
+    // the clock with a garbage time it could never recover from.
+    const parts = remote.split("-");
+    if (parts.length < 3 || parts[0]!.length !== 10) return;
+    const millis = Number.parseInt(parts[0]!, 36);
+    if (!Number.isFinite(millis)) return;
+    const counter = Number.parseInt(parts[1] ?? "", 36);
+    const c = Number.isFinite(counter) ? counter : 0;
+    // Raise the high-water mark; nextHlc() folds in the wall clock via Math.max,
+    // so it's enough to ensure (hlcTime, hlcCounter) is >= the observed value.
+    if (millis > state.hlcTime) {
+      state.hlcTime = millis;
+      state.hlcCounter = c;
+    } else if (millis === state.hlcTime && c > state.hlcCounter) {
+      state.hlcCounter = c;
+    } else {
+      return; // already at or above the observed time — nothing to absorb
+    }
+    persist();
+  };
+
+  return { nextHlc, observeHlc };
 }

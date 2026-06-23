@@ -164,6 +164,39 @@ func (s *store) ownerStoredBytes(ownerID string) (int64, error) {
 	return n, err
 }
 
+// ownerStatusInfo is the per-owner snapshot behind GET /v1/status: usage +
+// head cursor + entity counts. Streams counts distinct stream_ids (≈ live
+// entities); Events is the raw stored count (collapses to Streams under
+// compaction / the KV redesign).
+type ownerStatusInfo struct {
+	StoredBytes int64
+	CreatedAt   string
+	HeadSeq     int64
+	Events      int64
+	Streams     int64
+}
+
+func (s *store) ownerStatus(ownerID string) (ownerStatusInfo, error) {
+	var info ownerStatusInfo
+	err := s.db.QueryRow(`select stored_bytes, created_at from owners where owner_id = ?`, ownerID).
+		Scan(&info.StoredBytes, &info.CreatedAt)
+	if err == sql.ErrNoRows {
+		return info, nil
+	}
+	if err != nil {
+		return info, err
+	}
+	// Head cursor + counts use the owner-scoped indexes (events_owner_seq,
+	// events_owner_stream), so these stay cheap.
+	if err := s.db.QueryRow(
+		`select coalesce(max(seq), 0), count(*), count(distinct stream_id)
+		 from events where owner_id = ?`, ownerID).
+		Scan(&info.HeadSeq, &info.Events, &info.Streams); err != nil {
+		return info, err
+	}
+	return info, nil
+}
+
 // --- Events ------------------------------------------------------------------
 
 type incomingEvent struct {
