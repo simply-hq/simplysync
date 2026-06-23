@@ -1,266 +1,334 @@
 # Client API — Kotlin
 
-The Kotlin client is `com.simplysync.kotlin`, in
-[`apps/simplysync-android-kotlin`](../../apps/simplysync-android-kotlin/README.md).
-It's the **protocol core** as a pure-JVM library — no Android framework
-dependencies, no JavaScript. You own the local store and the sync loop; the
-library gives you identity, the encrypted envelope, the Hybrid Logical Clock, the
-relay client, and the encrypted DB-snapshot format — wire-compatible with the
-TypeScript and Swift clients.
+The Kotlin client is a **full engine**, not just the protocol core. Like
+`@simplysync/engine`, it owns a local SQLite database, a typed schema, the HLC
+clock, the outbox, a reactive query cache, and the sync loop — so you call
+`insert` / `update` / `query` and collect reactive results into Compose, the same
+way the React version works. It lives in
+[`apps/simplysync-android-kotlin`](../../apps/simplysync-android-kotlin/README.md)
+(`com.simplysync.kotlin`), built on the protocol port in the same package.
 
-> New here? Read **[Native clients](./native.md)** for the big picture — and
-> especially the
-> **[identity interop boundary](./native.md#identity-derivation-the-interop-boundary)**,
-> because Kotlin pins **different BIP39 paths** than TS/Swift (see §1). This page
-> is the step-by-step API; the [React/TypeScript guide](./guide.html) is the
-> engine equivalent.
+> This page mirrors the [React/TypeScript guide](./guide.html) section-for-section.
+> For the on-the-wire protocol and — importantly — the **identity interop
+> boundary** (Kotlin pins different BIP39 paths), see [Native clients](./native.md).
+> Pure JVM (no Android framework deps), so it unit-tests without an emulator.
 
 ## Mental model
 
-- **Your local store is the source of truth.** Reads come from it; writes land in
-  it first, so the app is fully usable offline. The library doesn't ship a store —
-  you bring one (on Android, SQLite).
-- **Every write also produces an encrypted envelope.** You encrypt a `SyncPayload`
-  into a `SyncEnvelope` and queue it for the relay.
-- **Sync is push + pull.** Push your envelopes, pull others', decrypt them, and
-  apply **last-writer-wins** by HLC.
-- **The relay only sees ciphertext.** All crypto runs on-device (JCE primitives,
-  minSdk-24 safe).
+- **The local SQLite database is the source of truth.** Reads come from it; writes
+  land in it first, so the app is fully usable offline.
+- **Every write also produces an encrypted sync event.** The engine queues it in a
+  local outbox and pushes it when a relay is configured and reachable.
+- **Sync is automatic and opportunistic.** The engine polls, pushes the outbox,
+  pulls remote events, decrypts them, and applies them last-writer-wins. You
+  rarely call `sync()` yourself.
+- **Queries are reactive.** `liveQuery` returns a `StateFlow` that re-emits when
+  the rows it depends on change — from a local write *or* an incoming sync.
 
 ```
- write ──▶ local row (your store)         ──▶ UI reads it (instant)
-       └─▶ Envelope.encrypt ──▶ outbox ──▶ RelayClient.push
+ engine.insert(...) ──▶ local SQLite row  ──▶ liveQuery StateFlow re-emits (instant)
+                   └──▶ encrypted envelope ──▶ outbox ──▶ relay (background)
 
- RelayClient.pull ──▶ Envelope.decrypt ──▶ apply LWW (Hlc.compare) ──▶ local row
+ relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ liveQuery StateFlow re-emits
 ```
-
-There is **no schema DSL, no Kysely, no reactive queries** — those are the
-TypeScript engine. You write plain Kotlin models and your own SQL.
 
 ## Add the dependency
 
-The module is pure JVM (depends only on kotlinx-serialization, kotlinx-coroutines,
-and OkHttp), so it unit-tests without an emulator and drops into any Android app.
-Build and run the suite with:
+The engine ships in the same pure-JVM module as the protocol core (depends only on
+kotlinx-serialization, kotlinx-coroutines, OkHttp, and `org.xerial:sqlite-jdbc`
+for the default driver). Build and run the suite with:
 
 ```sh
 cd apps/simplysync-android-kotlin
-./gradlew test
+./gradlew test                                    # local engine + protocol tests
+./gradlew test -PrelayUrl=http://localhost:4100   # + live two-device interop
 ```
 
 Treat the protocol core as **pinned** — update it wholesale, don't fork it, or
 clients stop being able to sync with each other.
 
-## 1. Derive an identity
+## 1. Define a schema
 
-A user's whole account derives from one secret — an `sf1_` recovery key or a
-24-word BIP39 phrase, auto-detected:
-
-```kotlin
-// Generate a fresh native key, or a 24-word phrase, for a new user…
-val recoveryKey = IdentityDeriver.createRecoveryKey()   // "sf1_…"
-val phrase      = Bip39.generate()                       // 24 words
-
-// …or derive from whatever the user pasted (sf1_ key OR phrase):
-val identity = IdentityDeriver.derive(recoveryKeyOrPhrase)
-
-identity.ownerId    // base64url; relay routing + envelope AAD
-identity.relayAuth  // bearer token presented to the relay (a capability)
-identity.dataKey    // AES-256-GCM key (raw bytes) — never leaves the device
-identity.streamKey  // derives the compaction streamId
-identity.source     // Source.RECOVERY_KEY | Source.MNEMONIC
-identity.mnemonic   // the phrase, if derived from one (show it for backup)
-```
-
-Persist only the **secret** (Android Keystore / `EncryptedSharedPreferences`) and
-re-derive on launch — never store the derived keys.
-
-> **Interop — read this.** Kotlin deliberately pins its BIP39 SLIP-21 paths to
-> `"Evolu"`, **not** `"SimplySync"` (a locked regression test enforces it), so the
-> Simply Finance Android migration keeps resolving the same owners. The
-> consequence: a 24-word phrase derives a **different owner** here than on
-> TS/Swift. To sync a Kotlin client with a web/Expo/Swift client, share an
-> **`sf1_` recovery key** (identical HKDF on all three), not a phrase. Full detail
-> in the [interop boundary](./native.md#identity-derivation-the-interop-boundary).
-
-## 2. Model a row and its payload
-
-You define your own row type. To sync a change, wrap it in a `SyncPayload` — the
-decrypted event body:
+A schema is `{ table -> { column -> Column } }`. Column types come from the
+engine's typed DSL and double as runtime validators.
 
 ```kotlin
-data class Todo(
-    val id: String,
-    val title: String,
-    val done: Boolean,
-    val updatedAt: String,   // the HLC that stamped the last write
-)
-
-val payload = SyncPayload(
-    schemaVersion = 1,
-    table = "todos",
-    op = "upsert",                       // or "delete" (a soft-delete tombstone)
-    rowId = todo.id,
-    hlc = clock.next(),                  // see §3
-    value = mapOf(
-        "id" to JsonValue.Str(todo.id),
-        "title" to JsonValue.Str(todo.title),
-        "done" to JsonValue.Bool(todo.done),
+val appSchema = Schema(mapOf(
+    "category" to mapOf(
+        "id" to Column.id("category"),
+        "name" to Column.nonEmptyString,
     ),
+    "entry" to mapOf(
+        "id" to Column.id("entry"),
+        "description" to Column.nonEmptyString,
+        "amountCents" to Column.finiteNumber,
+        "categoryId" to Column.nullable(Column.id("category")), // nullable foreign key
+    ),
+))
+```
+
+You declare `id` per table. The engine adds three **system columns** to every
+table automatically: `createdAt`, `updatedAt` (ISO/HLC strings), and `isDeleted`
+(a `0 | 1` SQLite boolean). You never write `CREATE TABLE`.
+
+**Built-in column types:** `Column.string`, `.nonEmptyString`,
+`.nonEmptyString1000`, `.positiveInt`, `.finiteNumber`, `.sqliteBoolean`,
+`.simpleName`, `.mnemonic`, and `.id("Table")`. Wrap any with `Column.nullable(...)`
+to allow `null`, or `Column.maxLength(n, ...)` to bound a string.
+
+## 2. Create the engine
+
+`createSync(deps)` takes the platform plumbing once, then returns a factory you
+call with your schema and config — exactly like the TS `createSync(deps)(schema,
+config)`.
+
+```kotlin
+val deps = SyncEngineDeps(
+    makeDriver = { name -> JdbcSqliteDriver(dbPath(name)) }, // platform SQLite (§8)
+    secureStorage = AndroidSecureStorage(context),           // OS secret store (§8)
+    reloadApp = { /* re-evaluate app state after restore/reset */ },
 )
+
+val engine = createSync(deps)(appSchema, SyncEngineConfig(
+    name = "my-app",
+    transports = listOf(Transport("http://10.0.2.2:4100")), // optional relay
+    syncIntervalMs = 3000,                                    // poll cadence
+))
+
+engine.ready() // suspend: resolves once the DB is open and the owner is loaded
 ```
 
-`value` is `Map<String, JsonValue>` (`Str` / `IntVal` / `DoubleVal` / `Bool` /
-`Null` / `Arr` / `Obj`). **Keep column names lowercase-ASCII** so canonical-JSON
-key ordering matches JS `localeCompare` across clients (see `CanonicalJson.kt`).
-Deletes are soft: emit `op: "delete"` (or carry an `isDeleted` flag in `value`) so
-the deletion propagates and can lose to a later edit — never just drop the row
-locally.
+On first run the engine mints a new owner (a fresh `sf1_` recovery key, stored via
+`secureStorage`). On later runs it loads the existing one.
 
-## 3. Stamp writes with the clock
+## 3. Writing data
 
-Every write needs a monotonic HLC so edits order deterministically across devices:
+Mutations are synchronous against local SQLite and return a `MutationResult`. Each
+also enqueues an encrypted envelope for sync. Pass columns as `vararg Pair`s —
+`String`, `Int`/`Long`, `Double`, `Boolean`, and `null` are accepted directly.
 
 ```kotlin
-val clock = HlcClock(deviceId)   // one per device, long-lived, thread-safe
-val hlc = clock.next()            // never repeats for this device
-```
-
-`HlcClock` bumps a counter within the same millisecond and never goes backward.
-Two extras over Swift help you restore the clock across launches and on receive:
-
-```kotlin
-clock.seed(millis, counter)   // restore the high-water mark on startup
-clock.observe(incomingHlc)    // the HLC "receive" step when applying a pulled event
-```
-
-Compare two HLCs with `Hlc.compare(a, b)` → `-1 / 0 / 1` (and `null` always
-loses) — that's your last-writer-wins test in §6.
-
-## 4. Encrypt an envelope
-
-```kotlin
-val envelope = Envelope.encrypt(
-    identity = identity,
-    eventId = payload.hlc,        // the engine convention: eventId == hlc
-    deviceId = deviceId,
-    createdAt = Instant.now().toString(),
-    payload = payload,
+// insert — the engine generates the id and system columns
+val result = engine.insert("entry",
+    "description" to "Coffee",
+    "amountCents" to -450,
+    "categoryId" to null,
 )
-```
-
-This produces a `SyncEnvelope` — AES-256-GCM, the canonical-JSON header as AAD,
-everything base64url. Setting `eventId = payload.hlc` is what keeps relay
-compaction sound. The envelope is opaque to the relay; see
-[the encrypted envelope](./sync.md#the-encrypted-envelope-crypto).
-
-## 5. Push & pull via the relay
-
-```kotlin
-val relay = RelayClient(baseUrl, identity.ownerId, identity.relayAuth)
-
-// push() and pull() are suspend fns — call them from a coroutine; they run on Dispatchers.IO.
-val pushed = relay.push(outbox)          // idempotent; relay dedupes by (ownerId, eventId)
-//   pushed.accepted / pushed.duplicate
-
-val pulled = relay.pull(after = cursor)
-//   pulled.events      : List<SyncEnvelope>
-//   pulled.nextCursor  : String  — persist it; pass it back next time
-```
-
-`RelayClient` is OkHttp under the hood. `after = ""` starts from the beginning —
-that's also how a **new device restores**: derive the identity, pull from an empty
-cursor, apply. Drive `push`/`pull` from a `WorkManager` job or a foreground poll
-loop.
-
-> **Emulator note:** an Android emulator reaches your host relay at
-> `http://10.0.2.2:4100`, not `localhost`.
-
-## 6. Apply incoming events (last-writer-wins)
-
-```kotlin
-for (env in pulled.events) {
-    if (env.eventId in seen) continue                              // dedupe
-    val row = Envelope.decrypt(identity, env)                      // verifies owner + GCM
-    val local = store.updatedAt(row.table, row.rowId)
-    if (Hlc.compare(local, row.hlc) <= 0) {                        // incoming wins ties + newer
-        store.apply(row)                                           // upsert, or tombstone if op == "delete"
-    }
-    clock.observe(row.hlc)                                         // advance the local clock
-    seen += env.eventId
+when (result) {
+    is MutationResult.Ok -> println(result.value)
+    is MutationResult.Failure -> println(result.message)
 }
-persistCursor(pulled.nextCursor)
+
+// update — requires the id; updates only the fields you pass
+engine.update("entry", "id" to id, "amountCents" to -500)
+
+// upsert — insert or update by id
+engine.upsert("entry", "id" to id, "description" to "Latte")
 ```
 
-`decrypt` rejects envelopes whose `ownerId` ≠ yours before attempting decryption,
-and GCM verification fails on any tampering. Applies are idempotent, so re-pulling
-is harmless.
-
-## 7. Your local store
-
-The library deliberately stops at the protocol — you bring persistence. On Android
-that's SQLite: one table per type plus `updatedAt` (the HLC) and a soft-delete
-flag, an outbox of un-pushed envelopes, and a per-relay cursor. The Simply Finance
-Android app's `SyncEngine` is the reference implementation of this glue layer.
-
-## 8. Encrypted DB snapshots (relay-free device switch)
-
-`SnapshotCrypto` ports the protocol's encrypted DB-snapshot format — for moving a
-whole database to a new device **without** a relay (export → transfer → import).
-It encrypts a string (your serialized DB) with AES-256-GCM under one of two
-keyings:
+**Deletes are soft.** Set the `isDeleted` system column and filter it out in your
+queries:
 
 ```kotlin
-// Default: keyed by the recovery phrase (SLIP-21 ["SimplySync","BackupKey"]).
-val key = SnapshotCrypto.deriveBackupKeyBytes(recoveryKey)
-val env = SnapshotCrypto.encryptStringWithKey(key, snapshotJson, identity.ownerId)
-val back = SnapshotCrypto.decryptStringWithKey(key, env)
-
-// Optional: keyed by a user passphrase (PBKDF2-HMAC-SHA256, default 600k iters).
-val penv = SnapshotCrypto.encryptStringWithPassphrase("hunter2", snapshotJson)
-val pback = SnapshotCrypto.decryptStringWithPassphrase("hunter2", penv)
+engine.update("entry", "id" to id, "isDeleted" to sqliteTrue)
 ```
 
-The result is an `EncryptedEnvelopeV1` (`format: "simplysync-db-snapshot"`,
-versioned, carrying the nonce/tag and — for the passphrase keying — the KDF
-params). This is the one piece of functionality the Kotlin port ships and the
-Swift port does not. Binary blobs are **not** ported in either.
+Values are validated against the schema, so an invalid write returns
+`MutationResult.Failure(message)` rather than corrupting the row.
 
-## Library API reference
+## 4. Querying data
 
-| Type / function | Signature | Notes |
+Build a query once with `createQuery` from SQL plus a mapper that turns each `Row`
+into a typed value. Double-quote table names so the reactive cache knows which
+writes affect the query.
+
+```kotlin
+data class EntryRow(val id: String, val description: String, val amountCents: Double, val categoryName: String?)
+
+val entriesQuery = engine.createQuery("""
+    select e.id as id, e.description as description, e.amountCents as amountCents,
+           c.name as categoryName
+    from "entry" e
+    left join "category" c on c.id = e.categoryId
+    where e."isDeleted" = 0
+    order by e."createdAt" desc
+""") { row ->
+    EntryRow(row.string("id"), row.string("description"), row.double("amountCents"), row.stringOrNull("categoryName"))
+}
+
+val rows = engine.loadQuery(entriesQuery)     // one-shot read → List<EntryRow>
+val cached = engine.getQueryRows(entriesQuery) // cached snapshot
+```
+
+`Row` has typed accessors: `string` / `stringOrNull` / `int` / `long` / `double` /
+`boolean` / `has`.
+
+## 5. Reactive queries with Compose
+
+`engine.liveQuery(query)` returns a `StateFlow<List<Row>>` — the Kotlin analog of
+React's `useQuery`. It re-emits whenever a local write or an incoming sync changes
+the data. `engine.syncState` is a `StateFlow<SyncState>` for status UI.
+
+```kotlin
+@Composable
+fun Ledger(engine: SyncEngine) {
+    val entries by engine.liveQuery(entriesQuery).collectAsState()
+    val state by engine.syncState.collectAsState()
+
+    Column {
+        SyncBadge(state)
+        Button(onClick = { engine.insert("entry", "description" to "Tea", "amountCents" to -300) }) {
+            Text("Add")
+        }
+        LazyColumn {
+            items(entries) { e -> Text("${e.description}: ${e.amountCents}") }
+        }
+    }
+}
+```
+
+- **`engine.liveQuery(q)`** → `StateFlow<List<Row>>`; collect it. Re-emits on a
+  local write *or* an incoming sync. (The flow for a query is shared.)
+- **`engine.syncState`** — a `StateFlow<SyncState>` (§7).
+- **`engine.subscribeQuery(q) { … }`** — the low-level listener `liveQuery` wraps.
+
+## 6. Identity & recovery
+
+A user's whole account derives from one secret. The engine manages it through
+`secureStorage` and exposes the owner:
+
+```kotlin
+val owner = engine.appOwner()    // suspend → AppOwner? (or engine.currentOwner)
+owner?.id          // public owner id used for relay routing
+owner?.recoveryKey // the secret to back up — an sf1_ key or a 24-word phrase
+owner?.writeKey    // bearer token presented to the relay (a capability)
+owner?.mnemonic    // the 24-word phrase, if the owner was derived from one
+```
+
+Surface `owner.recoveryKey` during onboarding so the user can save it — it's the
+**only** thing that can decrypt their data.
+
+**Restore on a new device** — boot with the saved secret and sync from scratch:
+
+```kotlin
+engine.restoreAppOwner(recoveryKey)               // refuses to wipe unless the relay confirms data
+engine.restoreAppOwner(recoveryKey, force = true) // intentional switch to a new/empty owner
+```
+
+**Reset** mints a brand-new owner and wipes local data:
+
+```kotlin
+engine.resetAppOwner()
+```
+
+Both call your `reloadApp` afterward so the UI re-evaluates against the new owner.
+
+> **Interop — read this.** Kotlin pins its BIP39 SLIP-21 paths to `"Evolu"`, not
+> `"SimplySync"` (a locked regression test enforces it), so a 24-word phrase
+> derives a **different owner** here than on TS/Swift. To sync a Kotlin client with
+> a web/Expo/Swift client, share an **`sf1_` recovery key** (identical on all
+> three). Full detail in the
+> [interop boundary](./native.md#identity-derivation-the-interop-boundary).
+
+## 7. Connecting a relay & sync state
+
+A relay is **optional** — without one the app is purely local-first. Configure one
+(or several) via `transports`, at creation or at runtime:
+
+```kotlin
+engine.setTransports(listOf(Transport("https://relay.example.com")))
+```
+
+Setting transports triggers an immediate sync and starts the background poller.
+You can still force a sync (`suspend`):
+
+```kotlin
+engine.sync() // push the outbox, then pull + apply remote events
+```
+
+Watch progress with `engine.syncState` (`getSyncState()` for a synchronous read):
+
+| `SyncState` | Meaning |
+| --- | --- |
+| `Initial` | Idle, nothing synced yet. |
+| `Syncing` | A push/pull is in flight. |
+| `Synced(lastSyncedAt)` | Up to date. |
+| `NotSynced(error, terminal, status)` | Failed. |
+
+A **terminal** failure (auth/quota/bad request — 400/401/403/413) won't fix itself
+by retrying the same batch, so the engine backs the poller off.
+
+> **For Android emulators** point the relay at `http://10.0.2.2:4100`; a device on
+> the LAN uses the host's IP.
+
+## 8. Platform drivers
+
+The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+
+**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
+
+```kotlin
+interface SqliteDriver {
+    fun exec(sql: String, params: List<SqliteValue> = emptyList())
+    fun select(sql: String, params: List<SqliteValue> = emptyList()): List<Map<String, SqliteValue>>
+    fun <T> transaction(body: () -> T): T
+}
+```
+
+`JdbcSqliteDriver(path)` (libsqlite3-jdbc) is the default for JVM/desktop and the
+tests (`":memory:"` for in-memory). On Android, inject a thin
+`android.database.sqlite`-backed implementation instead.
+
+**`SecureStorage`** — stores the recovery secret in the OS secret store
+(`getItem` / `setItem` / `removeItem`). `InMemorySecureStorage` is for tests; on
+Android, back it with the Keystore / `EncryptedSharedPreferences`.
+
+## Engine API reference
+
+| Member | Signature | Notes |
 | --- | --- | --- |
-| `IdentityDeriver.derive` | `(String) -> Identity` | Auto-detects `sf1_` vs phrase. |
-| `IdentityDeriver.createRecoveryKey` | `() -> String` | Fresh `sf1_` key. |
-| `Bip39.generate` | `(strengthBits = 256) -> String` | New 24-word phrase. |
-| `Identity` | `{ ownerId, relayAuth, dataKey, streamKey, source, mnemonic? }` | Derived; persist only the secret. |
-| `SyncPayload` | `{ schemaVersion, table, op, rowId, hlc, value: Map<String, JsonValue> }` | The decrypted body. |
-| `Envelope.encrypt` | `(identity, eventId, deviceId, createdAt, payload) -> SyncEnvelope` | AES-GCM; header is AAD. |
-| `Envelope.decrypt` | `(identity, envelope) -> SyncPayload` | Verifies owner; GCM-authenticated. |
-| `SyncEnvelope` | `{ version, ownerId, eventId, deviceId, nonce, ciphertext, createdAt, streamId? }` | On-the-wire; `@Serializable`. |
-| `HlcClock` | `(deviceId)` · `next()` · `seed()` · `observe()` | Monotonic, thread-safe. |
-| `Hlc.compare` | `(String?, String) -> Int` | LWW test; `null` loses. |
-| `RelayClient` | `(baseUrl, ownerId, relayAuth, pullLimit = 500)` | OkHttp; `suspend` calls. |
-| `RelayClient.push` | `suspend (List<SyncEnvelope>) -> PushResult` | `{ accepted, duplicate }`. |
-| `RelayClient.pull` | `suspend (after: String) -> PullResult` | `{ events, nextCursor }`. |
-| `SnapshotCrypto` | `deriveBackupKeyBytes · encryptStringWithKey/…WithPassphrase (+ decrypt)` | Encrypted DB snapshots. |
-| `Crypto` | `deriveBytes · slip21 · hmacSha256/512 · aesGcmSeal/Open · pbkdf2 · randomBytes` | Primitives, if you extend the protocol. |
+| `createSync` | `(SyncEngineDeps) -> (Schema, SyncEngineConfig) -> SyncEngine` | Wire deps once, then build. |
+| `engine.ready` | `suspend () -> Unit` | Resolves when DB open + owner loaded. |
+| `engine.insert` | `(String, vararg Pair<String, Any?>) -> MutationResult` | Generates id + system columns. |
+| `engine.update` | `(String, vararg Pair<String, Any?>) -> MutationResult` | Requires `id`; updates passed fields. |
+| `engine.upsert` | `(String, vararg Pair<String, Any?>) -> MutationResult` | Insert or update by id. |
+| `engine.createQuery` | `(String, List<SqliteValue> = [], map: (Row) -> T) -> Query<T>` | Reusable typed query. |
+| `engine.loadQuery` | `(Query<T>) -> List<T>` | One-shot read. |
+| `engine.getQueryRows` | `(Query<T>) -> List<T>` | Cached snapshot. |
+| `engine.liveQuery` | `(Query<T>) -> StateFlow<List<T>>` | Reactive result (`useQuery` analog). |
+| `engine.appOwner` | `suspend () -> AppOwner?` | `{ id, recoveryKey, writeKey, mnemonic? }`. |
+| `engine.restoreAppOwner` | `suspend (String, force: Boolean)` | Restore from a key/phrase. |
+| `engine.resetAppOwner` | `suspend ()` | New owner, wipes local data. |
+| `engine.setTransports` | `(List<Transport>)` | Set relays; triggers sync + polling. |
+| `engine.sync` | `suspend ()` | Push outbox, pull + apply. |
+| `engine.syncState` | `StateFlow<SyncState>` | Reactive status. |
 
-## Scope & pitfalls
+## Differences from the React engine
 
-- **Protocol core only.** No schema validation, Kysely, reactive queries, or
-  platform drivers — those are the TypeScript engine. You write models and SQL
-  yourself.
+- **Raw SQL + a row mapper, not Kysely.** `createQuery` takes a SQL string and a
+  `(Row) -> T` mapper instead of a typed query builder.
+- **`StateFlow`, not hooks.** Compose collects `liveQuery(...).collectAsState()`
+  and `syncState.collectAsState()` instead of `useQuery` / `useSyncState`.
+- **Not ported:** binary blobs, legacy import, and the fluent index builder. The
+  encrypted DB snapshot format *is* ported separately as `SnapshotCrypto`.
 - **Phrases don't interop with TS/Swift** — Kotlin pins `"Evolu"` BIP39 paths;
-  share an `sf1_` key to sync across languages (see §1).
-- **Lowercase-ASCII column names** — otherwise canonical-JSON ordering can diverge
-  from JS and break cross-client decryption.
-- **Don't hard-delete.** Emit a tombstone so the delete syncs and can lose to a
-  later edit.
-- **`eventId` must equal the HLC** — anything else breaks relay log compaction.
-- **Not ported:** binary blobs (the snapshot format *is* ported — see §8).
+  share an `sf1_` key to sync across languages (§6).
+
+## Common pitfalls
+
+- **Quote table names in SQL** (`from "entry"`) so the cache can track which writes
+  refresh a query.
+- **Filter `isDeleted`.** Soft-deleted rows stay in the table; add
+  `where "isDeleted" = 0` to queries that should hide them.
+- **Keep column names lowercase-ASCII** so canonical-JSON ordering matches the
+  other clients (see [parity rules](./native.md#parity-rules-what-must-stay-byte-identical)).
+- **Don't hard-delete.** Use soft deletes so a delete can lose to a later edit and
+  propagate to other devices.
+- **Android needs its own drivers** — inject an `android.database`-backed
+  `SqliteDriver` and a Keystore-backed `SecureStorage`; the bundled JDBC/in-memory
+  ones are for JVM and tests.
 
 ---
 
-**Next:** [Native clients](./native.md) (the cross-language map & parity rules) ·
-[Sync & the relay](./sync.md) (the wire protocol these calls speak).
+**Next:** [Native clients](./native.md) (the cross-language map & interop
+boundary) · [Sync & the relay](./sync.md) (the wire protocol the engine speaks).

@@ -40,21 +40,22 @@ share a secret become the same owner and converge — through any of the
 
 ## What's ported, what stays app-owned
 
-Both ports include the **protocol core** (identity, envelope, HLC, …). They differ
-on the *engine* layer — the local SQLite store, the reactive query cache, the sync
-loop: **Swift ports it** (matching the React DX), while **Kotlin** leaves it as
-app-owned glue. (Re-read [the three layers](./architecture.md#the-three-layers) for
-the split.)
+Both ports include the **protocol core** (identity, envelope, HLC, …) **and** a
+port of the *engine* layer — the local SQLite store, the reactive query cache, the
+sync loop — so each gives the same schema/mutations/queries DX as the React
+version. (Re-read [the three layers](./architecture.md#the-three-layers) for the
+split.)
 
 | Layer | TypeScript | Swift | Kotlin |
 | --- | --- | --- | --- |
 | **Protocol** (identity, envelope, HLC, canonical JSON, BIP39, base64url, relay client) | `@simplysync/protocol` | **Ported** — `Kit/` | **Ported** — `com.simplysync.kotlin` |
-| **Engine** (schema, SQLite store, outbox, sync loop, reactive queries) | `@simplysync/engine` | **Ported** — `Engine/` (see [Client API → Swift](./guide-swift.html)) | **App-owned** — your app's `SyncEngine` |
+| **Engine** (schema, SQLite store, outbox, sync loop, reactive queries) | `@simplysync/engine` | **Ported** — `Engine/` ([guide](./guide-swift.html)) | **Ported** — same package ([guide](./guide-kotlin.html)) |
 | **Relay** | `apps/relay-*` | Unchanged | Unchanged |
 
-So on the server you port nothing; a Swift app gets the full engine DX, while a
-Kotlin app reuses the protocol core verbatim and writes a thin store + sync loop
-in its own idiom.
+So on the server you port nothing, and both native clients get the full engine
+DX. The reactive layer is idiomatic per platform — SwiftUI `LiveQuery`
+(`ObservableObject`) in Swift, a `StateFlow` in Kotlin — over the same SQLite store
+and sync loop.
 
 ## The Swift port — `SimplySyncKit`
 
@@ -151,11 +152,14 @@ val pulled = relay.pull(after = cursor)
 pulled.events.forEach { Envelope.decrypt(identity, it) }
 ```
 
-Unlike the Swift demo, this module is **library-only** — no UI. The local store
-(SQLite schema, system columns, outbox, sync loop) is the app's glue layer; see
-the Simply Finance Android app's `SyncEngine` for a reference. Treat the protocol
-core as pinned: **update it wholesale, don't fork it**, or clients stop being able
-to sync with each other.
+This module is **library-only** — no UI. Above the protocol core it ships a port
+of `@simplysync/engine`: a typed schema, a SQLite store, typed mutations, and
+reactive `StateFlow` queries (the example above is the *low-level* path; most app
+code uses the engine — see the [Client API → Kotlin](./guide-kotlin.html) guide).
+The default `JdbcSqliteDriver` keeps the module pure-JVM and emulator-free for
+tests; an Android app injects its own `android.database`-backed driver. Treat the
+protocol core as pinned: **update it wholesale, don't fork it**, or clients stop
+being able to sync with each other.
 
 **Extra over Swift:** `SnapshotCrypto` ports the encrypted DB-snapshot format for
 relay-free device switches — AES-256-GCM keyed either by the recovery phrase
@@ -209,6 +213,10 @@ against the [protocol source](../../packages/simplysync-protocol).
 | Monotonic clock | engine-internal | `HLCClock.next()` | `HlcClock.next()` |
 | Push / pull | engine sync loop | `RelayClient.push` / `.pull` | `RelayClient.push` / `.pull` |
 | Encrypted DB snapshot | `snapshot-crypto.ts` | — (not ported) | `SnapshotCrypto` |
+| Define a schema | `{ table: { col: Type } }` | `Schema([...])` | `Schema(mapOf(...))` |
+| Create the engine | `createSync(deps)(schema, cfg)` | `createSync(deps)(schema, cfg)` | `createSync(deps)(schema, cfg)` |
+| Write a row | `engine.insert(...)` | `engine.insert(...)` | `engine.insert(...)` |
+| Reactive query | `useQuery(q)` | `engine.liveQuery(q)` → `LiveQuery` | `engine.liveQuery(q)` → `StateFlow` |
 
 ## Verification — these aren't "should match," they're checked
 
