@@ -98,8 +98,18 @@ export function createRelaySync(
   const pushOutbox = async (baseUrl: string): Promise<number> => {
     const { identity, driver } = state;
     if (!identity || !driver) return 0;
+    // Per-relay push cursor so EVERY configured relay receives a full copy of
+    // this device's events (write redundancy), not just whichever relay is
+    // contacted first. A single global "pushed_at is null" filter would let the
+    // first relay drain the outbox and starve the rest. Outbox event_ids are
+    // this device's own HLCs — monotonically increasing — so a string
+    // high-water mark paginates correctly. On upgrade the cursor is unset and
+    // starts at "" (re-push everything once; the relay dedupes by event id).
+    const cursorKey = `push:${baseUrl}`;
+    const after = store.getMeta(cursorKey) ?? "";
     const events = driver.select<{ event_id: string; envelope_json: string }>(
-      `select event_id, envelope_json from "${SYNC_OUTBOX_TABLE}" where pushed_at is null order by event_id asc limit 1000`,
+      `select event_id, envelope_json from "${SYNC_OUTBOX_TABLE}" where event_id > ? order by event_id asc limit 1000`,
+      [after],
     );
     if (events.length === 0) return 0;
     const response = await fetchImpl(`${baseUrl}/v1/events`, {
@@ -116,11 +126,15 @@ export function createRelaySync(
     if (!response.ok) throw httpError("push", response.status);
     const pushedAt = new Date().toISOString();
     for (const event of events) {
+      // `pushed_at` means "reached at least one relay" — it drives the
+      // pending-outbox count and the purge guard. Keep the earliest via coalesce
+      // so re-pushes to other relays don't reset it.
       driver.exec(
-        `update "${SYNC_OUTBOX_TABLE}" set pushed_at = ? where event_id = ?`,
+        `update "${SYNC_OUTBOX_TABLE}" set pushed_at = coalesce(pushed_at, ?) where event_id = ?`,
         [pushedAt, event.event_id],
       );
     }
+    store.setMeta(cursorKey, events[events.length - 1]!.event_id);
     return events.length;
   };
 
@@ -277,6 +291,8 @@ export function createRelaySync(
       }
       if (changed.size > 0) queryCache.refreshQueries(changed);
       pruneSeen();
+      // Drop outbox events now delivered to every relay (cursors advanced above).
+      store.pruneOutbox(bases);
 
       if (anySuccess || !firstFailure) {
         state.setSyncState({

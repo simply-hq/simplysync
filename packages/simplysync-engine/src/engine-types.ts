@@ -71,6 +71,30 @@ export type MutationResult =
   | { readonly ok: true; readonly value: { readonly id: Id } }
   | { readonly ok: false; readonly error: { readonly message: string } };
 
+/**
+ * One write in a `batch`. A discriminated union over the schema's tables, so
+ * `values` is type-checked against the chosen `table`. `mode` defaults to
+ * "upsert".
+ */
+export type BatchOp<S extends SchemaDefinition> = {
+  [T in keyof S & string]:
+    | {
+        readonly table: T;
+        readonly values: InsertValues<S[T]> & Partial<UpdateValues<S[T]>>;
+        readonly mode?: "insert" | "update" | "upsert";
+      }
+    | {
+        readonly table: T;
+        readonly mode: "delete";
+        readonly values: { readonly id: Id };
+      };
+}[keyof S & string];
+
+/** Result of `batch`: the ids written (in op order) or the first error. */
+export type BatchResult =
+  | { readonly ok: true; readonly ids: readonly Id[] }
+  | { readonly ok: false; readonly error: { readonly message: string } };
+
 // ---------------------------------------------------------------------------
 // Platform plumbing injected by each app (expo-sqlite / wa-sqlite, secure
 // storage for the recovery phrase).
@@ -160,6 +184,23 @@ export interface AppOwner {
 
 export interface MutationOptions {
   readonly onComplete?: () => void;
+  /**
+   * Write to the local database and refresh queries, but DON'T enqueue a sync
+   * event or trigger a push. The row still gets a fresh HLC, so the local UI
+   * updates instantly and a later synced write to the same row wins LWW.
+   *
+   * For high-frequency, soon-superseded edits where syncing every step is
+   * wasteful: a streaming AI reply written token-by-token, a text field saved on
+   * every keystroke, a slider dragged in real time. Stream the intermediate
+   * states with `{ local: true }`, then do ONE normal write at the end so peers
+   * receive a single event with the final value instead of hundreds of
+   * throwaway envelopes (every one of which they'd otherwise pull + decrypt).
+   *
+   * Trade-off: a local-only write that's never followed by a synced write stays
+   * on this device. Commit on completion (or debounce a periodic real write) so
+   * the latest value reaches the relay.
+   */
+  readonly local?: boolean;
 }
 
 export interface SyncEngineConfig {
@@ -239,6 +280,38 @@ export interface SyncEngine<S extends SchemaDefinition> {
     values: InsertValues<S[T]> & UpdateValues<S[T]>,
     options?: MutationOptions,
   ): MutationResult;
+  /**
+   * Write many rows atomically in one transaction with a single query refresh
+   * and a single sync. Bulk-seed, import, or persist several AI-generated items
+   * at once — and mix in deletes (`mode: "delete"`) for atomic moves. Validates
+   * every op first; one invalid op aborts the whole batch.
+   */
+  batch(ops: ReadonlyArray<BatchOp<S>>, options?: MutationOptions): BatchResult;
+  /**
+   * Soft-delete a row by id: marks it deleted so the deletion replicates as a
+   * tombstone (a hard local delete would resurrect from a peer on next sync) and
+   * queries that filter `isDeleted` stop returning it. Idempotent.
+   */
+  delete<T extends keyof S & string>(
+    table: T,
+    id: Id,
+    options?: MutationOptions,
+  ): MutationResult;
+  /** Soft-delete many rows of one table in a single atomic batch. */
+  deleteMany<T extends keyof S & string>(
+    table: T,
+    ids: readonly Id[],
+    options?: MutationOptions,
+  ): BatchResult;
+  /**
+   * Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older
+   * than `olderThanMs` (default 30 days). Safe: the grace window lets the
+   * deletion replicate first, pending-but-unpushed deletes are kept while
+   * relays are configured, and the relay retains tombstones so a re-sync
+   * re-applies them — synced peers are never resurrected. Returns the count
+   * purged.
+   */
+  purgeDeleted(options?: { olderThanMs?: number }): { purged: number };
   readonly appOwner: Promise<AppOwner | null>;
   useOwner(options: { transports?: readonly Transport[] }): () => void;
   /**

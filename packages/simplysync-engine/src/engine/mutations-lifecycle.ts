@@ -18,10 +18,12 @@ import {
 } from "@simplysync/protocol";
 import {
   sqliteFalse,
+  sqliteTrue,
   type Id,
   type SqliteBoolean,
 } from "../type";
 import type {
+  BatchResult,
   DbSnapshot,
   MutationOptions,
   MutationResult,
@@ -71,17 +73,25 @@ export function createMutations(
     );
   };
 
-  const mutate = (
+  // A validated, merged row ready to write. Splitting "prepare" (pure-ish:
+  // validate + merge + stamp the HLC) from "write" lets `batch` prepare every
+  // op up front and fail atomically before touching the database.
+  interface PreparedRow {
+    readonly table: string;
+    readonly id: string;
+    readonly hlc: string;
+    readonly merged: Record<string, unknown>;
+  }
+
+  const prepareRow = (
     table: string,
     values: Record<string, unknown>,
-    mode: "insert" | "update" | "upsert",
-    options?: MutationOptions,
-  ): MutationResult => {
+    mode: "insert" | "update" | "upsert" | "delete",
+  ): { ok: true; prepared: PreparedRow } | { ok: false; message: string } => {
     const { driver } = state;
-    if (!driver)
-      return { ok: false, error: { message: "Database not ready." } };
+    if (!driver) return { ok: false, message: "Database not ready." };
     if (!(table in schema))
-      return { ok: false, error: { message: `Unknown table: ${table}` } };
+      return { ok: false, message: `Unknown table: ${table}` };
 
     const id = (values.id as Id | undefined) ?? createId();
     const existing =
@@ -93,15 +103,20 @@ export function createMutations(
           )[0] ?? null;
 
     if (mode === "update" && !existing)
-      return { ok: false, error: { message: `Row not found: ${id}` } };
+      return { ok: false, message: `Row not found: ${id}` };
 
     const { row, error: coerceError } = store.coerceValues(table, {
       ...values,
       id,
     });
-    if (coerceError) return { ok: false, error: { message: coerceError } };
+    if (coerceError) return { ok: false, message: coerceError };
 
-    if ("isDeleted" in values) row.isDeleted = values.isDeleted;
+    // `delete` is a soft delete: force the tombstone flag so the deletion
+    // replicates and wins LWW (a hard local delete would resurrect from a peer
+    // on the next pull). Idempotent — deleting a row that isn't local yet still
+    // writes a tombstone that supersedes the row when it arrives.
+    if (mode === "delete") row.isDeleted = sqliteTrue;
+    else if ("isDeleted" in values) row.isDeleted = values.isDeleted;
 
     const hlc = clock.nextHlc();
     const providedCreatedAt =
@@ -124,6 +139,34 @@ export function createMutations(
         sqliteFalse,
     };
 
+    return { ok: true, prepared: { table, id, hlc, merged } };
+  };
+
+  // Enqueue one event per row, then trigger a single opportunistic sync.
+  // Skipped entirely for local-only writes (see MutationOptions.local).
+  const replicate = (rows: readonly PreparedRow[], local?: boolean): void => {
+    if (local || rows.length === 0) return;
+    void Promise.all(
+      rows.map((r) => enqueue(r.table, "upsert", r.id, r.hlc, r.merged)),
+    ).then(() => {
+      if (state.transports.length > 0) void relay.sync().catch(() => undefined);
+    });
+  };
+
+  const mutate = (
+    table: string,
+    values: Record<string, unknown>,
+    mode: "insert" | "update" | "upsert" | "delete",
+    options?: MutationOptions,
+  ): MutationResult => {
+    const { driver } = state;
+    if (!driver)
+      return { ok: false, error: { message: "Database not ready." } };
+
+    const prep = prepareRow(table, values, mode);
+    if (!prep.ok) return { ok: false, error: { message: prep.message } };
+    const { id, merged } = prep.prepared;
+
     try {
       driver.transaction(() => {
         store.writeRow(table, merged);
@@ -137,16 +180,67 @@ export function createMutations(
       };
     }
 
-    void enqueue(table, "upsert", id, hlc, merged).then(() => {
-      // best-effort opportunistic sync after a local write
-      if (state.transports.length > 0) void relay.sync().catch(() => undefined);
-    });
+    // Local-only writes (e.g. a streaming AI reply, see MutationOptions.local)
+    // skip the outbox + push so peers aren't flooded with soon-superseded
+    // events. The row is already persisted above and queries refresh below, so
+    // the local UI is fully up to date — only replication waits for a normal
+    // (committing) write to the same row.
+    replicate([prep.prepared], options?.local);
     queryCache.refreshQueries([table]);
     options?.onComplete?.();
     return { ok: true, value: { id } };
   };
 
-  return { mutate, enqueue };
+  // Write many rows at once. Atomic: every op is validated + merged first, so a
+  // single invalid op aborts the whole batch before anything is written. On
+  // success all rows are written in ONE SQLite transaction, each affected table
+  // is refreshed ONCE (not once per row — reactive queries re-run a single
+  // time), and replication fires a single sync. Bulk-seed a todo list, import a
+  // chat history, or persist several AI-generated items in one shot.
+  //
+  // Each op is prepared against the pre-batch database state (no intra-batch
+  // read-your-writes); for writes that depend on an earlier op in the same
+  // batch, use separate calls. `mode` defaults to "upsert".
+  const batch = (
+    ops: ReadonlyArray<{
+      table: string;
+      values: Record<string, unknown>;
+      mode?: "insert" | "update" | "upsert" | "delete";
+    }>,
+    options?: MutationOptions,
+  ): BatchResult => {
+    const { driver } = state;
+    if (!driver)
+      return { ok: false, error: { message: "Database not ready." } };
+
+    const prepared: PreparedRow[] = [];
+    for (const op of ops) {
+      const prep = prepareRow(op.table, op.values, op.mode ?? "upsert");
+      if (!prep.ok)
+        return { ok: false, error: { message: prep.message } };
+      prepared.push(prep.prepared);
+    }
+
+    try {
+      driver.transaction(() => {
+        for (const row of prepared) store.writeRow(row.table, row.merged);
+      });
+    } catch (caught) {
+      return {
+        ok: false,
+        error: {
+          message: caught instanceof Error ? caught.message : String(caught),
+        },
+      };
+    }
+
+    replicate(prepared, options?.local);
+    queryCache.refreshQueries([...new Set(prepared.map((r) => r.table))]);
+    options?.onComplete?.();
+    return { ok: true, ids: prepared.map((r) => r.id) };
+  };
+
+  return { mutate, batch, enqueue };
 }
 
 export type Lifecycle = ReturnType<typeof createLifecycle>;

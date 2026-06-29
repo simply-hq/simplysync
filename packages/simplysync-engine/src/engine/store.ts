@@ -16,6 +16,15 @@ import {
 import type { SyncFailureKind, SyncLogEntry } from "../engine-types";
 import type { EngineState } from "./state";
 
+// Extract the wall-clock millis encoded in an HLC's first segment
+// (`base36(millis,10)-base36(counter,4)-deviceId`). Returns null if malformed.
+function hlcMillis(hlc: string): number | null {
+  const first = hlc.split("-")[0];
+  if (!first || first.length !== 10) return null;
+  const millis = Number.parseInt(first, 36);
+  return Number.isFinite(millis) ? millis : null;
+}
+
 function makeIndexCreate(name: string): IndexCreate {
   const spec = { name, table: "", columns: [] as string[] };
   const api: IndexCreate = {
@@ -51,9 +60,11 @@ export function createStore(
     driver.exec("pragma journal_mode = WAL;");
     for (const [table, columns] of Object.entries(schema)) {
       const defs: string[] = ['"id" text primary key'];
+      const columnTypes: Array<[string, string]> = [];
       for (const [name, type] of Object.entries(columns)) {
         if (name === "id") continue;
         defs.push(`"${name}" ${type.sqlite}`);
+        columnTypes.push([name, type.sqlite]);
       }
       defs.push('"createdAt" text');
       defs.push('"updatedAt" text');
@@ -61,6 +72,26 @@ export function createStore(
       driver.exec(
         `create table if not exists "${table}" (${defs.join(", ")});`,
       );
+      // Additive migration. `create table if not exists` is a no-op on a table
+      // that already exists, so a schema that has grown new columns since the
+      // table was first created (apps add fields as they evolve — a todo gains
+      // `dueDate`, a message gains `replyToId`) would never get them. Reconcile
+      // by adding any missing column: ALTER ADD COLUMN is metadata-only in
+      // SQLite, and existing rows read NULL for the new column until a write
+      // backfills it — which merges cleanly under LWW like any field edit. Only
+      // additive (never rename/drop): old and new app versions stay
+      // wire-compatible against the same relay. New *tables* are handled by the
+      // create above; new *indexes* by `create index if not exists` below.
+      const present = new Set(
+        driver
+          .select<{ name: string }>(`pragma table_info("${table}")`)
+          .map((c) => c.name),
+      );
+      for (const [name, sqlite] of columnTypes) {
+        if (!present.has(name)) {
+          driver.exec(`alter table "${table}" add column "${name}" ${sqlite};`);
+        }
+      }
     }
     if (config.indexes) {
       for (const index of config.indexes(makeIndexCreate)) {
@@ -199,6 +230,71 @@ export function createStore(
     driver.exec(`delete from "${SYNC_LOG_TABLE}"`);
   };
 
+  // Reclaim local space by hard-deleting old soft-deleted rows (tombstones).
+  // Safe because: (1) only tombstones older than `olderThanMs` are touched, so
+  // the deletion has had ample time to reach the relay and peers; (2) when
+  // relays are configured, a tombstone whose delete event is still pending in
+  // the outbox (not yet pushed) is kept, so an offline device can't forget a
+  // delete it never sent. The relay retains the latest event per row
+  // (compaction keeps tombstones), so a fresh re-sync re-applies the delete —
+  // purging never resurrects data on a synced peer. Returns rows purged.
+  const purgeDeleted = (olderThanMs: number, nowMs: number): number => {
+    const { driver } = state;
+    if (!driver) return 0;
+    const cutoff = nowMs - olderThanMs;
+    const requirePushed = state.transports.length > 0;
+    let purged = 0;
+    for (const table of Object.keys(schema)) {
+      const rows = driver.select<{ id: string; updatedAt: string }>(
+        `select id, updatedAt from "${table}" where isDeleted = 1`,
+      );
+      for (const row of rows) {
+        const millis = hlcMillis(row.updatedAt);
+        if (millis === null || millis > cutoff) continue; // too new / unparseable
+        if (requirePushed) {
+          const pending = driver.select(
+            `select 1 from "${SYNC_OUTBOX_TABLE}" where event_id = ? and pushed_at is null limit 1`,
+            [row.updatedAt],
+          );
+          if (pending.length > 0) continue; // delete not yet on the relay
+        }
+        driver.exec(`delete from "${table}" where id = ?`, [row.id]);
+        purged += 1;
+      }
+    }
+    return purged;
+  };
+
+  // Bound the outbox (a send queue, not an archive): drop events confirmed
+  // delivered to EVERY current relay. The lowest per-relay push cursor
+  // (`push:<base>` in meta) is the highest event id every relay has acked;
+  // events at or below it are fully delivered and safe to forget. A relay with
+  // no cursor yet (just added, never pushed) makes the minimum "" so nothing is
+  // pruned — it still needs the backlog. (Pruning a pushed row is safe for the
+  // purge guard, which treats an absent outbox row as "already pushed", and for
+  // the pending count, which only counts un-pushed rows.) Returns rows pruned.
+  const pruneOutbox = (relayBases: readonly string[]): number => {
+    const { driver } = state;
+    if (!driver || relayBases.length === 0) return 0;
+    let min: string | null = null;
+    for (const base of relayBases) {
+      const cursor = getMeta(`push:${base}`) ?? "";
+      if (min === null || cursor < min) min = cursor;
+    }
+    if (!min) return 0; // a relay hasn't been pushed to yet -> keep everything
+    const count =
+      driver.select<{ c: number }>(
+        `select count(*) as c from "${SYNC_OUTBOX_TABLE}" where event_id <= ?`,
+        [min],
+      )[0]?.c ?? 0;
+    if (count > 0) {
+      driver.exec(`delete from "${SYNC_OUTBOX_TABLE}" where event_id <= ?`, [
+        min,
+      ]);
+    }
+    return count;
+  };
+
   const writeRow = (table: string, row: Record<string, unknown>): void => {
     const { driver } = state;
     if (!driver) return;
@@ -291,6 +387,8 @@ export function createStore(
     getMeta,
     setMeta,
     wipeLocalData,
+    purgeDeleted,
+    pruneOutbox,
     writeRow,
     coerceValues,
     exportSnapshot,

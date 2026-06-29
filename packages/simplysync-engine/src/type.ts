@@ -5,6 +5,8 @@
 // sites build on.
 
 import { isRecoveryMnemonic, normalizeMnemonic } from "@simplysync/protocol";
+import { isOrderKey } from "./order";
+import { isJsonString } from "./json";
 
 declare const brandSymbol: unique symbol;
 export type Brand<B extends string> = { readonly [brandSymbol]: B };
@@ -185,6 +187,42 @@ export const id = <Table extends string>(table: Table): Type<string> =>
     validate: (v) =>
       typeof v === "string" && v.length > 0 ? null : "Expected an id string.",
   });
+
+// ----- JSON-valued column ------------------------------------------------
+
+export type JsonText = string;
+/**
+ * A column holding JSON-encoded structured data (arrays/objects). Stored as
+ * text; write values with `encodeJson` and read them with `decodeJsonOr` /
+ * `decodeJson` (from `./json`). Wrap with `nullOr(JsonText)` for an optional
+ * column. The decoded value is a string by design — the helpers carry the
+ * typed shape — so the type system never claims a parsed object it can't return
+ * from a raw query row.
+ */
+export const JsonText = makeType<string>({
+  name: "JsonText",
+  sqlite: "text",
+  validate: (v) =>
+    isJsonString(v)
+      ? null
+      : "Expected a JSON string (serialize with encodeJson).",
+});
+
+// ----- Fractional index (ordering key) ----------------------------------
+
+export type FractionalIndex = string;
+/**
+ * An ordering key for reorderable lists (todos, chat/threads, kanban). Stored as
+ * text and sorted lexicographically; mint values with `keyBetween` /
+ * `keysBetween` from `./order`. Sorting in SQL should be `order by <col>, id` to
+ * match `compareOrderKeys`' tie-break.
+ */
+export const FractionalIndex = makeType<string>({
+  name: "FractionalIndex",
+  sqlite: "text",
+  validate: (v) =>
+    isOrderKey(v) ? null : "Expected a fractional index key.",
+});
 
 // ----- Service name & Mnemonic ------------------------------------------
 

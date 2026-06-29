@@ -32,6 +32,10 @@ import {
 //   mutations-lifecycle  — the write path + boot/owner management
 export { createIdFromString } from "./engine/ids";
 
+// Default tombstone grace period for `purgeDeleted`: long enough that a delete
+// has reached the relay and any active peer before its row is reclaimed.
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** Builds a compile-only Kysely instance (SQLite dialect, no real driver). */
 function createCompiler<S extends SchemaDefinition>(): Kysely<Database<S>> {
   return new Kysely<Database<S>>({
@@ -137,6 +141,25 @@ export const createSync =
           options,
         );
       },
+      batch(ops, options) {
+        return mutations.batch(
+          ops as ReadonlyArray<{
+            table: string;
+            values: Record<string, unknown>;
+            mode?: "insert" | "update" | "upsert" | "delete";
+          }>,
+          options,
+        );
+      },
+      delete(table, id, options) {
+        return mutations.mutate(table, { id }, "delete", options);
+      },
+      deleteMany(table, ids, options) {
+        return mutations.batch(
+          ids.map((id) => ({ table, values: { id }, mode: "delete" as const })),
+          options,
+        );
+      },
       useOwner(options) {
         if (options.transports) instance.setTransports(options.transports);
         return () => instance.setTransports([]);
@@ -183,6 +206,10 @@ export const createSync =
       },
       getPendingOutboxCount() {
         return store.pendingOutboxCount();
+      },
+      purgeDeleted(options) {
+        const olderThanMs = options?.olderThanMs ?? THIRTY_DAYS_MS;
+        return { purged: store.purgeDeleted(olderThanMs, Date.now()) };
       },
       setTransports(next) {
         relay.setTransports(next);
