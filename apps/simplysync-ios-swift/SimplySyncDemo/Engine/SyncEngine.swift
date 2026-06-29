@@ -243,58 +243,136 @@ final class SyncEngine: ObservableObject {
     func upsert(_ table: String, _ values: [String: JSONValue]) -> MutationResult {
         mutate(table, values, mode: .upsert)
     }
+    /// Soft-delete a row by id (parity with the TS/Kotlin engines): marks it deleted so
+    /// the deletion replicates as a tombstone (a hard local delete would resurrect from a
+    /// peer on the next pull) and `isDeleted`-filtered queries stop returning it.
+    /// Idempotent — deleting a not-yet-local id writes a superseding tombstone.
+    func delete(_ table: String, id: String) -> MutationResult {
+        mutate(table, ["id": .string(id)], mode: .delete)
+    }
 
-    private enum Mode { case insert, update, upsert }
+    fileprivate enum Mode { case insert, update, upsert, delete }
+
+    private struct PreparedRow {
+        let table: String
+        let id: String
+        let hlc: String
+        let merged: [String: JSONValue]
+    }
+
+    /// Validate + merge + stamp the HLC for one write, WITHOUT touching the database.
+    /// Split out of the write so `batch` can prepare every op up front and fail
+    /// atomically before anything is written. Must be called under `lock`.
+    private func prepareRow(_ table: String, _ values: [String: JSONValue], mode: Mode) -> (PreparedRow?, String?) {
+        guard store.driver != nil, let clock else { return (nil, "Database not ready.") }
+        guard schema.has(table) else { return (nil, "Unknown table: \(table)") }
+        let id: String = {
+            if case .string(let s)? = values["id"], !s.isEmpty { return s }
+            return createId()
+        }()
+        let existing = mode == .insert ? nil : store.readRow(table, id: id)
+        if mode == .update, existing == nil { return (nil, "Row not found: \(id)") }
+
+        var merged: [String: JSONValue] = existing.map(Self.rowToJson) ?? [:]
+        var coerceInput = values
+        coerceInput["id"] = .string(id)
+        let (coerced, error) = store.coerceValues(table, coerceInput)
+        if let error { return (nil, error) }
+        for (k, v) in coerced { merged[k] = v }
+        if let provided = values["isDeleted"] { merged["isDeleted"] = provided }
+        // DELETE forces the tombstone flag so the deletion replicates and wins LWW.
+        if mode == .delete { merged["isDeleted"] = sqliteTrue }
+
+        let hlc = clock.nextHlc()
+        merged["id"] = .string(id)
+        merged["updatedAt"] = .string(hlc)
+        // Keep an existing createdAt; on insert use a caller-provided one
+        // (demo/legacy backfill) or stamp now.
+        if existing == nil, case .string(let provided)? = values["createdAt"] {
+            merged["createdAt"] = .string(provided)
+        }
+        if merged["createdAt"] == nil { merged["createdAt"] = .string(Self.isoNow()) }
+        if merged["isDeleted"] == nil { merged["isDeleted"] = sqliteFalse }
+
+        return (PreparedRow(table: table, id: id, hlc: hlc, merged: merged), nil)
+    }
 
     private func mutate(_ table: String, _ values: [String: JSONValue], mode: Mode) -> MutationResult {
         let outcome: MutationResult = lock.withLock {
-            guard store.driver != nil, let clock else {
-                return .failure(message: "Database not ready.")
-            }
-            guard schema.has(table) else {
-                return .failure(message: "Unknown table: \(table)")
-            }
-            let id: String = {
-                if case .string(let s)? = values["id"], !s.isEmpty { return s }
-                return createId()
-            }()
-            let existing = mode == .insert ? nil : store.readRow(table, id: id)
-            if mode == .update, existing == nil {
-                return .failure(message: "Row not found: \(id)")
-            }
-
-            var merged: [String: JSONValue] = existing.map(Self.rowToJson) ?? [:]
-            var coerceInput = values
-            coerceInput["id"] = .string(id)
-            let (coerced, error) = store.coerceValues(table, coerceInput)
-            if let error { return .failure(message: error) }
-            for (k, v) in coerced { merged[k] = v }
-            if let provided = values["isDeleted"] { merged["isDeleted"] = provided }
-
-            let hlc = clock.nextHlc()
-            merged["id"] = .string(id)
-            merged["updatedAt"] = .string(hlc)
-            // Keep an existing createdAt; on insert use a caller-provided one
-            // (demo/legacy backfill) or stamp now.
-            if existing == nil, case .string(let provided)? = values["createdAt"] {
-                merged["createdAt"] = .string(provided)
-            }
-            if merged["createdAt"] == nil { merged["createdAt"] = .string(Self.isoNow()) }
-            if merged["isDeleted"] == nil { merged["isDeleted"] = sqliteFalse }
-
+            guard let driver = store.driver else { return .failure(message: "Database not ready.") }
+            let (prepared, error) = prepareRow(table, values, mode: mode)
+            guard let prepared else { return .failure(message: error ?? "Mutation failed.") }
             do {
-                try store.driver?.transaction { try store.writeRow(table, merged) }
+                try driver.transaction { try store.writeRow(prepared.table, prepared.merged) }
             } catch {
                 return .failure(message: describe(error))
             }
-            enqueue(table: table, rowId: id, hlc: hlc, value: merged)
+            enqueue(table: prepared.table, rowId: prepared.id, hlc: prepared.hlc, value: prepared.merged)
             cache.refreshQueries([table])
-            return .ok(id: id)
+            return .ok(id: prepared.id)
         }
         if outcome.isOk, !lock.withLock({ transports }).isEmpty {
             Task { await self.sync() }
         }
         return outcome
+    }
+
+    /// Collects writes inside `batch { ... }`; each op is applied atomically in one
+    /// transaction with a single query refresh and a single sync (parity with TS/Kotlin).
+    final class BatchScope {
+        fileprivate var specs: [(table: String, values: [String: JSONValue], mode: Mode)] = []
+        func insert(_ table: String, _ values: [String: JSONValue]) { specs.append((table, values, .insert)) }
+        func update(_ table: String, _ values: [String: JSONValue]) { specs.append((table, values, .update)) }
+        func upsert(_ table: String, _ values: [String: JSONValue]) { specs.append((table, values, .upsert)) }
+        func delete(_ table: String, id: String) { specs.append((table, ["id": .string(id)], .delete)) }
+    }
+
+    /// Write many rows atomically: validate + merge every op first (one bad op aborts the
+    /// whole batch before anything is written), then one transaction, one query refresh per
+    /// affected table, and one sync. Mix in `delete` for atomic moves. Parity with TS `batch`.
+    @discardableResult
+    func batch(_ build: (BatchScope) -> Void) -> BatchResult {
+        let scope = BatchScope()
+        build(scope)
+        let outcome: BatchResult = lock.withLock {
+            guard let driver = store.driver else { return .failure(message: "Database not ready.") }
+            var prepared: [PreparedRow] = []
+            for spec in scope.specs {
+                let (p, error) = prepareRow(spec.table, spec.values, mode: spec.mode)
+                guard let p else { return .failure(message: error ?? "Batch failed.") }
+                prepared.append(p)
+            }
+            do {
+                try driver.transaction { for p in prepared { try store.writeRow(p.table, p.merged) } }
+            } catch {
+                return .failure(message: describe(error))
+            }
+            for p in prepared { enqueue(table: p.table, rowId: p.id, hlc: p.hlc, value: p.merged) }
+            cache.refreshQueries(Set(prepared.map { $0.table }))
+            return .ok(ids: prepared.map { $0.id })
+        }
+        if outcome.isOk, !lock.withLock({ transports }).isEmpty {
+            Task { await self.sync() }
+        }
+        return outcome
+    }
+
+    /// Soft-delete many rows of one table in a single atomic batch.
+    @discardableResult
+    func deleteMany(_ table: String, ids: [String]) -> BatchResult {
+        batch { scope in for id in ids { scope.delete(table, id: id) } }
+    }
+
+    /// Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older than
+    /// [olderThanMs] (default 30 days). Safe (parity with the TS/Kotlin engines): the grace
+    /// window lets the deletion replicate, unpushed deletes are kept while relays are
+    /// configured, and the relay retains tombstones so a re-sync re-applies them.
+    @discardableResult
+    func purgeDeleted(olderThanMs: Int64 = 30 * 24 * 60 * 60 * 1000) -> Int {
+        lock.withLock {
+            let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+            return store.purgeDeleted(olderThanMs: olderThanMs, nowMs: nowMs, requirePushed: !transports.isEmpty)
+        }
     }
 
     /// Encrypt the change and append it to the outbox. Called under the lock.
@@ -372,6 +450,8 @@ final class SyncEngine: ObservableObject {
             lock.withLock {
                 if !changed.isEmpty { cache.refreshQueries(changed) }
                 pruneSeen()
+                // Drop outbox events now delivered to every relay (cursors advanced above).
+                store.pruneOutbox(bases)
                 if pollIntervalMs != defaultPollMs { pollIntervalMs = defaultPollMs }
             }
             setSyncState(.synced(lastSyncedAt: Self.isoNow()))
@@ -387,9 +467,18 @@ final class SyncEngine: ObservableObject {
     }
 
     private func pushOutbox(base: String, identity: Identity) async throws {
+        // Per-relay push cursor (parity with the TS/Kotlin engines) so EVERY configured
+        // relay receives a full copy of this device's events (write redundancy), not just
+        // the first one contacted. A single global "pushed_at is null" filter let the first
+        // relay drain the outbox and starve the rest. Outbox event_ids are this device's own
+        // HLCs — monotonically increasing — so a string high-water mark paginates correctly.
+        // On upgrade the cursor is unset and starts at "" (re-push once; relay dedupes).
+        let cursorKey = "push:\(base)"
         let pending: [(eventId: String, json: String)] = lock.withLock {
+            let after = store.getMeta(cursorKey) ?? ""
             guard let rows = try? store.driver?.select(
-                "select event_id, envelope_json from \"\(Store.outboxTable)\" where pushed_at is null order by event_id asc limit 1000")
+                "select event_id, envelope_json from \"\(Store.outboxTable)\" where event_id > ? order by event_id asc limit 1000",
+                [.text(after)])
             else { return [] }
             return rows.compactMap { row in
                 if case .text(let eid)? = row["event_id"], case .text(let json)? = row["envelope_json"] {
@@ -410,10 +499,12 @@ final class SyncEngine: ObservableObject {
         let pushedAt = Self.isoNow()
         lock.withLock {
             for item in pending {
+                // `pushed_at` marks "reached at least one relay" — keep the earliest via coalesce.
                 try? store.driver?.exec(
-                    "update \"\(Store.outboxTable)\" set pushed_at = ? where event_id = ?",
+                    "update \"\(Store.outboxTable)\" set pushed_at = coalesce(pushed_at, ?) where event_id = ?",
                     [.text(pushedAt), .text(item.eventId)])
             }
+            if let last = pending.last?.eventId { store.setMeta(cursorKey, last) }
         }
     }
 

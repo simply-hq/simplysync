@@ -33,6 +33,19 @@ final class Store {
             defs.append("\"updatedAt\" text")
             defs.append("\"isDeleted\" integer default 0")
             try driver.exec("create table if not exists \"\(table)\" (\(defs.joined(separator: ", ")));")
+            // Additive migration (parity with the TS/Kotlin engines): `create table if
+            // not exists` is a no-op on an existing table, so a schema that has grown new
+            // columns since the table was created would never get them. Add any missing
+            // column — ALTER ADD COLUMN is metadata-only in SQLite and existing rows read
+            // NULL until a write backfills them (merges cleanly under LWW). Additive only
+            // (no rename/drop) so old and new app versions stay wire-compatible.
+            let present = Set(try driver.select("pragma table_info(\"\(table)\")").compactMap {
+                row -> String? in
+                if case .text(let n)? = row["name"] { return n } else { return nil }
+            })
+            for name in columns.keys.sorted() where name != "id" && !present.contains(name) {
+                try driver.exec("alter table \"\(table)\" add column \"\(name)\" \(columns[name]!.sqlite);")
+            }
         }
         for index in config.indexes where !index.table.isEmpty && !index.columns.isEmpty {
             let cols = index.columns.map { "\"\($0)\"" }.joined(separator: ", ")
@@ -54,6 +67,59 @@ final class Store {
         try? driver?.exec(
             "insert into \"\(Self.metaTable)\" (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
             [.text(key), .text(value)])
+    }
+
+    /// Bound the outbox (a send queue, not an archive; parity with the TS/Kotlin
+    /// engines): drop events confirmed delivered to EVERY current relay (event_id
+    /// <= the lowest per-relay push cursor). A relay with no cursor yet (just added)
+    /// makes the minimum "" so nothing is pruned — it still needs the backlog.
+    @discardableResult
+    func pruneOutbox(_ relayBases: [String]) -> Int {
+        guard let driver, !relayBases.isEmpty else { return 0 }
+        let bound = relayBases.map { getMeta("push:\($0)") ?? "" }.min() ?? ""
+        if bound.isEmpty { return 0 }
+        var count = 0
+        if let rows = try? driver.select(
+            "select count(*) as c from \"\(Self.outboxTable)\" where event_id <= ?", [.text(bound)]),
+            case .integer(let n)? = rows.first?["c"] {
+            count = Int(n)
+        }
+        if count > 0 {
+            try? driver.exec("delete from \"\(Self.outboxTable)\" where event_id <= ?", [.text(bound)])
+        }
+        return count
+    }
+
+    /// Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older than
+    /// [olderThanMs] (parity with the TS/Kotlin engines). Safe: the grace window lets the
+    /// deletion replicate first; when [requirePushed] (relays configured), a tombstone whose
+    /// delete event is still pending in the outbox is kept; the relay retains tombstones so
+    /// a re-sync re-applies them — synced peers are never resurrected. Returns rows purged.
+    @discardableResult
+    func purgeDeleted(olderThanMs: Int64, nowMs: Int64, requirePushed: Bool) -> Int {
+        guard let driver else { return 0 }
+        let cutoff = nowMs - olderThanMs
+        var purged = 0
+        for table in schema.tableNames {
+            guard let rows = try? driver.select(
+                "select id, updatedAt from \"\(table)\" where isDeleted = 1") else { continue }
+            for row in rows {
+                guard case .text(let id)? = row["id"], case .text(let updatedAt)? = row["updatedAt"]
+                else { continue }
+                // HLC millis = first dash-segment, base36.
+                let first = updatedAt.split(separator: "-").first.map(String.init) ?? ""
+                guard first.count == 10, let millis = Int64(first, radix: 36) else { continue }
+                if millis > cutoff { continue } // too new -> keep
+                if requirePushed {
+                    if let pending = try? driver.select(
+                        "select 1 from \"\(Self.outboxTable)\" where event_id = ? and pushed_at is null limit 1",
+                        [.text(updatedAt)]), !pending.isEmpty { continue } // not on the relay yet
+                }
+                try? driver.exec("delete from \"\(table)\" where id = ?", [.text(id)])
+                purged += 1
+            }
+        }
+        return purged
     }
 
     func wipeLocalData() {

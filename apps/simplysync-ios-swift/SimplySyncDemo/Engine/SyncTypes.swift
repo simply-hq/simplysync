@@ -11,6 +11,16 @@ enum MutationResult: Equatable {
     var errorMessage: String? { if case .failure(let m) = self { return m }; return nil }
 }
 
+/// The result of an atomic `batch` — the Swift port of the engine's `BatchResult`.
+enum BatchResult: Equatable {
+    case ok(ids: [String])
+    case failure(message: String)
+
+    var isOk: Bool { if case .ok = self { return true }; return false }
+    var ids: [String] { if case .ok(let ids) = self { return ids }; return [] }
+    var errorMessage: String? { if case .failure(let m) = self { return m }; return nil }
+}
+
 /// The current owner — the Swift port of `AppOwner`. `recoveryKey` is the secret
 /// to back up (an `sf1_` key or a 24-word phrase); `mnemonic` is non-nil only
 /// when the owner was derived from a phrase. `writeKey` is the relay bearer token.
