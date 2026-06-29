@@ -64,7 +64,7 @@ class SyncEngine(
 
     private val bootJob: Job = scope.launch { boot() }
 
-    private enum class Mode { INSERT, UPDATE, UPSERT }
+    internal enum class Mode { INSERT, UPDATE, UPSERT, DELETE }
 
     /** Resolves once the DB is open and the owner is loaded — the `engine.ready` analog. */
     suspend fun ready() = bootJob.join()
@@ -221,45 +221,126 @@ class SyncEngine(
     fun upsert(table: String, vararg values: Pair<String, Any?>): MutationResult =
         mutate(table, valuesOf(values), Mode.UPSERT)
 
+    /**
+     * Soft-delete a row by id (parity with the TS engine): marks it deleted so the
+     * deletion replicates as a tombstone (a hard local delete would resurrect from a
+     * peer on the next pull) and `isDeleted`-filtered queries stop returning it.
+     * Idempotent — deleting a not-yet-local id writes a superseding tombstone.
+     */
+    fun delete(table: String, id: String): MutationResult =
+        mutate(table, mapOf("id" to JsonValue.Str(id)), Mode.DELETE)
+
+    private data class PreparedRow(
+        val table: String,
+        val id: String,
+        val hlc: String,
+        val merged: Map<String, JsonValue>,
+    )
+
+    /**
+     * Validate + merge + stamp the HLC for one write, WITHOUT touching the database.
+     * Split out of the write so `batch` can prepare every op up front and fail
+     * atomically before anything is written. Returns (prepared, null) or (null, error).
+     * Must be called under `lock`.
+     */
+    private fun prepareRow(table: String, values: Map<String, JsonValue>, mode: Mode): Pair<PreparedRow?, String?> {
+        if (store.driver == null || clock == null) return null to "Database not ready."
+        if (!schema.has(table)) return null to "Unknown table: $table"
+
+        val id = (values["id"] as? JsonValue.Str)?.value?.takeIf { it.isNotEmpty() } ?: createId()
+        val existing = if (mode == Mode.INSERT) null else store.readRow(table, id)
+        if (mode == Mode.UPDATE && existing == null) return null to "Row not found: $id"
+
+        val merged = LinkedHashMap<String, JsonValue>()
+        existing?.forEach { (k, v) -> merged[k] = v.toJson() }
+        val coerceInput = LinkedHashMap(values)
+        coerceInput["id"] = JsonValue.Str(id)
+        val (coerced, error) = store.coerceValues(table, coerceInput)
+        if (error != null) return null to error
+        coerced.forEach { (k, v) -> merged[k] = v }
+        values["isDeleted"]?.let { merged["isDeleted"] = it }
+        // DELETE forces the tombstone flag so the deletion replicates and wins LWW.
+        if (mode == Mode.DELETE) merged["isDeleted"] = sqliteTrue
+
+        val hlc = nextHlc()
+        merged["id"] = JsonValue.Str(id)
+        merged["updatedAt"] = JsonValue.Str(hlc)
+        if (existing == null) (values["createdAt"] as? JsonValue.Str)?.let { merged["createdAt"] = it }
+        if (merged["createdAt"] == null) merged["createdAt"] = JsonValue.Str(isoNow())
+        if (merged["isDeleted"] == null) merged["isDeleted"] = sqliteFalse
+
+        return PreparedRow(table, id, hlc, merged) to null
+    }
+
     private fun mutate(table: String, values: Map<String, JsonValue>, mode: Mode): MutationResult {
         val outcome = lock.withLock {
-            val driver = store.driver
-            val clk = clock
-            if (driver == null || clk == null) return@withLock MutationResult.Failure("Database not ready.")
-            if (!schema.has(table)) return@withLock MutationResult.Failure("Unknown table: $table")
-
-            val id = (values["id"] as? JsonValue.Str)?.value?.takeIf { it.isNotEmpty() } ?: createId()
-            val existing = if (mode == Mode.INSERT) null else store.readRow(table, id)
-            if (mode == Mode.UPDATE && existing == null) return@withLock MutationResult.Failure("Row not found: $id")
-
-            val merged = LinkedHashMap<String, JsonValue>()
-            existing?.forEach { (k, v) -> merged[k] = v.toJson() }
-            val coerceInput = LinkedHashMap(values)
-            coerceInput["id"] = JsonValue.Str(id)
-            val (coerced, error) = store.coerceValues(table, coerceInput)
-            if (error != null) return@withLock MutationResult.Failure(error)
-            coerced.forEach { (k, v) -> merged[k] = v }
-            values["isDeleted"]?.let { merged["isDeleted"] = it }
-
-            val hlc = nextHlc()
-            merged["id"] = JsonValue.Str(id)
-            merged["updatedAt"] = JsonValue.Str(hlc)
-            if (existing == null) (values["createdAt"] as? JsonValue.Str)?.let { merged["createdAt"] = it }
-            if (merged["createdAt"] == null) merged["createdAt"] = JsonValue.Str(isoNow())
-            if (merged["isDeleted"] == null) merged["isDeleted"] = sqliteFalse
-
+            val driver = store.driver ?: return@withLock MutationResult.Failure("Database not ready.")
+            val (prepared, error) = prepareRow(table, values, mode)
+            if (prepared == null) return@withLock MutationResult.Failure(error ?: "Mutation failed.")
             try {
-                driver.transaction { store.writeRow(table, merged) }
+                driver.transaction { store.writeRow(prepared.table, prepared.merged) }
             } catch (e: Exception) {
                 return@withLock MutationResult.Failure(e.message ?: e.toString())
             }
-            enqueue(table, id, hlc, merged)
+            enqueue(prepared.table, prepared.id, prepared.hlc, prepared.merged)
             cache.refreshQueries(setOf(table))
-            MutationResult.Ok(id)
+            MutationResult.Ok(prepared.id)
         }
         if (outcome.isOk && lock.withLock { transports }.isNotEmpty()) scope.launch { sync() }
         return outcome
     }
+
+    /**
+     * Collects writes inside a `batch { ... }`; each op is applied atomically in one
+     * transaction with a single query refresh and a single sync (parity with the TS engine).
+     */
+    inner class BatchScope internal constructor() {
+        internal val specs = ArrayList<Triple<String, Map<String, JsonValue>, Mode>>()
+        fun insert(table: String, vararg values: Pair<String, Any?>) = specs.add(Triple(table, valuesOf(values), Mode.INSERT))
+        fun update(table: String, vararg values: Pair<String, Any?>) = specs.add(Triple(table, valuesOf(values), Mode.UPDATE))
+        fun upsert(table: String, vararg values: Pair<String, Any?>) = specs.add(Triple(table, valuesOf(values), Mode.UPSERT))
+        fun delete(table: String, id: String) = specs.add(Triple(table, mapOf<String, JsonValue>("id" to JsonValue.Str(id)), Mode.DELETE))
+    }
+
+    /**
+     * Write many rows atomically: validate + merge every op first (one bad op aborts the
+     * whole batch before anything is written), then one transaction, one query refresh per
+     * affected table, and one sync. Mix in `delete` for atomic moves. Parity with TS `batch`.
+     */
+    fun batch(build: BatchScope.() -> Unit): BatchResult {
+        val batchScope = BatchScope().apply(build)
+        val outcome = lock.withLock {
+            val driver = store.driver ?: return@withLock BatchResult.Failure("Database not ready.")
+            val prepared = ArrayList<PreparedRow>(batchScope.specs.size)
+            for ((table, values, mode) in batchScope.specs) {
+                val (p, error) = prepareRow(table, values, mode)
+                if (p == null) return@withLock BatchResult.Failure(error ?: "Batch failed.")
+                prepared.add(p)
+            }
+            try {
+                driver.transaction { for (p in prepared) store.writeRow(p.table, p.merged) }
+            } catch (e: Exception) {
+                return@withLock BatchResult.Failure(e.message ?: e.toString())
+            }
+            for (p in prepared) enqueue(p.table, p.id, p.hlc, p.merged)
+            cache.refreshQueries(prepared.map { it.table }.toSet())
+            BatchResult.Ok(prepared.map { it.id })
+        }
+        if (outcome.isOk && lock.withLock { transports }.isNotEmpty()) scope.launch { sync() }
+        return outcome
+    }
+
+    /** Soft-delete many rows of one table in a single atomic batch. */
+    fun deleteMany(table: String, ids: List<String>): BatchResult = batch { for (id in ids) delete(table, id) }
+
+    /**
+     * Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older than
+     * [olderThanMs] (default 30 days). Safe (parity with the TS engine): the grace window
+     * lets the deletion replicate, unpushed deletes are kept while relays are configured,
+     * and the relay retains tombstones so a re-sync re-applies them. Returns rows purged.
+     */
+    fun purgeDeleted(olderThanMs: Long = 30L * 24 * 60 * 60 * 1000): Int =
+        lock.withLock { store.purgeDeleted(olderThanMs, System.currentTimeMillis(), transports.isNotEmpty()) }
 
     /** Encrypt the change and append it to the outbox. Called under the lock. */
     private fun enqueue(table: String, rowId: String, hlc: String, value: Map<String, JsonValue>) {
@@ -332,6 +413,8 @@ class SyncEngine(
             lock.withLock {
                 if (changed.isNotEmpty()) cache.refreshQueries(changed)
                 pruneSeen()
+                // Drop outbox events now delivered to every relay (cursors advanced above).
+                store.pruneOutbox(bases)
                 if (pollIntervalMs != defaultPollMs) pollIntervalMs = defaultPollMs
             }
             setSyncState(SyncState.Synced(isoNow()))
@@ -344,9 +427,19 @@ class SyncEngine(
     }
 
     private suspend fun pushOutbox(base: String, identity: Identity) {
+        // Per-relay push cursor (parity with the TS engine) so EVERY configured relay
+        // receives a full copy of this device's events (write redundancy), not just the
+        // first one contacted. A single global "pushed_at is null" filter let the first
+        // relay drain the outbox and starve the rest. Outbox event_ids are this device's
+        // own HLCs — monotonically increasing — so a string high-water mark paginates
+        // correctly. On upgrade the cursor is unset and starts at "" (re-push once; the
+        // relay dedupes by event id).
+        val cursorKey = "push:$base"
         val pending = lock.withLock {
+            val after = store.getMeta(cursorKey) ?: ""
             (store.driver?.select(
-                "select event_id, envelope_json from \"${Store.OUTBOX}\" where pushed_at is null order by event_id asc limit 1000",
+                "select event_id, envelope_json from \"${Store.OUTBOX}\" where event_id > ? order by event_id asc limit 1000",
+                listOf(SqliteValue.Text(after)),
             ) ?: emptyList()).mapNotNull { row ->
                 val eid = (row["event_id"] as? SqliteValue.Text)?.value
                 val js = (row["envelope_json"] as? SqliteValue.Text)?.value
@@ -362,10 +455,12 @@ class SyncEngine(
         lock.withLock {
             for ((eid, _) in pending) {
                 store.driver?.exec(
-                    "update \"${Store.OUTBOX}\" set pushed_at = ? where event_id = ?",
+                    // `pushed_at` marks "reached at least one relay" — keep the earliest via coalesce.
+                    "update \"${Store.OUTBOX}\" set pushed_at = coalesce(pushed_at, ?) where event_id = ?",
                     listOf(SqliteValue.Text(pushedAt), SqliteValue.Text(eid)),
                 )
             }
+            store.setMeta(cursorKey, pending.last().first)
         }
     }
 

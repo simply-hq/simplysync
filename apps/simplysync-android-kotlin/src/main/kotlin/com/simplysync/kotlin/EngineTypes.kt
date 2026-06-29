@@ -10,6 +10,16 @@ sealed class MutationResult {
     val errorMessage: String? get() = (this as? Failure)?.message
 }
 
+/** The result of an atomic `batch` — the Kotlin port of `BatchResult`. */
+sealed class BatchResult {
+    data class Ok(val values: List<String>) : BatchResult()
+    data class Failure(val message: String) : BatchResult()
+
+    val isOk: Boolean get() = this is Ok
+    val ids: List<String> get() = (this as? Ok)?.values ?: emptyList()
+    val errorMessage: String? get() = (this as? Failure)?.message
+}
+
 /**
  * The current owner — the Kotlin port of `AppOwner`. `recoveryKey` is the secret
  * to back up (an `sf1_` key or a 24-word phrase); `mnemonic` is non-null only when

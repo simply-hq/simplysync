@@ -27,6 +27,19 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
             defs.add("\"updatedAt\" text")
             defs.add("\"isDeleted\" integer default 0")
             driver.exec("create table if not exists \"$table\" (${defs.joinToString(", ")});")
+            // Additive migration (parity with the TS engine): `create table if not
+            // exists` is a no-op on an existing table, so a schema that has grown new
+            // columns since the table was created would never get them. Add any missing
+            // column — ALTER ADD COLUMN is metadata-only in SQLite and existing rows read
+            // NULL until a write backfills them (which merges cleanly under LWW). Additive
+            // only (no rename/drop) so old and new app versions stay wire-compatible.
+            val present = driver.select("pragma table_info(\"$table\")")
+                .mapNotNull { (it["name"] as? SqliteValue.Text)?.value }
+                .toSet()
+            for (name in columns.keys.sorted()) {
+                if (name == "id" || name in present) continue
+                driver.exec("alter table \"$table\" add column \"$name\" ${columns[name]!!.sqlite};")
+            }
         }
         for (index in config.indexes) if (index.table.isNotEmpty() && index.columns.isNotEmpty()) {
             val cols = index.columns.joinToString(", ") { "\"$it\"" }
@@ -47,6 +60,63 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
             "insert into \"$META\" (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
             listOf(SqliteValue.Text(key), SqliteValue.Text(value)),
         )
+    }
+
+    /**
+     * Bound the outbox (a send queue, not an archive; parity with the TS engine):
+     * drop events confirmed delivered to EVERY current relay. The lowest per-relay
+     * push cursor (`push:<base>` in meta) is the highest event id every relay has
+     * acked; events at or below it are fully delivered and safe to forget. A relay
+     * with no cursor yet (just added) makes the minimum "" so nothing is pruned —
+     * it still needs the backlog. Returns rows pruned.
+     */
+    fun pruneOutbox(relayBases: List<String>): Int {
+        val driver = driver ?: return 0
+        if (relayBases.isEmpty()) return 0
+        val bound = relayBases.map { getMeta("push:$it") ?: "" }.minOrNull() ?: ""
+        if (bound.isEmpty()) return 0
+        val count = (
+            driver.select(
+                "select count(*) as c from \"$OUTBOX\" where event_id <= ?",
+                listOf(SqliteValue.Text(bound)),
+            ).firstOrNull()?.get("c") as? SqliteValue.Integer
+            )?.value?.toInt() ?: 0
+        if (count > 0) {
+            driver.exec("delete from \"$OUTBOX\" where event_id <= ?", listOf(SqliteValue.Text(bound)))
+        }
+        return count
+    }
+
+    /**
+     * Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older than
+     * [olderThanMs] (parity with the TS engine). Safe: the grace window lets the deletion
+     * replicate first; when [requirePushed] (relays configured), a tombstone whose delete
+     * event is still pending in the outbox is kept; the relay retains tombstones so a
+     * re-sync re-applies them — synced peers are never resurrected. Returns rows purged.
+     */
+    fun purgeDeleted(olderThanMs: Long, nowMs: Long, requirePushed: Boolean): Int {
+        val driver = driver ?: return 0
+        val cutoff = nowMs - olderThanMs
+        var purged = 0
+        for (table in schema.tableNames) {
+            val rows = driver.select("select id, updatedAt from \"$table\" where isDeleted = 1")
+            for (row in rows) {
+                val id = (row["id"] as? SqliteValue.Text)?.value ?: continue
+                val updatedAt = (row["updatedAt"] as? SqliteValue.Text)?.value ?: continue
+                val millis = Hlc.parse(updatedAt)?.first ?: continue
+                if (millis > cutoff) continue // too new -> keep
+                if (requirePushed) {
+                    val pending = driver.select(
+                        "select 1 from \"$OUTBOX\" where event_id = ? and pushed_at is null limit 1",
+                        listOf(SqliteValue.Text(updatedAt)),
+                    )
+                    if (pending.isNotEmpty()) continue // delete not yet on the relay -> keep
+                }
+                driver.exec("delete from \"$table\" where id = ?", listOf(SqliteValue.Text(id)))
+                purged++
+            }
+        }
+        return purged
     }
 
     fun wipeLocalData() {
