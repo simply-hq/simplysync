@@ -36,6 +36,28 @@ class RelayClient(
     @Serializable
     private data class PullResponse(val events: List<SyncEnvelope> = emptyList(), val nextCursor: String = "")
 
+    // The /v1/status response shape shared by all reference relays (Bun, Go,
+    // Cloudflare). Fields we don't surface (ownerId, createdAt) are ignored.
+    @Serializable
+    data class StatusServer(val version: String? = null, val serverTime: String? = null)
+
+    @Serializable
+    data class StatusAccount(
+        val quotaBytes: Long? = null,
+        val usedBytes: Long? = null,
+        val usedPct: Double? = null,
+        val headSeq: Long? = null,
+        val streams: Long? = null,
+        val events: Long? = null,
+    )
+
+    @Serializable
+    data class StatusResponse(val server: StatusServer? = null, val account: StatusAccount? = null)
+
+    /** The public `/health` response — liveness + version, no auth. */
+    @Serializable
+    data class HealthResponse(val ok: Boolean = false, val version: String? = null)
+
     class RelayException(val status: Int, val bodyText: String) :
         Exception("relay http $status: $bodyText")
 
@@ -72,6 +94,37 @@ class RelayClient(
             if (!response.isSuccessful) throw RelayException(response.code, body)
             val decoded = json.decodeFromString(PullResponse.serializer(), body)
             PullResult(decoded.events, decoded.nextCursor)
+        }
+    }
+
+    /**
+     * GET /v1/status?ownerId= — this owner's storage snapshot on the relay
+     * (auth-gated). Throws [RelayException] on non-2xx; a 404 means the relay is
+     * up but this owner has never pushed to it.
+     */
+    suspend fun status(): StatusResponse = withContext(Dispatchers.IO) {
+        val url = "$base/v1/status".toHttpUrl().newBuilder()
+            .addQueryParameter("ownerId", ownerId)
+            .build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $relayAuth")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw RelayException(response.code, body)
+            json.decodeFromString(StatusResponse.serializer(), body)
+        }
+    }
+
+    /** GET /health — public liveness + version probe. Throws [RelayException] on non-2xx. */
+    suspend fun health(): HealthResponse = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("$base/health").get().build()
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw RelayException(response.code, body)
+            json.decodeFromString(HealthResponse.serializer(), body)
         }
     }
 

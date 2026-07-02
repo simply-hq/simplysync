@@ -254,6 +254,17 @@ A **terminal** failure (auth/quota/bad request — 400/401/403/413) won't fix it
 by retrying the same batch, so the engine backs the poller off (still retrying on
 the next explicit `sync()`). Network and 5xx/429 errors retry at the normal cadence.
 
+With multiple relays, every one receives a full copy of the outbox and
+`syncState` stays `.synced` while **any** relay works. For the per-relay truth —
+which relay is failing, and how full each one is against its per-owner storage
+quota — use `getRelayStatuses()` (one `GET /v1/status` probe per relay):
+
+```swift
+for s in await engine.getRelayStatuses() {
+    print(s.url, s.reachable, "\(s.usedBytes ?? 0)/\(s.quotaBytes ?? 0) bytes")
+}
+```
+
 > **For Android emulators** the React guide notes `http://10.0.2.2:4100`; iOS
 > simulators reach your Mac at `http://localhost:4100`.
 
@@ -306,6 +317,7 @@ protocol SecureStorage: AnyObject {
 | `engine.setTransports` | `([Transport]) -> Void` | Set relays; triggers sync + polling. |
 | `engine.sync` | `() async` | Push outbox, pull + apply. |
 | `engine.syncState` / `getSyncState()` | `SyncState` | Reactive + synchronous status. |
+| `engine.getRelayStatuses` | `() async -> [RelayStatus]` | Per-relay health + storage usage (live `GET /v1/status` probe per relay). |
 
 ## Differences from the React engine
 

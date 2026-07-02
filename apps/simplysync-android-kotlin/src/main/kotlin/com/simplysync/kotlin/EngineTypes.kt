@@ -43,6 +43,45 @@ sealed class SyncState {
     data class NotSynced(val error: String?, val terminal: Boolean, val status: Int?) : SyncState()
 }
 
+/**
+ * The most recent failure talking to one relay (sync or status probe) — the
+ * `RelayStatus.lastFailure` analog. `kind` uses the TS `SyncFailureKind` strings:
+ * "authRejected" | "quotaExceeded" | "rateLimited" | "serverError" | "badRequest"
+ * | "unreachable" | "unknown".
+ */
+data class RelayFailure(val kind: String, val message: String, val at: String)
+
+/**
+ * Per-relay status + storage usage — the Kotlin port of `RelayStatus`. The
+ * account block (usedBytes…events) comes from the relay's `/v1/status` and is
+ * null when the relay is unreachable or this owner has never pushed to it
+ * (the relay answers 404 until then).
+ */
+data class RelayStatus(
+    /** Relay base URL, normalized (wss:// → https://). */
+    val url: String,
+    /** True when the relay answered the status probe (even with no account). */
+    val reachable: Boolean,
+    /** Last successful sync with this relay this session (ISO8601). */
+    val lastSyncedAt: String? = null,
+    /** Most recent failure talking to this relay (sync or status probe). */
+    val lastFailure: RelayFailure? = null,
+    /** Relay software version (from /v1/status, or /health when no account). */
+    val version: String? = null,
+    /** Bytes of this owner's data the relay currently stores. */
+    val usedBytes: Long? = null,
+    /** The relay's per-owner storage limit in bytes. */
+    val quotaBytes: Long? = null,
+    /** usedBytes / quotaBytes × 100, as reported by the relay. */
+    val usedPct: Double? = null,
+    /** The relay's newest event sequence for this owner (pull-cursor head). */
+    val headSeq: Long? = null,
+    /** Distinct streams (≈ live rows) the relay holds for this owner. */
+    val streams: Long? = null,
+    /** Raw stored event count (shrinks when the relay compacts). */
+    val events: Long? = null,
+)
+
 /** A secondary index to create on boot (the `indexes` config analog). */
 data class Index(val name: String, val table: String, val columns: List<String>)
 

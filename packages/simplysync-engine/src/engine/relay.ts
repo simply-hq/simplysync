@@ -5,6 +5,7 @@ import {
   type SyncPayload,
 } from "@simplysync/protocol";
 import type {
+  RelayStatus,
   SchemaDefinition,
   SyncEngineConfig,
   SyncEngineDeps,
@@ -49,6 +50,14 @@ export function createRelaySync(
   // Single-owner mutable state (never touched outside this module).
   let syncTimer: number | null = null;
   let pollIntervalMs = DEFAULT_POLL_MS;
+  // Per-relay outcome of the last contact, keyed by base URL. SyncState
+  // collapses multi-relay results ("synced" as long as ANY relay works — the
+  // data is safe somewhere); this map keeps the per-relay truth so
+  // getRelayStatuses can show which relay is failing behind a green state.
+  const relayHealth = new Map<
+    string,
+    { lastSyncedAt?: string; lastFailure?: RelayStatus["lastFailure"] }
+  >();
 
   const httpError = (op: string, status: number): Error => {
     const err = new Error(`${op} failed: ${status}`) as Error & {
@@ -258,6 +267,7 @@ export function createRelaySync(
           const r = await pullAndApply(base);
           for (const table of r.changed) changed.add(table);
           anySuccess = true;
+          relayHealth.set(base, { lastSyncedAt: new Date().toISOString() });
           store.appendSyncLog({
             relay: base,
             phase: "sync",
@@ -280,6 +290,15 @@ export function createRelaySync(
         } catch (caught) {
           const failure = classifyError(caught);
           if (!firstFailure) firstFailure = failure;
+          relayHealth.set(base, {
+            // Keep the last good sync time so "failing since when" is visible.
+            lastSyncedAt: relayHealth.get(base)?.lastSyncedAt,
+            lastFailure: {
+              kind: failure.kind,
+              message: failure.message,
+              at: new Date().toISOString(),
+            },
+          });
           store.appendSyncLog({
             relay: base,
             phase: "sync",
@@ -329,6 +348,72 @@ export function createRelaySync(
     }
   };
 
+  // The /v1/status response shape shared by all reference relays (Bun, Go,
+  // Cloudflare). Fields we don't surface (ownerId, createdAt) are ignored.
+  interface StatusResponse {
+    server?: { version?: string; serverTime?: string };
+    account?: {
+      quotaBytes?: number;
+      usedBytes?: number;
+      usedPct?: number;
+      headSeq?: number;
+      streams?: number;
+      events?: number;
+    };
+  }
+
+  // One relay's status probe: GET /v1/status (auth-gated, per-owner). A 404
+  // means the relay is up but this owner has never pushed to it — confirm
+  // liveness via the public /health so `reachable`/`version` still report.
+  const fetchRelayStatus = async (base: string): Promise<RelayStatus> => {
+    const { identity } = state;
+    const health = relayHealth.get(base);
+    const bare: RelayStatus = { url: base, reachable: false, ...health };
+    if (!identity) return bare;
+    try {
+      const url = new URL(`${base}/v1/status`);
+      url.searchParams.set("ownerId", identity.ownerId);
+      const response = await fetchImpl(url.toString(), {
+        headers: { Authorization: `Bearer ${identity.relayAuth}` },
+      });
+      if (response.status === 404) {
+        const alive = await fetchImpl(`${base}/health`);
+        const body = alive.ok
+          ? ((await alive.json()) as { version?: string })
+          : undefined;
+        return { ...bare, reachable: alive.ok, version: body?.version };
+      }
+      if (!response.ok) throw httpError("status", response.status);
+      const body = (await response.json()) as StatusResponse;
+      return {
+        ...bare,
+        reachable: true,
+        lastFailure: undefined,
+        version: body.server?.version,
+        usedBytes: body.account?.usedBytes,
+        quotaBytes: body.account?.quotaBytes,
+        usedPct: body.account?.usedPct,
+        headSeq: body.account?.headSeq,
+        streams: body.account?.streams,
+        events: body.account?.events,
+      };
+    } catch (caught) {
+      const failure = classifyError(caught);
+      return {
+        ...bare,
+        reachable: false,
+        lastFailure: {
+          kind: failure.kind,
+          message: failure.message,
+          at: new Date().toISOString(),
+        },
+      };
+    }
+  };
+
+  const getRelayStatuses = (): Promise<RelayStatus[]> =>
+    Promise.all(relayBaseUrls().map(fetchRelayStatus));
+
   // The relay is HTTP (no server push), so poll periodically to pull remote
   // changes while transports are configured. Also synced opportunistically after
   // local writes and on web focus/online.
@@ -347,6 +432,11 @@ export function createRelaySync(
 
   const setTransports = (next: readonly Transport[]) => {
     state.transports = [...next];
+    // Drop health for relays no longer configured so statuses don't linger.
+    const active = new Set(relayBaseUrls());
+    for (const base of relayHealth.keys()) {
+      if (!active.has(base)) relayHealth.delete(base);
+    }
     if (state.transports.length > 0) {
       void sync().catch(() => undefined);
       startPolling();
@@ -355,5 +445,12 @@ export function createRelaySync(
     }
   };
 
-  return { sync, startPolling, stopPolling, setTransports, relayBaseUrls };
+  return {
+    sync,
+    startPolling,
+    stopPolling,
+    setTransports,
+    relayBaseUrls,
+    getRelayStatuses,
+  };
 }

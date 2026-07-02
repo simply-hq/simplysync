@@ -79,6 +79,9 @@ struct NoteRow: Decodable { let id: String; let body: String }
 let notes = engine.loadQuery(engine.createQuery("select id, body from \"note\"", as: NoteRow.self))
 check(notes.count == 1 && notes[0].body == "hello", "second table works independently")
 
+// Relay status with no transports configured: nothing to probe.
+check(await engine.getRelayStatuses().isEmpty, "no transports -> no relay statuses")
+
 print("LOCAL OK")
 
 // Additive schema migration: a table gains columns across app versions. Two
@@ -445,6 +448,19 @@ if CommandLine.arguments.count > 1 {
             converged = a.loadQuery(qa).contains { $0.title == "Edited by B" }
         }
         check(converged, "A converged on B's edit (LWW by HLC)")
+    }
+
+    // Per-relay status + storage usage: /v1/status via getRelayStatuses.
+    let statuses = await a.getRelayStatuses()
+    check(statuses.count == 1, "one status entry per configured relay")
+    if let s = statuses.first {
+        check(s.reachable, "relay reachable via /v1/status")
+        check(s.lastSyncedAt != nil, "lastSyncedAt recorded after a successful sync")
+        check(s.lastFailure == nil, "no failure recorded on a healthy relay")
+        check(s.version != nil, "relay reports its version")
+        check((s.usedBytes ?? 0) > 0, "usedBytes reports stored data")
+        check((s.quotaBytes ?? 0) > 0, "quotaBytes reported")
+        check((s.headSeq ?? 0) > 0, "headSeq advanced past the pushed events")
     }
     print("LIVE OK")
 }

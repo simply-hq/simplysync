@@ -258,6 +258,17 @@ Watch progress with `engine.syncState` (`getSyncState()` for a synchronous read)
 A **terminal** failure (auth/quota/bad request — 400/401/403/413) won't fix itself
 by retrying the same batch, so the engine backs the poller off.
 
+With multiple relays, every one receives a full copy of the outbox and
+`SyncState` stays `Synced` while **any** relay works. For the per-relay truth —
+which relay is failing, and how full each one is against its per-owner storage
+quota — use `getRelayStatuses()` (one `GET /v1/status` probe per relay):
+
+```kotlin
+for (s in engine.getRelayStatuses()) {  // suspend
+    println("${s.url} reachable=${s.reachable} ${s.usedBytes}/${s.quotaBytes} bytes")
+}
+```
+
 > **For Android emulators** point the relay at `http://10.0.2.2:4100`; a device on
 > the LAN uses the host's IP.
 
@@ -302,6 +313,7 @@ Android, back it with the Keystore / `EncryptedSharedPreferences`.
 | `engine.setTransports` | `(List<Transport>)` | Set relays; triggers sync + polling. |
 | `engine.sync` | `suspend ()` | Push outbox, pull + apply. |
 | `engine.syncState` | `StateFlow<SyncState>` | Reactive status. |
+| `engine.getRelayStatuses` | `suspend () -> List<RelayStatus>` | Per-relay health + storage usage (live `GET /v1/status` probe per relay). |
 
 ## Differences from the React engine
 

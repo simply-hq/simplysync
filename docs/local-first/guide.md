@@ -304,6 +304,29 @@ A **terminal** failure (auth/quota/bad request — 400/401/403/413) won't fix
 itself by retrying the same batch, so the engine backs the poller off (but still
 retries on focus/online/write). Network and 5xx/429 errors are retried normally.
 
+### Multiple relays, per-relay status & storage usage
+
+`setTransports` accepts any number of relays; every one receives a full copy of
+the outbox (write redundancy) and is pulled independently. `SyncState` stays
+`Synced` as long as **any** relay works — the data is safe somewhere — so for
+the per-relay truth (which relay is failing, and how full each one is) use
+`getRelayStatuses()`:
+
+```ts
+const statuses = await engine.getRelayStatuses(); // one HTTP probe per relay
+for (const s of statuses) {
+  console.log(s.url, s.reachable, `${s.usedBytes} / ${s.quotaBytes} bytes`);
+}
+```
+
+Each `RelayStatus` combines this device's last sync outcome (`lastSyncedAt`,
+`lastFailure`) with the relay-reported account snapshot from `GET /v1/status`:
+`usedBytes` / `quotaBytes` / `usedPct` (storage against the relay's per-owner
+quota — warn the user well before a `413`), plus `headSeq`, `streams`, `events`
+and the relay `version`. A relay that has never seen this owner reports
+`reachable: true` with no account block. In React, `useRelayStatuses()` polls it
+for you (default every 30 s) — right-sized for a diagnostics or settings screen.
+
 > **For Android emulators** point the relay URL at `http://10.0.2.2:4100`; iOS
 > simulators and the web use `http://localhost:4100`.
 
@@ -371,6 +394,9 @@ incompatible, or already imported.
 | `engine.setTransports` | `(transports) => void` | Set relays; triggers sync + polling. |
 | `engine.sync` | `() => Promise<void>` | Push outbox, pull + apply. |
 | `engine.getSyncState` / `subscribeSyncState` | — | Backing store for `useSyncState`. |
+| `engine.getRelayStatuses` | `() => Promise<RelayStatus[]>` | Per-relay health + storage usage (live `GET /v1/status` probe per relay). |
+| `engine.getSyncLog` | `(limit?) => SyncLogEntry[]` | Most-recent-first on-device sync diagnostics log. |
+| `engine.getPendingOutboxCount` | `() => number` | Unpushed events still in the outbox (0 = drained). |
 | `engine.getError` / `subscribeError` | — | Backing store for `useSyncError`. |
 | `engine.importLegacy` | `(name) => Promise<{ imported, skipped }>` | One-time legacy row import. |
 
@@ -382,6 +408,7 @@ incompatible, or already imported.
 | `useSync<S>` | `() => SyncEngine<S>` | The engine; throws outside a provider. |
 | `useQuery` | `(query) => readonly R[]` | Reactive rows. |
 | `useSyncState` | `() => SyncState` | Reactive sync status. |
+| `useRelayStatuses` | `({ refreshMs? }?) => readonly RelayStatus[]` | Per-relay health + storage usage, polled (default 30 s). |
 | `useSyncError` | `() => SyncError \| null` | Reactive last error. |
 | `createUseSync` | `(engine) => () => mutations` | Hook bound to one engine's mutations + owner helpers. |
 

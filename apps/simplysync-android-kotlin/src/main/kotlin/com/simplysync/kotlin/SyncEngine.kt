@@ -7,6 +7,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +60,16 @@ class SyncEngine(
     private val backoffPollMs = 5 * 60_000L
     private var pollIntervalMs = defaultPollMs
     private val seenCap = 50_000
+
+    /** One relay's last-contact outcome, kept in [relayHealth]. */
+    private data class RelayHealth(val lastSyncedAt: String? = null, val lastFailure: RelayFailure? = null)
+
+    // Per-relay outcome of the last contact, keyed by base URL (parity with the TS
+    // engine). SyncState collapses multi-relay results ("synced" as long as ANY
+    // relay works — the data is safe somewhere); this map keeps the per-relay
+    // truth so getRelayStatuses can show which relay is failing behind a green
+    // state. Guarded by `lock`.
+    private val relayHealth = HashMap<String, RelayHealth>()
 
     private val mnemonicKey = "${config.name}:mnemonic"
     private val deviceKey = "${config.name}:deviceId"
@@ -362,7 +375,12 @@ class SyncEngine(
 
     /** Set transports (relays). Triggers an immediate sync and polling, or stops polling. */
     fun setTransports(next: List<Transport>) {
-        lock.withLock { transports = next }
+        lock.withLock {
+            transports = next
+            // Drop health for relays no longer configured so statuses don't linger.
+            val active = next.map { normalizeBase(it.url) }.toSet()
+            relayHealth.keys.retainAll(active)
+        }
         if (next.isNotEmpty()) {
             scope.launch { sync() }
             startPolling()
@@ -405,24 +423,47 @@ class SyncEngine(
         if (bases.isEmpty()) return
         setSyncState(SyncState.Syncing)
         val changed = HashSet<String>()
-        try {
-            for (base in bases) {
+        var anySuccess = false
+        var firstFailure: ClassifiedFailure? = null
+        // Contact every relay so each one's health is recorded independently
+        // (per-relay truth for getRelayStatuses, not collapsed to the first failure).
+        for (base in bases) {
+            try {
                 pushOutbox(base, id)
                 changed += pullAndApply(base, id)
+                anySuccess = true
+                lock.withLock { relayHealth[base] = RelayHealth(lastSyncedAt = isoNow()) }
+            } catch (e: Exception) {
+                val failure = classifyError(e)
+                if (firstFailure == null) firstFailure = failure
+                lock.withLock {
+                    relayHealth[base] = RelayHealth(
+                        // Keep the last good sync time so "failing since when" is visible.
+                        lastSyncedAt = relayHealth[base]?.lastSyncedAt,
+                        lastFailure = RelayFailure(failure.kind, failure.message, isoNow()),
+                    )
+                }
             }
-            lock.withLock {
-                if (changed.isNotEmpty()) cache.refreshQueries(changed)
-                pruneSeen()
-                // Drop outbox events now delivered to every relay (cursors advanced above).
-                store.pruneOutbox(bases)
-                if (pollIntervalMs != defaultPollMs) pollIntervalMs = defaultPollMs
-            }
+        }
+        lock.withLock {
+            if (changed.isNotEmpty()) cache.refreshQueries(changed)
+            pruneSeen()
+            // Drop outbox events now delivered to every relay (cursors advanced above).
+            store.pruneOutbox(bases)
+        }
+        if (anySuccess || firstFailure == null) {
+            // Recovered — restore the normal poll cadence if we'd backed off.
+            lock.withLock { if (pollIntervalMs != defaultPollMs) pollIntervalMs = defaultPollMs }
             setSyncState(SyncState.Synced(isoNow()))
-        } catch (e: Exception) {
-            val status = (e as? RelayClient.RelayException)?.status
-            val terminal = status != null && status in setOf(400, 401, 403, 413)
-            if (terminal) lock.withLock { pollIntervalMs = backoffPollMs }
-            setSyncState(SyncState.NotSynced(describe(e), terminal, status))
+        } else {
+            val terminal = firstFailure.kind in terminalKinds
+            // A terminal failure (auth/quota/bad event) or rate-limit won't self-heal
+            // by retrying the same batch immediately — slow the poller so it stops
+            // hammering (a local write still triggers an immediate retry).
+            if (terminal || firstFailure.kind == "rateLimited") {
+                lock.withLock { pollIntervalMs = backoffPollMs }
+            }
+            setSyncState(SyncState.NotSynced(firstFailure.message, terminal, firstFailure.status))
         }
     }
 
@@ -507,6 +548,94 @@ class SyncEngine(
             driver.exec(
                 "delete from \"${Store.SEEN}\" where event_id not in (select event_id from \"${Store.SEEN}\" order by event_id desc limit ?)",
                 listOf(SqliteValue.Integer(seenCap.toLong())),
+            )
+        }
+    }
+
+    // ----- Relay status -------------------------------------------------------
+
+    private data class ClassifiedFailure(val kind: String, val status: Int?, val message: String)
+
+    // Terminal kinds need user/operator action (re-auth, free quota, fix request),
+    // so the poller backs off rather than hammering. rateLimited also backs off
+    // but is not "terminal" (it self-heals).
+    private val terminalKinds = setOf("authRejected", "quotaExceeded", "badRequest")
+
+    /**
+     * Map a thrown sync error to the TS engine's `SyncFailureKind` taxonomy. HTTP
+     * errors carry a status; anything else (socket/DNS/timeout) is network-level,
+     * which we read as unreachable.
+     */
+    private fun classifyError(e: Throwable): ClassifiedFailure {
+        val status = (e as? RelayClient.RelayException)?.status
+            ?: return ClassifiedFailure("unreachable", null, describe(e))
+        val kind = when {
+            status == 401 || status == 403 -> "authRejected"
+            status == 413 -> "quotaExceeded"
+            status == 429 -> "rateLimited"
+            status >= 500 -> "serverError"
+            status >= 400 -> "badRequest"
+            else -> "unknown"
+        }
+        return ClassifiedFailure(kind, status, describe(e))
+    }
+
+    /**
+     * One status probe per configured relay, in parallel — the `getRelayStatuses`
+     * analog. Combines the relay's `/v1/status` storage snapshot with this
+     * session's per-relay sync health (lastSyncedAt / lastFailure).
+     */
+    suspend fun getRelayStatuses(): List<RelayStatus> {
+        val (id, bases) = lock.withLock { identity to transports.map { normalizeBase(it.url) } }
+        return coroutineScope { bases.map { base -> async { fetchRelayStatus(base, id) } }.awaitAll() }
+    }
+
+    /**
+     * One relay's status probe: GET /v1/status (auth-gated, per-owner). A 404
+     * means the relay is up but this owner has never pushed to it — confirm
+     * liveness via the public /health so `reachable`/`version` still report.
+     */
+    private suspend fun fetchRelayStatus(base: String, identity: Identity?): RelayStatus {
+        val health = lock.withLock { relayHealth[base] }
+        val bare = RelayStatus(
+            url = base,
+            reachable = false,
+            lastSyncedAt = health?.lastSyncedAt,
+            lastFailure = health?.lastFailure,
+        )
+        if (identity == null) return bare
+        val client = RelayClient(base, identity.ownerId, identity.relayAuth)
+        return try {
+            val status = try {
+                client.status()
+            } catch (e: RelayClient.RelayException) {
+                if (e.status != 404) throw e
+                // No account yet — /health still proves liveness and reports the
+                // version. A non-2xx /health reads as unreachable (parity with the
+                // TS engine, which doesn't record a probe failure for this case).
+                return try {
+                    val alive = client.health()
+                    bare.copy(reachable = alive.ok, version = alive.version)
+                } catch (healthError: RelayClient.RelayException) {
+                    bare
+                }
+            }
+            bare.copy(
+                reachable = true,
+                lastFailure = null,
+                version = status.server?.version,
+                usedBytes = status.account?.usedBytes,
+                quotaBytes = status.account?.quotaBytes,
+                usedPct = status.account?.usedPct,
+                headSeq = status.account?.headSeq,
+                streams = status.account?.streams,
+                events = status.account?.events,
+            )
+        } catch (e: Exception) {
+            val failure = classifyError(e)
+            bare.copy(
+                reachable = false,
+                lastFailure = RelayFailure(failure.kind, failure.message, isoNow()),
             )
         }
     }

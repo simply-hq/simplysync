@@ -46,6 +46,17 @@ final class SyncEngine: ObservableObject {
     private var syncRequested = false
     private var syncStateValue: SyncState = .initial
 
+    /// Per-relay outcome of the last contact, keyed by base URL (parity with the
+    /// TS/Kotlin engines). `SyncState` collapses multi-relay results ("synced" as
+    /// long as ANY relay works — the data is safe somewhere); this map keeps the
+    /// per-relay truth so `getRelayStatuses` can show which relay is failing
+    /// behind a green state.
+    private struct RelayHealth {
+        var lastSyncedAt: String?
+        var lastFailure: RelayStatus.Failure?
+    }
+    private var relayHealth: [String: RelayHealth] = [:]
+
     private var pollTask: Task<Void, Never>?
     private let defaultPollMs: Int
     private let backoffPollMs = 5 * 60_000
@@ -395,7 +406,12 @@ final class SyncEngine: ObservableObject {
     /// Set transports (relays). Triggers an immediate sync and starts polling, or
     /// stops polling if cleared.
     func setTransports(_ next: [Transport]) {
-        lock.withLock { transports = next }
+        lock.withLock {
+            transports = next
+            // Drop health for relays no longer configured so statuses don't linger.
+            let active = Set(next.map { Self.normalizeBase($0.url) })
+            relayHealth = relayHealth.filter { active.contains($0.key) }
+        }
         if !next.isEmpty {
             Task { await self.sync() }
             startPolling()
@@ -442,28 +458,70 @@ final class SyncEngine: ObservableObject {
         guard let identity = snapIdentity, !bases.isEmpty else { return }
         setSyncState(.syncing)
         var changed = Set<String>()
-        do {
-            for base in bases {
+        var anySuccess = false
+        var firstFailure: (kind: String, status: Int?, message: String)?
+        // Contact every relay so each one's health is recorded independently
+        // (per-relay entries, not collapsed to the first failure) and one bad
+        // relay can't starve the rest — parity with the TS/Kotlin engines.
+        for base in bases {
+            do {
                 try await pushOutbox(base: base, identity: identity)
                 changed.formUnion(try await pullAndApply(base: base, identity: identity))
+                anySuccess = true
+                lock.withLock {
+                    relayHealth[base] = RelayHealth(lastSyncedAt: Self.isoNow(), lastFailure: nil)
+                }
+            } catch {
+                let failure = classifyFailure(error)
+                if firstFailure == nil { firstFailure = failure }
+                lock.withLock {
+                    // Keep the last good sync time so "failing since when" is visible.
+                    relayHealth[base] = RelayHealth(
+                        lastSyncedAt: relayHealth[base]?.lastSyncedAt,
+                        lastFailure: RelayStatus.Failure(kind: failure.kind, message: failure.message,
+                                                         at: Self.isoNow()))
+                }
             }
-            lock.withLock {
-                if !changed.isEmpty { cache.refreshQueries(changed) }
-                pruneSeen()
-                // Drop outbox events now delivered to every relay (cursors advanced above).
-                store.pruneOutbox(bases)
-                if pollIntervalMs != defaultPollMs { pollIntervalMs = defaultPollMs }
-            }
-            setSyncState(.synced(lastSyncedAt: Self.isoNow()))
-        } catch {
-            let status = (error as? RelayClient.RelayError).flatMap { e -> Int? in
-                if case .http(let s, _) = e { return s }
-                return nil
-            }
-            let terminal = status.map { [400, 401, 403, 413].contains($0) } ?? false
-            if terminal { lock.withLock { pollIntervalMs = backoffPollMs } }
-            setSyncState(.notSynced(error: describe(error), terminal: terminal, status: status))
         }
+        lock.withLock {
+            if !changed.isEmpty { cache.refreshQueries(changed) }
+            pruneSeen()
+            // Drop outbox events now delivered to every relay (cursors advanced above;
+            // a failed relay's cursor didn't move, so its events are kept).
+            store.pruneOutbox(bases)
+        }
+        if anySuccess || firstFailure == nil {
+            lock.withLock { if pollIntervalMs != defaultPollMs { pollIntervalMs = defaultPollMs } }
+            setSyncState(.synced(lastSyncedAt: Self.isoNow()))
+        } else if let failure = firstFailure {
+            // A terminal failure (auth/quota/bad request) won't self-heal by retrying
+            // the same batch — back the poller off. A rate limit also backs off but
+            // is not "terminal" (it self-heals).
+            let terminal = ["authRejected", "quotaExceeded", "badRequest"].contains(failure.kind)
+            if terminal || failure.kind == "rateLimited" {
+                lock.withLock { pollIntervalMs = backoffPollMs }
+            }
+            setSyncState(.notSynced(error: failure.message, terminal: terminal, status: failure.status))
+        }
+    }
+
+    /// Map a thrown sync error to the TS `classifyError` taxonomy. HTTP errors
+    /// carry a status; anything else (URLError etc.) is network-level, which we
+    /// read as unreachable.
+    private func classifyFailure(_ error: Error) -> (kind: String, status: Int?, message: String) {
+        if let e = error as? RelayClient.RelayError, case .http(let status, _) = e {
+            let kind: String
+            switch status {
+            case 401, 403: kind = "authRejected"
+            case 413: kind = "quotaExceeded"
+            case 429: kind = "rateLimited"
+            case 500...: kind = "serverError"
+            case 400...: kind = "badRequest"
+            default: kind = "unknown"
+            }
+            return (kind, status, describe(error))
+        }
+        return ("unreachable", nil, describe(error))
     }
 
     private func pushOutbox(base: String, identity: Identity) async throws {
@@ -554,6 +612,65 @@ final class SyncEngine: ObservableObject {
         try? driver.exec(
             "delete from \"\(Store.seenTable)\" where event_id not in (select event_id from \"\(Store.seenTable)\" order by event_id desc limit ?)",
             [.integer(Int64(seenCap))])
+    }
+
+    // MARK: - Relay status
+
+    /// One status entry per configured relay — reachability, version, and storage
+    /// usage from `/v1/status`, plus this session's last sync outcome from the
+    /// health map. Probes all relays concurrently — the `getRelayStatuses` analog.
+    func getRelayStatuses() async -> [RelayStatus] {
+        let (snapIdentity, bases): (Identity?, [String]) = lock.withLock {
+            (identity, transports.map { Self.normalizeBase($0.url) })
+        }
+        return await withTaskGroup(of: (Int, RelayStatus).self) { group in
+            for (index, base) in bases.enumerated() {
+                group.addTask { [weak self] in
+                    guard let self else { return (index, RelayStatus(url: base, reachable: false)) }
+                    return (index, await self.fetchRelayStatus(base: base, identity: snapIdentity))
+                }
+            }
+            var statuses = [RelayStatus?](repeating: nil, count: bases.count)
+            for await (index, status) in group { statuses[index] = status }
+            return statuses.compactMap { $0 }
+        }
+    }
+
+    /// One relay's status probe: GET /v1/status (auth-gated, per-owner). A 404
+    /// means the relay is up but this owner has never pushed to it — confirm
+    /// liveness via the public /health so `reachable`/`version` still report.
+    private func fetchRelayStatus(base: String, identity: Identity?) async -> RelayStatus {
+        let health = lock.withLock { relayHealth[base] }
+        var status = RelayStatus(url: base, reachable: false,
+                                 lastSyncedAt: health?.lastSyncedAt,
+                                 lastFailure: health?.lastFailure)
+        guard let identity, let url = URL(string: base) else { return status }
+        let relay = RelayClient(baseURL: url, ownerId: identity.ownerId,
+                                relayAuth: identity.relayAuth, session: deps.urlSession)
+        do {
+            let body = try await relay.status()
+            status.reachable = true
+            status.lastFailure = nil
+            status.version = body.server.version
+            status.usedBytes = body.account.usedBytes
+            status.quotaBytes = body.account.quotaBytes
+            status.usedPct = body.account.usedPct
+            status.headSeq = body.account.headSeq
+            status.streams = body.account.streams
+            status.events = body.account.events
+        } catch {
+            if let e = error as? RelayClient.RelayError, case .http(let code, _) = e, code == 404 {
+                // Relay alive, owner has no account yet (never pushed here).
+                let alive = try? await relay.health()
+                status.reachable = alive != nil
+                status.version = alive?.version
+            } else {
+                let failure = classifyFailure(error)
+                status.lastFailure = RelayStatus.Failure(kind: failure.kind, message: failure.message,
+                                                         at: Self.isoNow())
+            }
+        }
+        return status
     }
 
     // MARK: - Polling

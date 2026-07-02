@@ -241,6 +241,45 @@ export type SyncState =
       readonly status?: number;
     };
 
+/**
+ * Live view of one configured relay: this device's last sync outcome with it
+ * (tracked locally by the sync loop) merged with the relay-reported account
+ * snapshot from `GET /v1/status` — how much of the owner's storage quota is
+ * used, and how much data the relay holds. Multi-relay setups get one entry
+ * per relay, so a failing or filling-up relay is visible even while another
+ * relay keeps the overall SyncState green.
+ */
+export interface RelayStatus {
+  /** Relay base URL, normalized (wss:// → https://). */
+  readonly url: string;
+  /** True when the relay answered the status probe (even with no account). */
+  readonly reachable: boolean;
+  /** Last successful sync with this relay this session (ISO8601). */
+  readonly lastSyncedAt?: string;
+  /** Most recent failure talking to this relay (sync or status probe). */
+  readonly lastFailure?: {
+    readonly kind: SyncFailureKind;
+    readonly message: string;
+    readonly at: string;
+  };
+  /** Relay software version (from /v1/status, or /health when no account). */
+  readonly version?: string;
+  // Account block from /v1/status. Absent when the relay is unreachable or
+  // this owner has never pushed to it (the relay answers 404 until then).
+  /** Bytes of this owner's data the relay currently stores. */
+  readonly usedBytes?: number;
+  /** The relay's per-owner storage limit in bytes. */
+  readonly quotaBytes?: number;
+  /** usedBytes / quotaBytes × 100, as reported by the relay. */
+  readonly usedPct?: number;
+  /** The relay's newest event sequence for this owner (pull-cursor head). */
+  readonly headSeq?: number;
+  /** Distinct streams (≈ live rows) the relay holds for this owner. */
+  readonly streams?: number;
+  /** Raw stored event count (shrinks when the relay compacts). */
+  readonly events?: number;
+}
+
 /** One persisted row of the sync diagnostics log. */
 export interface SyncLogEntry {
   readonly seq: number;
@@ -370,6 +409,13 @@ export interface SyncEngine<S extends SchemaDefinition> {
   getSyncLog(limit?: number): SyncLogEntry[];
   /** Count of unpushed events still in the outbox (0 = drained). */
   getPendingOutboxCount(): number;
+  /**
+   * One entry per configured relay: local sync health plus the relay-reported
+   * storage snapshot (used vs quota, stream/event counts) fetched live from
+   * `GET /v1/status`. Network I/O on every call — poll at UI cadence (e.g. a
+   * diagnostics screen), not per frame.
+   */
+  getRelayStatuses(): Promise<RelayStatus[]>;
   setTransports(transports: readonly Transport[]): void;
   sync(): Promise<void>;
   reloadApp(): void;

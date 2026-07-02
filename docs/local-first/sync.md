@@ -191,12 +191,36 @@ HEAD ?ownerId=<id>  → 200 / 404   (skip re-uploading a chunk the relay has)
 - `GET` is served `Cache-Control: immutable` — safe because the body is encrypted
   and content-addressed.
 
-### `GET /v1/usage` & `GET /health`
+### `GET /v1/status`, `GET /v1/usage` & `GET /health`
 
 ```
-GET /v1/usage ?ownerId=<id> (Bearer)  → { ownerId, storedBytes }
-GET /health                            → { ok: true, service: "…" }
+GET /v1/status ?ownerId=<id> (Bearer) → { server, account }   (404 if owner unknown)
+GET /v1/usage  ?ownerId=<id> (Bearer) → { ownerId, storedBytes }
+GET /health                           → { ok: true, service: "…", version, serverTime }
 ```
+
+`/v1/status` is the one-call health + storage surface the engine's
+`getRelayStatuses()` consumes:
+
+```jsonc
+{
+  "server":  { "version": "1.0.0", "serverTime": "…" },
+  "account": {
+    "ownerId":    "…",
+    "quotaBytes": 1073741824,   // MAX_OWNER_BYTES on this relay
+    "usedBytes":  52428800,     // this owner's stored_bytes (events + blobs)
+    "usedPct":    4.88,
+    "headSeq":    42,           // newest event seq for this owner (pull head)
+    "streams":    7,            // distinct streams ≈ live rows
+    "events":     21,           // raw stored events (shrinks on compaction)
+    "createdAt":  "…"
+  }
+}
+```
+
+A `404` means the relay is up but has never seen this owner (nothing pushed
+yet) — clients should read that as "healthy, empty account" and may confirm
+liveness via `/health`.
 
 ### Ordering note
 
@@ -233,8 +257,10 @@ order of preference:
    losing any current data. See [log compaction](#log-compaction).
 2. **Raise `MAX_OWNER_BYTES`** on your own relay — you self-host, so the only hard
    ceiling is disk.
-3. **Poll `GET /v1/usage`** to warn the user or trigger compaction *before* writes
-   start failing.
+3. **Watch usage before it's a problem** — `engine.getRelayStatuses()` (or a
+   direct `GET /v1/status`) reports `usedBytes` vs `quotaBytes` per relay, so
+   the app can warn the user or trigger compaction *before* writes start
+   failing.
 
 Because chunks are stored as raw binary (not base64), 1 GiB of quota holds ≈1 GiB
 of real data. Blob-*chunk* GC is not automated, so heavy media use can leave

@@ -207,6 +207,10 @@ export const createSync =
       getPendingOutboxCount() {
         return store.pendingOutboxCount();
       },
+      async getRelayStatuses() {
+        await ready;
+        return relay.getRelayStatuses();
+      },
       purgeDeleted(options) {
         const olderThanMs = options?.olderThanMs ?? THIRTY_DAYS_MS;
         return { purged: store.purgeDeleted(olderThanMs, Date.now()) };

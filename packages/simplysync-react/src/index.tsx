@@ -2,11 +2,14 @@ import {
   createContext,
   createElement,
   useContext,
+  useEffect,
   useMemo,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type {
+  RelayStatus,
   SyncEngine,
   SyncError,
   Query,
@@ -16,6 +19,7 @@ import type {
 
 // Re-export the common types so call sites can import them from the React entry.
 export type {
+  RelayStatus,
   SyncEngine,
   SyncError,
   Query,
@@ -81,6 +85,39 @@ export function useSyncState(): SyncState {
     () => engine.getSyncState(),
     () => engine.getSyncState(),
   );
+}
+
+/**
+ * Per-relay health + storage snapshot (used vs quota, from GET /v1/status),
+ * refreshed on an interval. Each refresh is one HTTP request per relay, so
+ * this is for diagnostics/settings surfaces, not hot paths. Empty until the
+ * first probe resolves.
+ */
+export function useRelayStatuses(options?: {
+  /** Refresh cadence in ms. Default 30 000. */
+  readonly refreshMs?: number;
+}): readonly RelayStatus[] {
+  const engine = useSync();
+  const refreshMs = options?.refreshMs ?? 30_000;
+  const [statuses, setStatuses] = useState<readonly RelayStatus[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      engine
+        .getRelayStatuses()
+        .then((next) => {
+          if (!cancelled) setStatuses(next);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    const timer = setInterval(load, refreshMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [engine, refreshMs]);
+  return statuses;
 }
 
 export function useSyncError(): SyncError | null {
