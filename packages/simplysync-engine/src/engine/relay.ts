@@ -1,6 +1,7 @@
 import {
   compareHlc,
   decryptEnvelope,
+  encryptPayload,
   type SyncEnvelope,
   type SyncPayload,
 } from "@simplysync/protocol";
@@ -104,6 +105,45 @@ export function createRelaySync(
       t.url.replace(/^wss:\/\//u, "https://").replace(/^ws:\/\//u, "http://"),
     );
 
+  // Encrypt every outbox row still holding the durable, plaintext-pending
+  // marker written atomically by the write path (see store.ts
+  // `insertPendingOutboxEvent`) — identified by `envelope_json = ''` — and
+  // fill in its real envelope. Run at the start of every `sync()` (so it also
+  // covers boot: a crash between a write and its seal is repaired by the very
+  // first sync call) and BEFORE any push, so a relay only ever sees sealed
+  // envelopes. Idempotent: the `and envelope_json = ''` in the update means a
+  // row already sealed by a previous call (or a concurrent one) is simply
+  // skipped, never re-encrypted. One bad row (e.g. a corrupt payload_json)
+  // surfaces via state.setError and is skipped rather than blocking the rest.
+  const sealPendingOutbox = async (): Promise<void> => {
+    const { identity, driver } = state;
+    if (!identity || !driver) return;
+    const pending = driver.select<{ event_id: string; payload_json: string }>(
+      `select event_id, payload_json from "${SYNC_OUTBOX_TABLE}" where envelope_json = '' and payload_json is not null order by event_id asc`,
+    );
+    for (const row of pending) {
+      try {
+        const payload = JSON.parse(row.payload_json) as SyncPayload<
+          Record<string, unknown>
+        >;
+        const envelope = await encryptPayload(
+          identity,
+          { eventId: row.event_id, deviceId: state.deviceId },
+          payload,
+        );
+        driver.exec(
+          `update "${SYNC_OUTBOX_TABLE}" set envelope_json = ? where event_id = ? and envelope_json = ''`,
+          [JSON.stringify(envelope), row.event_id],
+        );
+      } catch (caught) {
+        state.setError({
+          type: "SealError",
+          message: caught instanceof Error ? caught.message : String(caught),
+        });
+      }
+    }
+  };
+
   const pushOutbox = async (baseUrl: string): Promise<number> => {
     const { identity, driver } = state;
     if (!identity || !driver) return 0;
@@ -114,10 +154,14 @@ export function createRelaySync(
     // this device's own HLCs — monotonically increasing — so a string
     // high-water mark paginates correctly. On upgrade the cursor is unset and
     // starts at "" (re-push everything once; the relay dedupes by event id).
+    // `envelope_json != ''` is a safety net: sealPendingOutbox runs before
+    // this at the start of every sync(), so by the time we get here nearly
+    // everything is already sealed — this just guarantees a relay never
+    // receives an unsealed (plaintext-pending) marker.
     const cursorKey = `push:${baseUrl}`;
     const after = store.getMeta(cursorKey) ?? "";
     const events = driver.select<{ event_id: string; envelope_json: string }>(
-      `select event_id, envelope_json from "${SYNC_OUTBOX_TABLE}" where event_id > ? order by event_id asc limit 1000`,
+      `select event_id, envelope_json from "${SYNC_OUTBOX_TABLE}" where event_id > ? and envelope_json != '' order by event_id asc limit 1000`,
       [after],
     );
     if (events.length === 0) return 0;
@@ -271,16 +315,25 @@ export function createRelaySync(
 
   const sync = async (): Promise<void> => {
     if (!state.identity || state.syncing) return;
-    const bases = relayBaseUrls();
-    if (bases.length === 0) return;
     state.syncing = true;
-    state.setSyncState({ type: "SyncStateIsSyncing" });
-    const changed = new Set<string>();
-    let anySuccess = false;
-    let firstFailure:
-      | { kind: SyncFailureKind; status?: number; message: string }
-      | undefined;
     try {
+      // Seal any durable, plaintext-pending outbox rows (see store.ts
+      // insertPendingOutboxEvent) before anything else — regardless of
+      // whether a relay is configured yet, so a write's event never sits
+      // unencrypted at rest indefinitely just because no relay has been
+      // attached (mirrors the old always-encrypt-on-write guarantee; only the
+      // network push/pull below is relay-gated). This also covers boot: a
+      // crash between a prior write and its seal is repaired by the very
+      // first sync() call.
+      await sealPendingOutbox();
+      const bases = relayBaseUrls();
+      if (bases.length === 0) return;
+      state.setSyncState({ type: "SyncStateIsSyncing" });
+      const changed = new Set<string>();
+      let anySuccess = false;
+      let firstFailure:
+        | { kind: SyncFailureKind; status?: number; message: string }
+        | undefined;
       // Contact every relay so each one's health is recorded independently
       // (per-relay log entries, not collapsed to the first failure).
       for (const base of bases) {

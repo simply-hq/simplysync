@@ -5,7 +5,6 @@ import {
   decryptStringWithPassphrase,
   deriveBackupKeyBytes,
   deriveIdentity,
-  encryptPayload,
   encryptStringWithKey,
   encryptStringWithPassphrase,
   InvalidBackupEnvelopeError,
@@ -14,7 +13,6 @@ import {
   normalizeMnemonic,
   type EncryptedEnvelopeV1,
   type LocalFirstIdentity,
-  type SyncPayload,
 } from "@simplysync/protocol";
 import {
   sqliteFalse,
@@ -31,7 +29,7 @@ import type {
   SyncEngineConfig,
   SyncEngineDeps,
 } from "../engine-types";
-import { LEGACY_IMPORT_VERSION, SYNC_OUTBOX_TABLE } from "./constants";
+import { LEGACY_IMPORT_VERSION } from "./constants";
 import { createId } from "./ids";
 import type { QueryCache } from "./query-cache";
 import type { RelaySync } from "./relay";
@@ -41,9 +39,14 @@ import type { Clock, Store } from "./store";
 export type Mutations = ReturnType<typeof createMutations>;
 
 /**
- * The local write path. `mutate` validates + merges a row, stamps the HLC,
- * writes it in a transaction, queues an encrypted event in the outbox, then
- * opportunistically syncs. `insert`/`update`/`upsert` are the three modes.
+ * The local write path. `mutate` validates + merges a row, then — in the SAME
+ * transaction — writes the row and inserts its durable, plaintext-pending
+ * outbox marker (see store.ts `insertPendingOutboxEvent`), so a row is never
+ * committed without a way to eventually replicate it, even if the process
+ * dies immediately after. Encryption is deferred to the async seal step
+ * (relay.ts `sealPendingOutbox`, run before every push) since it can't happen
+ * inside a synchronous transaction. `insert`/`update`/`upsert` are the three
+ * modes.
  */
 export function createMutations(
   state: EngineState,
@@ -53,26 +56,6 @@ export function createMutations(
   relay: RelaySync,
   schema: SchemaDefinition,
 ) {
-  const enqueue = async (
-    table: string,
-    op: SyncPayload["op"],
-    rowId: string,
-    hlc: string,
-    value: unknown,
-  ): Promise<void> => {
-    const { identity, driver } = state;
-    if (!identity || !driver) return;
-    const envelope = await encryptPayload(
-      identity,
-      { eventId: hlc, deviceId: state.deviceId },
-      { schemaVersion: 1, table, op, rowId, hlc, value },
-    );
-    driver.exec(
-      `insert or ignore into "${SYNC_OUTBOX_TABLE}" (event_id, envelope_json) values (?, ?)`,
-      [hlc, JSON.stringify(envelope)],
-    );
-  };
-
   // A validated, merged row ready to write. Splitting "prepare" (pure-ish:
   // validate + merge + stamp the HLC) from "write" lets `batch` prepare every
   // op up front and fail atomically before touching the database.
@@ -142,15 +125,29 @@ export function createMutations(
     return { ok: true, prepared: { table, id, hlc, merged } };
   };
 
-  // Enqueue one event per row, then trigger a single opportunistic sync.
-  // Skipped entirely for local-only writes (see MutationOptions.local).
+  // The plaintext event a PreparedRow replicates — same shape the old async
+  // `enqueue` encrypted, minus the encryption. `op` is always "upsert": a soft
+  // delete is represented by `isDeleted` inside `value`, not a distinct sync
+  // op (mirrors the apply side, which never reads `payload.op`).
+  const buildOutboxPayload = (row: PreparedRow): string =>
+    JSON.stringify({
+      schemaVersion: 1,
+      table: row.table,
+      op: "upsert" as const,
+      rowId: row.id,
+      hlc: row.hlc,
+      value: row.merged,
+    });
+
+  // Kick a sync so any pending outbox rows get sealed (encrypted) and pushed
+  // promptly. Skipped entirely for local-only writes (see
+  // MutationOptions.local). Always attempted — even with no relay configured
+  // yet — so a pending row doesn't sit unencrypted at rest indefinitely;
+  // `relay.sync()` itself no-ops the network push/pull when there's nothing to
+  // push to, but still runs the seal step (see relay.ts `sealPendingOutbox`).
   const replicate = (rows: readonly PreparedRow[], local?: boolean): void => {
     if (local || rows.length === 0) return;
-    void Promise.all(
-      rows.map((r) => enqueue(r.table, "upsert", r.id, r.hlc, r.merged)),
-    ).then(() => {
-      if (state.transports.length > 0) void relay.sync().catch(() => undefined);
-    });
+    void relay.sync().catch(() => undefined);
   };
 
   const mutate = (
@@ -166,10 +163,20 @@ export function createMutations(
     const prep = prepareRow(table, values, mode);
     if (!prep.ok) return { ok: false, error: { message: prep.message } };
     const { id, merged } = prep.prepared;
+    const local = options?.local === true;
 
     try {
       driver.transaction(() => {
         store.writeRow(table, merged);
+        // Atomic with the row write: if this insert throws, the whole
+        // transaction (including the row write above) rolls back, so a
+        // committed non-local row always has a pending-or-sealed outbox row.
+        if (!local) {
+          store.insertPendingOutboxEvent(
+            prep.prepared.hlc,
+            buildOutboxPayload(prep.prepared),
+          );
+        }
       });
     } catch (caught) {
       return {
@@ -220,10 +227,16 @@ export function createMutations(
         return { ok: false, error: { message: prep.message } };
       prepared.push(prep.prepared);
     }
+    const local = options?.local === true;
 
     try {
       driver.transaction(() => {
-        for (const row of prepared) store.writeRow(row.table, row.merged);
+        for (const row of prepared) {
+          store.writeRow(row.table, row.merged);
+          if (!local) {
+            store.insertPendingOutboxEvent(row.hlc, buildOutboxPayload(row));
+          }
+        }
       });
     } catch (caught) {
       return {
@@ -240,7 +253,7 @@ export function createMutations(
     return { ok: true, ids: prepared.map((r) => r.id) };
   };
 
-  return { mutate, batch, enqueue };
+  return { mutate, batch };
 }
 
 export type Lifecycle = ReturnType<typeof createLifecycle>;

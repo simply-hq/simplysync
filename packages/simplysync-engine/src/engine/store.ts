@@ -104,9 +104,32 @@ export function createStore(
         );
       }
     }
+    // `payload_json` holds the plaintext event (same trust level as the local
+    // row itself) written SYNCHRONOUSLY, in the same transaction as the row it
+    // replicates — see insertPendingOutboxEvent. `envelope_json` starts as ''
+    // ("not yet sealed") and is filled in by the async seal step
+    // (sealPendingOutbox in relay.ts) before the row is ever pushed; a relay
+    // only ever receives envelope_json, never payload_json. This makes the row
+    // write and its outbox marker atomic without requiring the (necessarily
+    // async) encryption step to run inside the write transaction.
     driver.exec(
-      `create table if not exists "${SYNC_OUTBOX_TABLE}" (event_id text primary key, envelope_json text not null, pushed_at text);`,
+      `create table if not exists "${SYNC_OUTBOX_TABLE}" (event_id text primary key, payload_json text, envelope_json text not null default '', pushed_at text);`,
     );
+    // Additive migration for databases created before payload_json existed:
+    // `create table if not exists` above is a no-op on them, so backfill the
+    // column here (metadata-only in SQLite). Their existing rows already carry
+    // a real (sealed) envelope_json and a NULL payload_json, which reads as
+    // "already sealed" below — nothing to re-encrypt, no data loss.
+    const outboxColumns = new Set(
+      driver
+        .select<{ name: string }>(`pragma table_info("${SYNC_OUTBOX_TABLE}")`)
+        .map((c) => c.name),
+    );
+    if (!outboxColumns.has("payload_json")) {
+      driver.exec(
+        `alter table "${SYNC_OUTBOX_TABLE}" add column payload_json text;`,
+      );
+    }
     driver.exec(
       `create table if not exists "${SYNC_SEEN_TABLE}" (event_id text primary key);`,
     );
@@ -295,6 +318,26 @@ export function createStore(
     return count;
   };
 
+  // Insert the durable, plaintext-pending outbox marker for one replicated
+  // event. Called from INSIDE the same `driver.transaction(...)` as the row
+  // write it accompanies (see mutations-lifecycle.ts `mutate`/`batch`) so the
+  // row and its marker commit — or roll back — together: if the process dies
+  // before this line runs, the row write itself never committed either. No
+  // encryption happens here (that's async; it would have to run outside any
+  // transaction) — `envelope_json` starts '' and is filled in later by
+  // `sealPendingOutbox` (relay.ts), before the event is ever pushed.
+  const insertPendingOutboxEvent = (
+    eventId: string,
+    payloadJson: string,
+  ): void => {
+    const { driver } = state;
+    if (!driver) return;
+    driver.exec(
+      `insert or ignore into "${SYNC_OUTBOX_TABLE}" (event_id, payload_json, envelope_json, pushed_at) values (?, ?, '', null)`,
+      [eventId, payloadJson],
+    );
+  };
+
   const writeRow = (table: string, row: Record<string, unknown>): void => {
     const { driver } = state;
     if (!driver) return;
@@ -423,6 +466,7 @@ export function createStore(
     wipeLocalData,
     purgeDeleted,
     pruneOutbox,
+    insertPendingOutboxEvent,
     writeRow,
     coerceValues,
     projectRow,

@@ -63,7 +63,14 @@ const entriesQuery = (engine: SyncEngine<PlaygroundSchema>) =>
 function readOutbox(): string[] {
   const db = getActiveDb();
   if (!db) return [];
-  const stmt = db.prepare(`select envelope_json from "_sync_outbox"`);
+  // Only SEALED rows: an outbox row now appears synchronously with the write,
+  // holding a plaintext-pending marker (envelope_json = '') until the async
+  // seal step encrypts it (see the engine's sealPendingOutbox). Filtering out
+  // unsealed rows makes `waitFor` block until a real envelope exists, so the
+  // JSON.parse below always gets ciphertext rather than an empty placeholder.
+  const stmt = db.prepare(
+    `select envelope_json from "_sync_outbox" where envelope_json != ''`,
+  );
   try {
     const rows: string[] = [];
     while (stmt.step()) rows.push(stmt.getAsObject().envelope_json as string);
