@@ -35,6 +35,9 @@ type Config struct {
 	MaxBlobBytes         int64
 	CompactionInterval   time.Duration
 	MaxOwners            int
+	RateLimitEnabled     bool
+	RateLimitAPI         int
+	RateLimitWrite       int
 }
 
 const blobPathPrefix = "/v1/blobs/"
@@ -57,6 +60,9 @@ func loadConfig() Config {
 		MaxBlobBytes:         envInt64("MAX_BLOB_BYTES", 8*1024*1024),
 		CompactionInterval:   resolveCompactionInterval(),
 		MaxOwners:            envInt("MAX_OWNERS", 100000),
+		RateLimitEnabled:     envBool("RATE_LIMIT_ENABLED", true),
+		RateLimitAPI:         envInt("RATE_LIMIT_API", 120),
+		RateLimitWrite:       envInt("RATE_LIMIT_WRITE", 60),
 	}
 	if token != "" {
 		cfg.AdminBase = resolveAdminBase(token)
@@ -142,7 +148,9 @@ func main() {
 		}
 	}
 
-	handler := withMetrics(cfg, routeHandler(cfg, st))
+	initRateLimiters(cfg)
+	// metrics outermost so 429s are counted; then the per-IP rate limit; then routes.
+	handler := withMetrics(cfg, withRateLimit(routeHandler(cfg, st)))
 	server := &http.Server{
 		Addr:    ":" + strconv.Itoa(cfg.Port),
 		Handler: handler,

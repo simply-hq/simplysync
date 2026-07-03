@@ -14,6 +14,7 @@ import {
   setCompactionInfo,
   startSampler,
 } from "./metrics";
+import { RateLimiter } from "./ratelimit";
 
 const PORT = Number(process.env.PORT ?? 4100);
 // Reported by /health and /v1/status so clients can tell which relay build
@@ -73,6 +74,11 @@ const MAX_BLOB_BYTES = readPositiveIntegerEnv(
   8 * 1024 * 1024,
 );
 const MAX_OWNERS = readPositiveIntegerEnv("MAX_OWNERS", 100000);
+const RATE_LIMIT_ENABLED = (process.env.RATE_LIMIT_ENABLED ?? "true") !== "false";
+const RATE_LIMIT_API = readPositiveIntegerEnv("RATE_LIMIT_API", 120);
+const RATE_LIMIT_WRITE = readPositiveIntegerEnv("RATE_LIMIT_WRITE", 60);
+const apiLimiter = new RateLimiter(RATE_LIMIT_API, 10_000);
+const writeLimiter = new RateLimiter(RATE_LIMIT_WRITE, 10_000);
 
 const BLOB_PATH_PREFIX = "/v1/blobs/";
 
@@ -350,6 +356,10 @@ async function route(request: Request, url: URL): Promise<Response> {
     });
   }
 
+  if (RATE_LIMIT_ENABLED && !apiLimiter.allow(clientIp(request))) {
+    return json({ error: "Rate limited" }, 429);
+  }
+
   if (
     ADMIN_TOKEN &&
     (url.pathname === ADMIN_BASE ||
@@ -494,6 +504,10 @@ async function handlePush(request: Request): Promise<Response> {
 
   const authResult = await ensureOwnerAuth(body.ownerId, relayAuth);
   if (!authResult.ok) return authResult.response;
+
+  if (RATE_LIMIT_ENABLED && !writeLimiter.allow(body.ownerId)) {
+    return json({ error: "Rate limited" }, 429);
+  }
 
   let accepted = 0;
   let duplicate = 0;
@@ -640,6 +654,10 @@ async function handleBlobPut(
   const auth = await authOwner(request, url, true);
   if (!auth.ok) return auth.response;
   const { ownerId } = auth;
+
+  if (RATE_LIMIT_ENABLED && !writeLimiter.allow(ownerId)) {
+    return json({ error: "Rate limited" }, 429);
+  }
 
   // Short-circuit before reading the body: dedupe by content hash.
   if (existsBlob.get(ownerId, hash)) {

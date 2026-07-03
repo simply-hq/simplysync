@@ -119,6 +119,11 @@ func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if rateLimitOn && !writeLimiter.allow(body.OwnerID) {
+		writeJSON(w, http.StatusTooManyRequests, errBody("Rate limited"))
+		return
+	}
+
 	out := st.pushEvents(cfg, body.OwnerID, events)
 	if out.status != 0 {
 		writeJSON(w, out.status, errBody(out.msg))
@@ -255,6 +260,11 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 	auth := st.ensureOwnerAuth(ownerID, relayAuth, true)
 	if !auth.ok {
 		writeJSON(w, auth.status, errBody(auth.msg))
+		return
+	}
+
+	if rateLimitOn && !writeLimiter.allow(ownerID) {
+		writeJSON(w, http.StatusTooManyRequests, errBody("Rate limited"))
 		return
 	}
 

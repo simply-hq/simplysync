@@ -92,11 +92,12 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
 
   beforeAll(async () => {
     [relay, specialRelay] = await Promise.all([
-      launchRelay(kind),
+      launchRelay(kind, { RATE_LIMIT_ENABLED: "false" }),
       launchRelay(kind, {
         ADMIN_TOKEN,
         ADMIN_PATH,
         MAX_OWNER_BYTES: String(TINY_OWNER_QUOTA_BYTES),
+        RATE_LIMIT_ENABLED: "false",
       }),
     ]);
   }, 45_000);
@@ -418,6 +419,45 @@ describe.each(kinds)("owner cap — %s", (kind) => {
       await makeEnvelope(a, { counter: 1, rowId: "cap-row-2" }),
     ]);
     expect(again.status).toBe(200);
+  });
+});
+
+describe.each(kinds)("rate limiting — %s", (kind) => {
+  let apiLimited: LaunchedRelay;
+  let writeLimited: LaunchedRelay;
+
+  beforeAll(async () => {
+    [apiLimited, writeLimited] = await Promise.all([
+      launchRelay(kind, { RATE_LIMIT_API: "3" }),
+      launchRelay(kind, { RATE_LIMIT_WRITE: "2" }),
+    ]);
+  }, 45_000);
+
+  afterAll(async () => {
+    await Promise.all([apiLimited?.kill(), writeLimited?.kill()]);
+  });
+
+  test("per-IP API limit returns 429 once exceeded; /health stays exempt", async () => {
+    const t = await createTestIdentity();
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      statuses.push((await getStatus(apiLimited.baseUrl, t)).status);
+    }
+    expect(statuses).toContain(429);
+    expect((await fetch(`${apiLimited.baseUrl}/health`)).status).toBe(200);
+  });
+
+  test("per-owner write limit returns 429 once exceeded", async () => {
+    const t = await createTestIdentity();
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const res = await pushEvents(writeLimited.baseUrl, t, [
+        await makeEnvelope(t, { counter: i, rowId: `rl-row-${i}` }),
+      ]);
+      statuses.push(res.status);
+    }
+    expect(statuses.filter((s) => s === 200).length).toBeGreaterThanOrEqual(1);
+    expect(statuses).toContain(429);
   });
 });
 
