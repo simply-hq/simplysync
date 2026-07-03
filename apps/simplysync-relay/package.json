@@ -7,7 +7,8 @@
     "dev": "bun run --watch src/index.ts",
     "dev:admin": "ADMIN_TOKEN=dev ADMIN_PATH=admin bun run --watch src/index.ts",
     "start": "bun run src/index.ts",
-    "clean": "rm -rf data/relay.db data/relay.db-shm data/relay.db-wal"
+    "clean": "rm -rf data/relay.db data/relay.db-shm data/relay.db-wal",
+    "test": "bun test"
   },
   "dependencies": {
     "@simplysync/protocol": "workspace:*"
