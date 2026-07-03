@@ -178,15 +178,19 @@ export function createRelaySync(
     });
     if (!response.ok) throw httpError("push", response.status);
     const pushedAt = new Date().toISOString();
-    for (const event of events) {
-      // `pushed_at` means "reached at least one relay" — it drives the
-      // pending-outbox count and the purge guard. Keep the earliest via coalesce
-      // so re-pushes to other relays don't reset it.
-      driver.exec(
-        `update "${SYNC_OUTBOX_TABLE}" set pushed_at = coalesce(pushed_at, ?) where event_id = ?`,
-        [pushedAt, event.event_id],
-      );
-    }
+    // One transaction for the whole batch's pushed_at updates instead of one
+    // auto-commit per event — same effect, far fewer commits for a big batch.
+    driver.transaction(() => {
+      for (const event of events) {
+        // `pushed_at` means "reached at least one relay" — it drives the
+        // pending-outbox count and the purge guard. Keep the earliest via
+        // coalesce so re-pushes to other relays don't reset it.
+        driver.exec(
+          `update "${SYNC_OUTBOX_TABLE}" set pushed_at = coalesce(pushed_at, ?) where event_id = ?`,
+          [pushedAt, event.event_id],
+        );
+      }
+    });
     store.setMeta(cursorKey, events[events.length - 1]!.event_id);
     return events.length;
   };
@@ -252,6 +256,15 @@ export function createRelaySync(
       nextCursor: string;
     };
     result.pulled = body.events.length;
+
+    // Async phase: decrypt every not-yet-seen envelope into memory. No writes
+    // happen here. decryptEnvelope is async and driver.transaction below runs
+    // its callback synchronously (no await allowed inside it), so all
+    // decryption must finish before that transaction opens.
+    const decrypted: Array<{
+      eventId: string;
+      payload: SyncPayload<Record<string, unknown>>;
+    }> = [];
     for (const envelope of body.events) {
       const seen = driver.select(
         `select 1 from "${SYNC_SEEN_TABLE}" where event_id = ?`,
@@ -271,29 +284,55 @@ export function createRelaySync(
       }
       // Absorb every event's time into our clock (even tables we don't apply)
       // so future local writes always sort above what we've already seen.
+      // observeHlc is itself synchronous (in-memory update + a couple of plain
+      // setMeta writes), so doing it here rather than inside the transaction
+      // below is a style choice, not a correctness requirement — it must run
+      // for every decrypted event regardless of apply outcome, which this
+      // preserves.
       clock.observeHlc(payload.hlc);
-      if (payload.table in schema) {
-        try {
-          if (applyRemoteRow(payload)) result.applied += 1;
-          result.changed.add(payload.table);
-        } catch {
-          // Plan 004: applyRemoteRow above now projects onto the local schema
-          // first, so the recoverable case (an unknown column) no longer
-          // throws — it's just applied with that column dropped. What
-          // reaches this catch is a genuine write error (e.g. a known
-          // column's value fails validation), which a retry can't fix.
-          // Leaving it un-seen would hold back `cursorKey` below and wedge
-          // every later event in this and future pages behind a permanently
-          // failing one, so it stays terminal: count it (surfaced via
-          // applyFailures -> the sync log) and fall through to mark it seen.
-          result.applyFailures += 1;
-        }
-      }
-      driver.exec(
-        `insert or ignore into "${SYNC_SEEN_TABLE}" (event_id) values (?)`,
-        [envelope.eventId],
-      );
+      // Collect for the batched sync phase below. The apply itself (via
+      // applyRemoteRow, which projects onto the local schema per plan 004) and
+      // the seen-insert happen inside ONE transaction there (plan 008). A
+      // genuine write error is caught there, counted as applyFailures, and the
+      // event is still marked seen (terminal) so it can't wedge the cursor.
+      decrypted.push({ eventId: envelope.eventId, payload });
     }
+
+    // Sync phase: apply every decrypted row and record it as seen inside ONE
+    // transaction, so a big page commits once instead of ~2-3x per event.
+    // Everything here is a plain synchronous driver call (select/exec) —
+    // nothing async runs inside the transaction callback.
+    if (decrypted.length > 0) {
+      driver.transaction(() => {
+        for (const { eventId, payload } of decrypted) {
+          // Re-check "seen" here (not just in the async phase above): a
+          // duplicate eventId within the same page — which a relay shouldn't
+          // send, but we stay defensive — would otherwise be applied twice.
+          const stillUnseen =
+            driver.select(
+              `select 1 from "${SYNC_SEEN_TABLE}" where event_id = ?`,
+              [eventId],
+            ).length === 0;
+          if (!stillUnseen) continue;
+          if (payload.table in schema) {
+            try {
+              if (applyRemoteRow(payload)) result.applied += 1;
+              result.changed.add(payload.table);
+            } catch {
+              result.applyFailures += 1;
+            }
+          }
+          driver.exec(
+            `insert or ignore into "${SYNC_SEEN_TABLE}" (event_id) values (?)`,
+            [eventId],
+          );
+        }
+      });
+    }
+
+    // Advance the cursor only after the transaction above has committed, so a
+    // crash mid-apply re-pulls (and safely re-applies — apply is idempotent)
+    // the same page next time instead of silently skipping it.
     store.setMeta(cursorKey, body.nextCursor);
     return result;
   };
@@ -316,6 +355,13 @@ export function createRelaySync(
   const sync = async (): Promise<void> => {
     if (!state.identity || state.syncing) return;
     state.syncing = true;
+    const bases = relayBaseUrls();
+    // Flip the public sync state synchronously at the true start of the sync —
+    // NOT after the awaited seal below — so observers (UI spinners, and tests'
+    // settle() helpers) reliably see the in-flight sync instead of missing it
+    // during the seal's first async tick. A seal-only sync (no relay attached)
+    // deliberately doesn't surface a "syncing" state, matching prior behavior.
+    if (bases.length > 0) state.setSyncState({ type: "SyncStateIsSyncing" });
     try {
       // Seal any durable, plaintext-pending outbox rows (see store.ts
       // insertPendingOutboxEvent) before anything else — regardless of
@@ -326,9 +372,7 @@ export function createRelaySync(
       // crash between a prior write and its seal is repaired by the very
       // first sync() call.
       await sealPendingOutbox();
-      const bases = relayBaseUrls();
       if (bases.length === 0) return;
-      state.setSyncState({ type: "SyncStateIsSyncing" });
       const changed = new Set<string>();
       let anySuccess = false;
       let firstFailure:
