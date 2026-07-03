@@ -34,6 +34,7 @@ type Config struct {
 	DefaultEventsPerPull int
 	MaxBlobBytes         int64
 	CompactionInterval   time.Duration
+	MaxOwners            int
 }
 
 const blobPathPrefix = "/v1/blobs/"
@@ -55,6 +56,7 @@ func loadConfig() Config {
 		DefaultEventsPerPull: envInt("DEFAULT_EVENTS_PER_PULL", 1000),
 		MaxBlobBytes:         envInt64("MAX_BLOB_BYTES", 8*1024*1024),
 		CompactionInterval:   resolveCompactionInterval(),
+		MaxOwners:            envInt("MAX_OWNERS", 100000),
 	}
 	if token != "" {
 		cfg.AdminBase = resolveAdminBase(token)
@@ -101,6 +103,7 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer st.close()
+	st.maxOwners = cfg.MaxOwners
 	if err := st.migrate(); err != nil {
 		log.Fatalf("migrate: %v", err)
 	}

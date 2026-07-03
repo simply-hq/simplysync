@@ -72,6 +72,7 @@ const MAX_BLOB_BYTES = readPositiveIntegerEnv(
   "MAX_BLOB_BYTES",
   8 * 1024 * 1024,
 );
+const MAX_OWNERS = readPositiveIntegerEnv("MAX_OWNERS", 100000);
 
 const BLOB_PATH_PREFIX = "/v1/blobs/";
 
@@ -147,12 +148,19 @@ db.exec(`insert or ignore into relay_meta (key, value) values ('event_seq', 0)`)
 db.exec(
   `update relay_meta set value = (select coalesce(max(seq), 0) from events) where key = 'event_seq' and value < (select coalesce(max(seq), 0) from events)`,
 );
+db.exec(`insert or ignore into relay_meta (key, value) values ('owner_count', 0)`);
+db.exec(
+  `update relay_meta set value = (select count(*) from owners) where key = 'owner_count' and value < (select count(*) from owners)`,
+);
 
 const getEventSeq = db.query<{ value: number }, []>(
   `select value from relay_meta where key = 'event_seq'`,
 );
 const setEventSeq = db.prepare(
   `update relay_meta set value = ? where key = 'event_seq'`,
+);
+const bumpOwnerCount = db.prepare(
+  `update relay_meta set value = value + 1 where key = 'owner_count' and value < ?`,
 );
 
 const getOwner = db.query<{
@@ -774,7 +782,27 @@ async function ensureOwnerAuth(
       return { ok: false, response: json({ error: "Unknown owner" }, 404) };
     }
 
-    insertOwner.run(ownerId, relayAuthHash, new Date().toISOString());
+    // Enforce the global owner cap atomically with the insert. Re-read inside
+    // the transaction (the getOwner above ran before it), bump the counter
+    // only while under the cap, insert only if it's genuinely new. Mirrors the
+    // Go relay's writeMu-guarded create and the Cloudflare relay's MAX_OWNERS.
+    const outcome = db.transaction((): "created" | "at-capacity" | { racedHash: string } => {
+      const existing = getOwner.get(ownerId);
+      if (existing) return { racedHash: existing.relay_auth_hash };
+      const bumped = bumpOwnerCount.run(MAX_OWNERS);
+      if (bumped.changes === 0) return "at-capacity";
+      insertOwner.run(ownerId, relayAuthHash, new Date().toISOString());
+      return "created";
+    })();
+
+    if (outcome === "at-capacity") {
+      return { ok: false, response: json({ error: "Relay is at capacity" }, 503) };
+    }
+    if (outcome === "created") return { ok: true };
+    // Lost a create race: auth-check against the row the winner created.
+    if (outcome.racedHash !== relayAuthHash) {
+      return { ok: false, response: json({ error: "Invalid bearer token" }, 401) };
+    }
     return { ok: true };
   }
 

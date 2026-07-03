@@ -391,6 +391,36 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
   });
 });
 
+describe.each(kinds)("owner cap — %s", (kind) => {
+  let capped: LaunchedRelay;
+
+  beforeAll(async () => {
+    capped = await launchRelay(kind, { MAX_OWNERS: "2" });
+  }, 45_000);
+
+  afterAll(async () => {
+    await capped?.kill();
+  });
+
+  test("creating owners past MAX_OWNERS returns 503; existing owners still write", async () => {
+    const a = await createTestIdentity();
+    const b = await createTestIdentity();
+    const c = await createTestIdentity();
+
+    expect((await pushEvents(capped.baseUrl, a, [await makeEnvelope(a)])).status).toBe(200);
+    expect((await pushEvents(capped.baseUrl, b, [await makeEnvelope(b)])).status).toBe(200);
+
+    const third = await pushEvents(capped.baseUrl, c, [await makeEnvelope(c)]);
+    expect(third.status).toBe(503);
+    expect(await third.json()).toHaveProperty("error");
+
+    const again = await pushEvents(capped.baseUrl, a, [
+      await makeEnvelope(a, { counter: 1, rowId: "cap-row-2" }),
+    ]);
+    expect(again.status).toBe(200);
+  });
+});
+
 afterAll(() => {
   cleanupGoBinary();
 });

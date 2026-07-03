@@ -19,8 +19,9 @@ var errBlobQuotaExceeded = errors.New("owner quota exceeded")
 // are serialized by writeMu so quota read-modify-write stays atomic (SQLite
 // allows only one writer anyway, and WAL keeps readers unblocked meanwhile).
 type store struct {
-	db      *sql.DB
-	writeMu sync.Mutex
+	db        *sql.DB
+	writeMu   sync.Mutex
+	maxOwners int
 }
 
 func openStore(dataDir string) (*store, error) {
@@ -93,6 +94,14 @@ func (s *store) migrate() error {
 	// Seed the counter above the max backfilled seq so new seqs never collide.
 	s.db.Exec(`update relay_meta set value = (select coalesce(max(seq), 0) from events)
 		where key = 'event_seq' and value < (select coalesce(max(seq), 0) from events)`)
+
+	// Global owner cap counter (mirrors event_seq's backfill pattern and the
+	// Cloudflare relay's owner_count). One counter row, so the create path
+	// never runs count(*) on owners. Seed it from the current owner count on
+	// first upgrade; owners are never deleted, so it stays accurate.
+	s.db.Exec(`insert or ignore into relay_meta (key, value) values ('owner_count', 0)`)
+	s.db.Exec(`update relay_meta set value = (select count(*) from owners)
+		where key = 'owner_count' and value < (select count(*) from owners)`)
 	return nil
 }
 
@@ -127,15 +136,40 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 			return authResult{status: 500, msg: "Internal error"}
 		}
 		if !found {
-			_, err = s.db.Exec(
+			// Enforce the global owner cap atomically with the insert: bump the
+			// counter only while it's below the cap, insert only if the bump
+			// took. Under writeMu, so no concurrent writer can interleave.
+			tx, err := s.db.Begin()
+			if err != nil {
+				s.writeMu.Unlock()
+				return authResult{status: 500, msg: "Internal error"}
+			}
+			res, err := tx.Exec(`update relay_meta set value = value + 1
+				where key = 'owner_count' and value < ?`, s.maxOwners)
+			if err != nil {
+				_ = tx.Rollback()
+				s.writeMu.Unlock()
+				return authResult{status: 500, msg: "Internal error"}
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				_ = tx.Rollback()
+				s.writeMu.Unlock()
+				return authResult{status: 503, msg: "Relay is at capacity"}
+			}
+			if _, err := tx.Exec(
 				`insert or ignore into owners (owner_id, relay_auth_hash, stored_bytes, created_at)
 				 values (?, ?, 0, ?)`,
 				ownerID, hash, nowISO(),
-			)
-			s.writeMu.Unlock()
-			if err != nil {
+			); err != nil {
+				_ = tx.Rollback()
+				s.writeMu.Unlock()
 				return authResult{status: 500, msg: "Internal error"}
 			}
+			if err := tx.Commit(); err != nil {
+				s.writeMu.Unlock()
+				return authResult{status: 500, msg: "Internal error"}
+			}
+			s.writeMu.Unlock()
 			return authResult{ok: true, storedBytes: 0}
 		}
 		s.writeMu.Unlock()
