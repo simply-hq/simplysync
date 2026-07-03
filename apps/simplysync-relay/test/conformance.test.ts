@@ -272,17 +272,14 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
 
   // --- metric-label bound (supports plan 003) ---------------------------------
 
-  // DIVERGENCE: none — both relays share this bug identically. As of this
-  // writing neither relay collapses unknown paths before recording them as a
-  // metrics label: routeLabel() in apps/simplysync-relay/src/metrics.ts and
-  // routeLabel() in apps/relay-go/metrics.go only special-case the blob and
-  // admin paths, so an unauthenticated GET /<raw-path> is recorded verbatim
-  // under traffic.byEndpoint (unbounded cardinality + reflects arbitrary
-  // request paths into the admin dashboard). This is the bug plan 003 is
-  // meant to fix. Using test.failing: this assertion currently fails (as
-  // expected) so the suite stays green; once plan 003 lands it will flip to
-  // failing-to-fail, which is the signal to convert it to a normal `test`.
-  test.failing(
+  // Plan 003 (merged) fixed this: routeLabel() in both
+  // apps/simplysync-relay/src/metrics.ts and apps/relay-go/metrics.go now
+  // collapses unmatched paths to a fixed "<other>" bucket, so an
+  // unauthenticated GET /<raw-path> can no longer plant an arbitrary string
+  // (or grow byEndpoint without bound) in the admin metrics. This was
+  // `test.failing` while it documented the pre-003 bug; now that 003 has
+  // landed it is a normal passing assertion (the anti-regression guard).
+  test(
     "admin /stats byEndpoint does not leak an unauthenticated raw path as a label",
     async () => {
       const junkPath = "/junk/path/should-not-leak";
