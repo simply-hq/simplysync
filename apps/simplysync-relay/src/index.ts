@@ -489,6 +489,10 @@ async function handlePush(request: Request): Promise<Response> {
   const relayAuth = getBearerToken(request);
   if (!relayAuth) return json({ error: "Missing bearer token" }, 401);
 
+  if (exceedsContentLength(request, MAX_EVENT_BYTES * MAX_EVENTS_PER_PUSH)) {
+    return json({ error: "Payload too large" }, 413);
+  }
+
   const body = (await request.json().catch(() => null)) as {
     ownerId?: unknown;
     events?: unknown;
@@ -654,6 +658,10 @@ async function handleBlobPut(
   const auth = await authOwner(request, url, true);
   if (!auth.ok) return auth.response;
   const { ownerId } = auth;
+
+  if (exceedsContentLength(request, MAX_BLOB_BYTES)) {
+    return json({ error: "Blob chunk is too large" }, 413);
+  }
 
   if (RATE_LIMIT_ENABLED && !writeLimiter.allow(ownerId)) {
     return json({ error: "Rate limited" }, 429);
@@ -854,6 +862,16 @@ function getBearerToken(request: Request): string | null {
   const authorization = request.headers.get("authorization");
   if (!authorization?.startsWith("Bearer ")) return null;
   return authorization.slice("Bearer ".length).trim() || null;
+}
+
+// Reject an oversized body by its declared Content-Length before buffering it.
+// A missing/unparseable header is not treated as exceeding. Mirrors the
+// Cloudflare relay's check.
+function exceedsContentLength(request: Request, max: number): boolean {
+  const header = request.headers.get("content-length");
+  if (!header) return false;
+  const length = Number(header);
+  return Number.isFinite(length) && length > max;
 }
 
 function json(body: unknown, status = 200): Response {

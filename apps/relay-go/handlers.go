@@ -78,6 +78,11 @@ func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if contentLengthExceeds(r, cfg.MaxEventBytes*int64(cfg.MaxEventsPerPush)) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Payload too large"))
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body,
 		cfg.MaxEventBytes*int64(cfg.MaxEventsPerPush)+1<<16)
 	raw, err := io.ReadAll(r.Body)
@@ -263,6 +268,11 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if contentLengthExceeds(r, cfg.MaxBlobBytes) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Blob chunk is too large"))
+		return
+	}
+
 	if rateLimitOn && !writeLimiter.allow(ownerID) {
 		writeJSON(w, http.StatusTooManyRequests, errBody("Rate limited"))
 		return
@@ -392,6 +402,18 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+}
+
+// contentLengthExceeds reports whether the request declares a body larger than
+// max. A missing/unparseable Content-Length is not treated as exceeding (the
+// per-path MaxBytesReader / size check still bounds it). Mirrors the
+// Cloudflare relay's exceedsContentLength — reject the cheapest-to-send
+// oversized junk before it's buffered.
+func contentLengthExceeds(r *http.Request, max int64) bool {
+	if r.ContentLength <= 0 {
+		return false
+	}
+	return r.ContentLength > max
 }
 
 func clientIP(r *http.Request) string {

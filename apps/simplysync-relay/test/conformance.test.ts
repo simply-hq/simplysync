@@ -461,6 +461,36 @@ describe.each(kinds)("rate limiting — %s", (kind) => {
   });
 });
 
+describe.each(kinds)("oversized body guard — %s", (kind) => {
+  let tiny: LaunchedRelay;
+  beforeAll(async () => {
+    tiny = await launchRelay(kind, {
+      MAX_EVENT_BYTES: "1024",
+      MAX_EVENTS_PER_PUSH: "2",
+    });
+  }, 45_000);
+  afterAll(async () => {
+    await tiny?.kill();
+  });
+
+  test("a push body over MAX_EVENT_BYTES*MAX_EVENTS_PER_PUSH is rejected 413", async () => {
+    const t = await createTestIdentity();
+    const bigBody = JSON.stringify({
+      ownerId: t.identity.ownerId,
+      events: [{ pad: "x".repeat(8192) }],
+    });
+    const res = await fetch(`${tiny.baseUrl}/v1/events`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${t.identity.relayAuth}`,
+      },
+      body: bigBody,
+    });
+    expect(res.status).toBe(413);
+  });
+});
+
 afterAll(() => {
   cleanupGoBinary();
 });
