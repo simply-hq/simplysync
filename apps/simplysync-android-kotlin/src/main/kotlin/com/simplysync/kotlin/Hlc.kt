@@ -32,6 +32,23 @@ object Hlc {
         if (s.length >= width) s else "0".repeat(width - s.length) + s
 }
 
+// Bounds how far `observe` will raise the high-water mark for a *remote* time,
+// and how high the counter can climb before the fixed 4-digit base-36 field
+// in `Hlc.make` would overflow. Mirrors the TS engine's `store.ts` guards
+// (plan 010) so the two ports stay convergent:
+//  - MAX_DRIFT_MS: all of an owner's events come from that owner's own
+//    devices, so without a bound a single device with a far-future wall clock
+//    would mint far-future HLCs that every peer absorbs on pull, permanently
+//    detaching the fleet from wall-clock time. 5 minutes is generous relative
+//    to real clock skew while rejecting "clock reset to year 2099" style
+//    corruption; times beyond it are ignored, same as a malformed HLC.
+//  - HLC_COUNTER_MAX: widening the counter field would change every stored
+//    HLC's string length and break fixed-width lexical ordering. Instead the
+//    counter rolls over into logical time (advance by 1ms, reset to 0) —
+//    standard HLC behavior, and no wire-format change.
+private const val MAX_DRIFT_MS = 5 * 60_000L
+private const val HLC_COUNTER_MAX = 36 * 36 * 36 * 36 - 1 // Hlc.make pads the counter to 4 base-36 digits
+
 /**
  * A monotonic clock that never emits a duplicate HLC for this device, bumping
  * the counter when the wall clock doesn't advance. `observe` is the HLC
@@ -45,12 +62,23 @@ class HlcClock(private val deviceId: String, private val nowMillis: () -> Long =
 
     fun next(): String = synchronized(lock) {
         val now = nowMillis()
+        var nextMillis = lastMillis
+        var nextCounter = counter
         if (now > lastMillis) {
-            lastMillis = now
-            counter = 0
+            nextMillis = now
+            nextCounter = 0
         } else {
-            counter += 1
+            nextCounter += 1
         }
+        if (nextCounter > HLC_COUNTER_MAX) {
+            // Counter rollover: the 4-digit base-36 field can't hold this value.
+            // Advance logical time by 1ms and reset the counter rather than
+            // widening the field (see file-level comment above).
+            nextMillis += 1
+            nextCounter = 0
+        }
+        lastMillis = nextMillis
+        counter = nextCounter
         Hlc.make(deviceId, lastMillis, counter)
     }
 
@@ -58,6 +86,8 @@ class HlcClock(private val deviceId: String, private val nowMillis: () -> Long =
 
     fun observe(hlc: String) {
         val parsed = Hlc.parse(hlc) ?: return
+        // Absurd future drift is treated like a malformed value (see above).
+        if (parsed.first > nowMillis() + MAX_DRIFT_MS) return
         synchronized(lock) { raise(parsed.first, parsed.second) }
     }
 

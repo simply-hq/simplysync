@@ -447,7 +447,30 @@ export type Clock = ReturnType<typeof createClock>;
  * below an edit we've already seen (e.g. one stamped by a device whose wall
  * clock runs ahead). Without it that edit would silently lose the LWW compare.
  * The Swift engine does the same on its apply path so the two stay convergent.
+ *
+ * Two guards keep a single bad device from poisoning the whole fleet (plan 010):
+ *  - `MAX_DRIFT_MS` bounds how far `observeHlc` will raise the high-water mark
+ *    for a *remote* time. All of an owner's events come from that owner's own
+ *    devices, so without a bound one device with a far-future wall clock would
+ *    mint far-future HLCs that every peer absorbs on pull, permanently
+ *    detaching the fleet from wall-clock time. 5 minutes is a generous bound on
+ *    real clock skew (NTP-class drift is seconds, not minutes) while still
+ *    rejecting "clock reset to year 2099" style corruption. Times beyond the
+ *    bound are ignored — same defensive posture as a malformed HLC.
+ *  - `HLC_COUNTER_MAX` guards the counter that `nextHlc` increments on repeat
+ *    writes within the same millisecond. `createHlc` encodes the counter in a
+ *    fixed 4-digit base-36 field (`packages/simplysync-protocol/src/index.ts`);
+ *    widening it would change every stored HLC's string length and break the
+ *    fixed-width lexical ordering the whole system relies on. Instead, once the
+ *    counter would overflow the field, logical time rolls forward by 1ms and
+ *    the counter resets to 0 — standard HLC "counter rollover advances logical
+ *    time" behavior. This can put `hlcTime` slightly ahead of the wall clock
+ *    under sustained high-frequency writes; that's expected and self-correcting
+ *    (the next `nextHlc` call folds the wall clock back in via `Math.max`).
  */
+const MAX_DRIFT_MS = 5 * 60_000;
+const HLC_COUNTER_MAX = 36 ** 4 - 1; // createHlc pads the counter to 4 base-36 digits
+
 export function createClock(state: EngineState, store: Store) {
   const persist = (): void => {
     store.setMeta("hlc:time", String(state.hlcTime));
@@ -456,11 +479,19 @@ export function createClock(state: EngineState, store: Store) {
 
   const nextHlc = (): string => {
     const now = Date.now();
-    const nextTime = Math.max(now, state.hlcTime);
-    state.hlcCounter = nextTime === state.hlcTime ? state.hlcCounter + 1 : 0;
+    let nextTime = Math.max(now, state.hlcTime);
+    let nextCounter = nextTime === state.hlcTime ? state.hlcCounter + 1 : 0;
+    if (nextCounter > HLC_COUNTER_MAX) {
+      // Counter rollover: the 4-digit base-36 field can't hold this value.
+      // Advance logical time by 1ms and reset the counter rather than widening
+      // the field (see the class doc above).
+      nextTime += 1;
+      nextCounter = 0;
+    }
+    state.hlcCounter = nextCounter;
     state.hlcTime = nextTime;
     persist();
-    return createHlc(state.deviceId || "local", nextTime, state.hlcCounter);
+    return createHlc(state.deviceId || "local", nextTime, nextCounter);
   };
 
   const observeHlc = (remote: string): void => {
@@ -471,6 +502,8 @@ export function createClock(state: EngineState, store: Store) {
     if (parts.length < 3 || parts[0]!.length !== 10) return;
     const millis = Number.parseInt(parts[0]!, 36);
     if (!Number.isFinite(millis)) return;
+    // Absurd future drift is treated like a malformed value (see class doc).
+    if (millis > Date.now() + MAX_DRIFT_MS) return;
     const counter = Number.parseInt(parts[1] ?? "", 36);
     const c = Number.isFinite(counter) ? counter : 0;
     // Raise the high-water mark; nextHlc() folds in the wall clock via Math.max,
