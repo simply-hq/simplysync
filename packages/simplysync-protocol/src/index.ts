@@ -217,7 +217,15 @@ export function compareHlc(left: string | null | undefined, right: string): numb
   return left.localeCompare(right);
 }
 
-export async function encryptPayload<T>(
+/**
+ * Encrypts `payload` into a {@link SyncEnvelope} using an explicit `nonce`
+ * instead of generating one. This is the deterministic core of
+ * {@link encryptPayload}, split out so tests and cross-language conformance
+ * vector generators can seal with a fixed nonce and assert exact ciphertext.
+ * Production code should use {@link encryptPayload}, which always generates a
+ * fresh random nonce.
+ */
+export async function sealPayload<T>(
   identity: LocalFirstIdentity,
   event: {
     readonly eventId: string;
@@ -225,9 +233,9 @@ export async function encryptPayload<T>(
     readonly createdAt?: string;
   },
   payload: SyncPayload<T>,
+  nonce: Uint8Array,
 ): Promise<SyncEnvelope> {
   const crypto = await getCrypto();
-  const nonce = await randomBytes(AES_GCM_NONCE_BYTES);
   const createdAt = event.createdAt ?? new Date().toISOString();
   // Group key for compaction: same (table,row) => same streamId, but the relay
   // can't reverse it. Included in the AAD header so it's tamper-evident.
@@ -263,6 +271,19 @@ export async function encryptPayload<T>(
     nonce: base64UrlEncode(nonce),
     ciphertext: base64UrlEncode(new Uint8Array(encrypted)),
   };
+}
+
+export async function encryptPayload<T>(
+  identity: LocalFirstIdentity,
+  event: {
+    readonly eventId: string;
+    readonly deviceId: string;
+    readonly createdAt?: string;
+  },
+  payload: SyncPayload<T>,
+): Promise<SyncEnvelope> {
+  const nonce = await randomBytes(AES_GCM_NONCE_BYTES);
+  return sealPayload(identity, event, payload, nonce);
 }
 
 export async function decryptEnvelope<T>(

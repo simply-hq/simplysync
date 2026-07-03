@@ -10,7 +10,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "gen:vectors": "bun run scripts/gen-vectors.ts"
   },
   "dependencies": {
     "@scure/bip39": "2.2.0"
