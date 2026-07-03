@@ -180,15 +180,18 @@ async function handlePush(
   const events = body.events as SyncEnvelope[];
 
   // Validate + size every event up front (pure CPU, no DB).
-  let batchBytes = 0;
   const prepared: { event: SyncEnvelope; json: string; bytes: number }[] = [];
   for (const event of events) {
     const validationError = validateEnvelope(ownerId, event);
     if (validationError) return json({ error: validationError }, 400);
+    // Byte-accounting basis (frozen, plan 009): the canonical basis is the
+    // raw received envelope bytes (relay-go's `len(ev.raw)`). Re-serializing
+    // via JSON.stringify is byte-identical for compliant canonical
+    // envelopes; the conformance suite's cross-relay comparison guards that
+    // it stays that way.
     const envelopeJson = JSON.stringify(event);
     const bytes = new TextEncoder().encode(envelopeJson).length;
     if (bytes > cfg.maxEventBytes) return json({ error: "Event is too large" }, 413);
-    batchBytes += bytes;
     prepared.push({ event, json: envelopeJson, bytes });
   }
 
@@ -204,10 +207,44 @@ async function handlePush(
     return json({ error: "Rate limited" }, 429);
   }
 
-  // Pre-check quota against current usage. Accepted bytes are charged exactly
-  // after the insert (duplicates cost nothing); overshoot under concurrent
-  // pushes is bounded by one batch.
-  if (auth.storedBytes + batchBytes > cfg.maxOwnerBytes) {
+  // Cheap up-front guard: reject outright if the owner is already over quota,
+  // so a doomed push doesn't waste a write.
+  if (auth.storedBytes > cfg.maxOwnerBytes) {
+    return json({ error: "Owner quota exceeded" }, 413);
+  }
+
+  // Enforce the quota against ACCEPTED (genuinely-new) bytes only, matching
+  // Bun/Go: an over-cap push of new bytes is rejected whole (nothing stored),
+  // but a re-push of already-stored events must NOT 413 just because a naive
+  // sum of every submitted event would cross the cap (the CORRECTNESS-05a
+  // divergence). So we read which submitted eventIds already exist and count
+  // only the rest toward the cap. This read informs only the DECISION; the
+  // actual charge still comes from the seq-range subquery over rows this push
+  // truly inserts, so it's self-correcting under a concurrent racing push: if
+  // a peer inserts one of "our new" events first, our `insert or ignore`
+  // skips it (no seq consumed in our range) and we charge only our real
+  // inserts — we under-charge here, never double. Residual overshoot is thus
+  // only possible across concurrent pushes (inherent to D1 having no
+  // cross-request write lock), exactly like Bun/Go's own concurrent overshoot.
+  const existing = await env.DB.prepare(
+    `select event_id from events
+     where owner_id = ? and event_id in (${prepared.map(() => "?").join(", ")})`,
+  )
+    .bind(ownerId, ...prepared.map((p) => p.event.eventId))
+    .all<{ event_id: string }>();
+  const existingIds = new Set(
+    (existing.results ?? []).map((row) => row.event_id),
+  );
+  const acceptedBytes = prepared.reduce(
+    (sum, p) => (existingIds.has(p.event.eventId) ? sum : sum + p.bytes),
+    0,
+  );
+  // Note the one intentional, benign difference from Bun/Go's per-event
+  // check: a pure-duplicate re-push while the owner sits exactly AT cap has
+  // acceptedBytes === 0 here and returns 200/duplicate, whereas Bun/Go add
+  // the duplicate's bytes per-event and can 413. A no-op store shouldn't
+  // 413, so we don't replicate that quirk.
+  if (auth.storedBytes + acceptedBytes > cfg.maxOwnerBytes) {
     return json({ error: "Owner quota exceeded" }, 413);
   }
 
@@ -220,17 +257,39 @@ async function handlePush(
     .bind(prepared.length)
     .first<{ value: number }>();
   const seqBase = (seqRow?.value ?? prepared.length) - prepared.length;
+  const seqHigh = seqBase + prepared.length;
 
   // Atomic batch insert-or-ignore; per-statement `changes` tells us which were
-  // genuinely new so we charge usage precisely.
-  const stmt = env.DB.prepare(
+  // genuinely new so we charge usage precisely. The owner-usage update is
+  // folded into this SAME `batch()` — D1 runs a batch's statements as one
+  // atomic transaction — so events are never stored without their bytes
+  // being charged in the same commit (CORRECTNESS-06). Per-statement
+  // `changes` isn't visible to us until the whole batch returns, so instead
+  // the update recomputes its delta from the rows this push actually
+  // inserted, identified by the seq range reserved above (duplicates never
+  // consume a row in that range, so the sum/count are exactly the accepted
+  // events).
+  const insertStmt = env.DB.prepare(
     `insert or ignore into events
        (owner_id, event_id, device_id, envelope_json, stored_bytes, created_at, stream_id, seq)
      values (?, ?, ?, ?, ?, ?, ?, ?)`,
   );
-  const results = await env.DB.batch(
-    prepared.map((p, i) =>
-      stmt.bind(
+  const usageStmt = env.DB.prepare(
+    `update owners
+       set stored_bytes = stored_bytes + (
+             select coalesce(sum(stored_bytes), 0) from events
+             where owner_id = ? and seq > ? and seq <= ?
+           ),
+           event_count = event_count + (
+             select count(*) from events
+             where owner_id = ? and seq > ? and seq <= ?
+           )
+     where owner_id = ?`,
+  ).bind(ownerId, seqBase, seqHigh, ownerId, seqBase, seqHigh, ownerId);
+
+  const results = await env.DB.batch([
+    ...prepared.map((p, i) =>
+      insertStmt.bind(
         p.event.ownerId,
         p.event.eventId,
         p.event.deviceId,
@@ -241,27 +300,15 @@ async function handlePush(
         seqBase + i + 1,
       ),
     ),
-  );
+    usageStmt,
+  ]);
 
+  const insertResults = results.slice(0, prepared.length);
   let accepted = 0;
-  let acceptedBytes = 0;
-  results.forEach((res, i) => {
-    if ((res.meta?.changes ?? 0) > 0) {
-      accepted += 1;
-      acceptedBytes += prepared[i]!.bytes;
-    }
+  insertResults.forEach((res) => {
+    if ((res.meta?.changes ?? 0) > 0) accepted += 1;
   });
   const duplicate = events.length - accepted;
-
-  if (acceptedBytes > 0) {
-    await env.DB.prepare(
-      `update owners
-         set stored_bytes = stored_bytes + ?, event_count = event_count + ?
-       where owner_id = ?`,
-    )
-      .bind(acceptedBytes, accepted, ownerId)
-      .run();
-  }
 
   return json({ accepted, duplicate });
 }

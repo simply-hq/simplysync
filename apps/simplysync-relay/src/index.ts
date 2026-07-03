@@ -499,6 +499,11 @@ async function handlePush(request: Request): Promise<Response> {
         throw new RelayError(validationError, 400);
       }
 
+      // Byte-accounting basis (frozen, plan 009): the canonical basis is the
+      // raw received envelope bytes (relay-go's `len(ev.raw)`). Re-serializing
+      // via JSON.stringify is byte-identical for compliant canonical
+      // envelopes; the conformance suite's cross-relay comparison guards that
+      // it stays that way.
       const envelopeJson = JSON.stringify(event);
       const storedBytes = new TextEncoder().encode(envelopeJson).length;
       if (storedBytes > MAX_EVENT_BYTES) {
@@ -644,24 +649,39 @@ async function handleBlobPut(
     return json({ error: "Blob hash mismatch" }, 400);
   }
 
-  const owner = getOwner.get(ownerId);
-  if ((owner?.stored_bytes ?? 0) + bytes.length > MAX_OWNER_BYTES) {
-    return json({ error: "Owner quota exceeded" }, 413);
+  // Quota is checked *inside* the transaction, after determining the row is
+  // genuinely new (insert-or-ignore runs first) — a duplicate is neither
+  // charged nor rejected. better-sqlite3 transactions run synchronously with
+  // no `await` in between, so this check-then-write can't race a concurrent
+  // PUT of a distinct hash the way the old pre-transaction read did
+  // (SECURITY-03). Mirrors the push transaction's RelayError pattern above.
+  try {
+    const stored = db.transaction(() => {
+      const result = insertBlob.run(
+        ownerId,
+        hash,
+        bytes,
+        bytes.length,
+        new Date().toISOString(),
+      );
+      if (result.changes > 0) {
+        const owner = getOwner.get(ownerId);
+        if ((owner?.stored_bytes ?? 0) + bytes.length > MAX_OWNER_BYTES) {
+          throw new RelayError("Owner quota exceeded", 413);
+        }
+        incrementOwnerUsage.run(bytes.length, ownerId);
+      }
+      return result.changes > 0;
+    })();
+
+    return json({ stored, duplicate: !stored });
+  } catch (error) {
+    if (error instanceof RelayError) {
+      return json({ error: error.message }, error.status);
+    }
+    console.error(error);
+    return json({ error: "Failed to store blob" }, 500);
   }
-
-  const stored = db.transaction(() => {
-    const result = insertBlob.run(
-      ownerId,
-      hash,
-      bytes,
-      bytes.length,
-      new Date().toISOString(),
-    );
-    if (result.changes > 0) incrementOwnerUsage.run(bytes.length, ownerId);
-    return result.changes > 0;
-  })();
-
-  return json({ stored, duplicate: !stored });
 }
 
 async function handleBlobGet(

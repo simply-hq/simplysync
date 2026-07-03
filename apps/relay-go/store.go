@@ -3,12 +3,17 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+// errBlobQuotaExceeded signals a blob PUT that would push the owner over
+// MaxOwnerBytes; handleBlobPut maps this to HTTP 413.
+var errBlobQuotaExceeded = errors.New("owner quota exceeded")
 
 // store wraps the SQLite database. Reads run concurrently on the pool; writes
 // are serialized by writeMu so quota read-modify-write stays atomic (SQLite
@@ -244,6 +249,10 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 	var delta int64
 	accepted, duplicate := 0, 0
 	for _, ev := range events {
+		// Byte-accounting basis (frozen, plan 009): raw received envelope
+		// bytes. Bun/CF measure JSON.stringify(event) instead — identical
+		// for compliant canonical envelopes; the conformance suite's
+		// cross-relay comparison guards that they stay equal.
 		storedBytes := int64(len(ev.raw))
 		if storedBytes > cfg.MaxEventBytes {
 			return pushOutcome{status: 413, msg: "Event is too large"}
@@ -343,7 +352,13 @@ func (s *store) getBlob(ownerID, hash string) ([]byte, bool, error) {
 }
 
 // putBlob stores a content-addressed chunk and charges usage if newly stored.
-func (s *store) putBlob(ownerID, hash string, bytes []byte) (stored bool, err error) {
+// The quota check runs inside this same locked transaction, after
+// determining the row is genuinely new (a duplicate is neither charged nor
+// rejected) and before committing — an overshoot rolls the insert back via
+// the deferred tx.Rollback() and returns errBlobQuotaExceeded. This closes
+// the race where the event-push path already charges atomically but blob
+// PUT used to check quota outside the lock (SECURITY-03).
+func (s *store) putBlob(cfg Config, ownerID, hash string, bytes []byte) (stored bool, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -360,6 +375,13 @@ func (s *store) putBlob(ownerID, hash string, bytes []byte) (stored bool, err er
 		return false, err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
+		var current int64
+		if err := tx.QueryRow(`select stored_bytes from owners where owner_id = ?`, ownerID).Scan(&current); err != nil && err != sql.ErrNoRows {
+			return false, err
+		}
+		if current+int64(len(bytes)) > cfg.MaxOwnerBytes {
+			return false, errBlobQuotaExceeded
+		}
 		if _, err := tx.Exec(`update owners set stored_bytes = stored_bytes + ? where owner_id = ?`, len(bytes), ownerID); err != nil {
 			return false, err
 		}

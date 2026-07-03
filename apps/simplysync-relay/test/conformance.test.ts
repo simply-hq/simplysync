@@ -71,10 +71,12 @@ if (!goAvailable) {
 const kinds: RelayKind[] = goAvailable ? ["bun", "go"] : ["bun"];
 
 // Populated by the quota test for each relay kind, compared once both legs
-// have run (see the "cross-relay comparison" describe block below). Quota
-// accounting can legitimately differ in absolute byte counts between
-// implementations — that's a finding for plan 009 (CORRECTNESS-05), not a
-// bug in this suite — so we log the delta instead of asserting equality.
+// have run (see the "cross-relay comparison" describe block below). Plan 009
+// aligned the byte-accounting basis across all three relays (raw received
+// envelope bytes, mirroring relay-go's `len(ev.raw)`) — the JS relays'
+// re-serialization is byte-identical to that for compliant canonical
+// envelopes — so the comparison below now asserts equality rather than only
+// logging a delta.
 const quotaFindings: Partial<
   Record<RelayKind, { pushesAccepted: number; usedBytesAtFailure: number }>
 > = {};
@@ -330,6 +332,63 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
     expect(rePutRes.status).toBe(200);
     expect(await rePutRes.json()).toEqual({ stored: false, duplicate: true });
   });
+
+  // Plan 009 (SECURITY-03): the blob quota check now runs inside the same
+  // locked transaction as the insert on both Go and Bun, instead of a
+  // separate pre-transaction read. Driving true concurrent PUTs isn't
+  // practical from this black-box HTTP suite, so this drives the check
+  // sequentially against specialRelay's tiny quota: it can't observe the
+  // race directly, but it does assert the cap is actually enforced (not just
+  // pre-checked-and-ignored) and that a duplicate is never charged or
+  // rejected even once the owner is over cap.
+  test("blob PUT quota is enforced once the owner cap is hit; duplicates aren't charged", async () => {
+    const t = await createTestIdentity();
+    const chunkBytes = 512; // several chunks fit under TINY_OWNER_QUOTA_BYTES (4096)
+    let lastStatus = 200;
+    let stored = 0;
+    let lastHash = "";
+    let lastBytes = new Uint8Array();
+    const maxAttempts = 20;
+
+    for (let i = 0; i < maxAttempts && lastStatus === 200; i += 1) {
+      const bytes = new TextEncoder().encode(
+        `blob-quota-chunk-${i}-`.padEnd(chunkBytes, "x"),
+      );
+      const hash = await sha256Base64UrlBytes(bytes);
+      const res = await putBlob(specialRelay.baseUrl, t, hash, bytes);
+      lastStatus = res.status;
+      if (lastStatus === 200) {
+        const body = (await res.json()) as {
+          stored: boolean;
+          duplicate: boolean;
+        };
+        expect(body).toEqual({ stored: true, duplicate: false });
+        stored += 1;
+        lastHash = hash;
+        lastBytes = bytes;
+      } else {
+        expect(res.status).toBe(413);
+        expect(await res.json()).toHaveProperty("error");
+      }
+    }
+    expect(lastStatus).toBe(413);
+    expect(stored).toBeGreaterThan(0);
+
+    const usageBefore = (
+      await (await getUsage(specialRelay.baseUrl, t)).json()
+    ) as { storedBytes: number };
+
+    // A duplicate re-PUT of an already-stored chunk must succeed and must
+    // not be charged, even though the owner is now at/over the cap.
+    const rePutRes = await putBlob(specialRelay.baseUrl, t, lastHash, lastBytes);
+    expect(rePutRes.status).toBe(200);
+    expect(await rePutRes.json()).toEqual({ stored: false, duplicate: true });
+
+    const usageAfter = (
+      await (await getUsage(specialRelay.baseUrl, t)).json()
+    ) as { storedBytes: number };
+    expect(usageAfter.storedBytes).toBe(usageBefore.storedBytes);
+  });
 });
 
 afterAll(() => {
@@ -342,8 +401,8 @@ afterAll(() => {
 // declaration order) and quotaFindings is fully populated.
 // ---------------------------------------------------------------------------
 
-describe("cross-relay comparison (informational)", () => {
-  test("logs any quota-accounting delta between relays for plan 009", () => {
+describe("cross-relay comparison", () => {
+  test("quota accounting (pushesAccepted, usedBytes) is identical across relays", () => {
     const entries = Object.entries(quotaFindings) as [
       RelayKind,
       { pushesAccepted: number; usedBytesAtFailure: number },
@@ -355,22 +414,16 @@ describe("cross-relay comparison (informational)", () => {
       expect(entries.length).toBeGreaterThan(0);
       return;
     }
+    // Plan 009 aligned the byte-accounting basis (raw received envelope
+    // bytes) across all three relays, so an identical push sequence must now
+    // produce identical quota accounting — a divergence here is a real
+    // regression, not an expected implementation difference.
     const [[kindA, a], [kindB, b]] = entries;
-    if (
-      a.pushesAccepted !== b.pushesAccepted ||
-      a.usedBytesAtFailure !== b.usedBytesAtFailure
-    ) {
-      console.log(
-        "[conformance] quota-accounting delta between relays under an " +
-          `identical push sequence (candidate for plan 009 CORRECTNESS-05): ` +
-          `${kindA}=${JSON.stringify(a)} ${kindB}=${JSON.stringify(b)}`,
-      );
-    } else {
-      console.log(
-        `[conformance] quota accounting matched across relays: ${JSON.stringify(a)}`,
-      );
-    }
-    // Informational only — a numeric delta is logged, never a hard failure.
-    expect(entries.length).toBe(2);
+    console.log(
+      `[conformance] quota accounting for ${kindA} vs ${kindB}: ` +
+        `${JSON.stringify(a)} / ${JSON.stringify(b)}`,
+    );
+    expect(a.pushesAccepted).toBe(b.pushesAccepted);
+    expect(a.usedBytesAtFailure).toBe(b.usedBytesAtFailure);
   });
 });

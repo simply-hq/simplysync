@@ -3,6 +3,7 @@ package main
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -283,14 +284,15 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	current, _ := st.ownerStoredBytes(ownerID)
-	if current+int64(len(bytes)) > cfg.MaxOwnerBytes {
-		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Owner quota exceeded"))
-		return
-	}
-
-	stored, err := st.putBlob(ownerID, hash, bytes)
+	// The quota check now lives inside putBlob's locked transaction (see
+	// store.go) so it can't race with a concurrent PUT of a distinct hash;
+	// there's no cheap, still-correct pre-lock guard worth keeping here.
+	stored, err := st.putBlob(cfg, ownerID, hash, bytes)
 	if err != nil {
+		if errors.Is(err, errBlobQuotaExceeded) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Owner quota exceeded"))
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, errBody("Failed to store blob"))
 		return
 	}
