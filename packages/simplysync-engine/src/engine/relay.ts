@@ -159,7 +159,20 @@ export function createRelaySync(
     )[0];
     if (existing && compareHlc(existing.updatedAt, payload.hlc) >= 0)
       return false;
-    store.writeRow(payload.table, { ...payload.value, id: payload.rowId });
+    // Project onto the local schema before writing: a device on an older app
+    // version can pull a row a newer version wrote with a column it doesn't
+    // know about yet. Writing the raw value straight to writeRow would throw
+    // ("no column named ...") — and since that throw used to be caught while
+    // the event was still marked seen unconditionally below, the whole row
+    // was lost permanently, not just the new column (Plan 004). Unknown
+    // columns are silently dropped here, matching the additive-migration
+    // convention (ensureSchema, wire-compatibility note above).
+    const { row: projected, error } = store.projectRow(payload.table, {
+      ...payload.value,
+      id: payload.rowId,
+    });
+    if (error) throw new Error(error);
+    store.writeRow(payload.table, projected);
     return true;
   };
 
@@ -220,6 +233,15 @@ export function createRelaySync(
           if (applyRemoteRow(payload)) result.applied += 1;
           result.changed.add(payload.table);
         } catch {
+          // Plan 004: applyRemoteRow above now projects onto the local schema
+          // first, so the recoverable case (an unknown column) no longer
+          // throws — it's just applied with that column dropped. What
+          // reaches this catch is a genuine write error (e.g. a known
+          // column's value fails validation), which a retry can't fix.
+          // Leaving it un-seen would hold back `cursorKey` below and wedge
+          // every later event in this and future pages behind a permanently
+          // failing one, so it stays terminal: count it (surfaced via
+          // applyFailures -> the sync log) and fall through to mark it seen.
           result.applyFailures += 1;
         }
       }

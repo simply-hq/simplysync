@@ -328,6 +328,32 @@ export function createStore(
     return { row, error: null };
   };
 
+  // Columns every table carries besides the schema's typed columns (see the
+  // DDL built in ensureSchema): `id` (primary key) plus `createdAt`,
+  // `updatedAt`, `isDeleted` appended after the schema-defined columns. These
+  // live outside `schema[table]`, so coerceValues alone would drop them.
+  const SYSTEM_COLUMNS = ["id", "createdAt", "updatedAt", "isDeleted"] as const;
+
+  // Project an arbitrary row object — a decrypted remote payload's value, or a
+  // row from an imported snapshot — onto exactly the columns *this* schema
+  // knows: the system columns plus whatever coerceValues recognizes as a
+  // typed business column. Any other key (e.g. a column a newer app version
+  // added) is silently dropped instead of reaching writeRow, which would
+  // otherwise throw "no column named …" and lose the whole row. This is what
+  // keeps additive migrations wire-compatible on the *read* side, matching
+  // the write side's coerceValues-based projection in mutate().
+  const projectRow = (
+    table: string,
+    values: Record<string, unknown>,
+  ): { row: Record<string, unknown>; error: string | null } => {
+    const { row, error } = coerceValues(table, values);
+    if (error) return { row, error };
+    for (const name of SYSTEM_COLUMNS) {
+      if (name in values) row[name] = values[name];
+    }
+    return { row, error: null };
+  };
+
   // A driver-agnostic full snapshot: every row of every schema table (including
   // soft-deleted rows + system columns) and the sync metadata worth preserving
   // across a device switch — the HLC high-water mark (so the clock can't
@@ -373,7 +399,15 @@ export function createStore(
       wipeLocalData();
       for (const [table, rows] of Object.entries(snapshot.tables)) {
         if (!schema[table]) continue; // ignore tables not in the current schema
-        for (const row of rows) writeRow(table, row);
+        for (const row of rows) {
+          // A snapshot exported by a newer app version can carry a column
+          // this schema doesn't have yet (same additive-migration exposure
+          // as applyRemoteRow in relay.ts) — project it away instead of
+          // letting one row's unknown column roll back the whole restore.
+          const { row: projected, error } = projectRow(table, row);
+          if (error) throw new Error(`${table}: ${error}`);
+          writeRow(table, projected);
+        }
       }
       for (const [key, value] of Object.entries(snapshot.meta)) {
         setMeta(key, value);
@@ -391,6 +425,7 @@ export function createStore(
     pruneOutbox,
     writeRow,
     coerceValues,
+    projectRow,
     exportSnapshot,
     importSnapshot,
     appendSyncLog,
