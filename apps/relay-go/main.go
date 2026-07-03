@@ -141,9 +141,20 @@ func main() {
 
 	handler := withMetrics(cfg, routeHandler(cfg, st))
 	server := &http.Server{
-		Addr:              ":" + strconv.Itoa(cfg.Port),
-		Handler:           handler,
+		Addr:    ":" + strconv.Itoa(cfg.Port),
+		Handler: handler,
+		// ReadHeaderTimeout bounds the header phase; ReadTimeout bounds the
+		// whole request (headers + body), so a client can't hold a connection
+		// open by dribbling the body one byte at a time (slowloris) after the
+		// headers land. 120s is generous enough for a large but legitimate
+		// push on a slow link, while still capping a stalled connection.
+		// IdleTimeout closes hoarded keep-alive connections that never send
+		// another request. A fixed write-side deadline is intentionally
+		// omitted — it would truncate large pull/blob responses on slow
+		// clients.
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       120 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	log.Printf("Secure local-first relay listening on http://localhost:%d", cfg.Port)
