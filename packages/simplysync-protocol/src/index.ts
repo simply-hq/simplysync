@@ -214,7 +214,7 @@ export function createHlc(deviceId: string, now = Date.now(), counter = 0): stri
 
 export function compareHlc(left: string | null | undefined, right: string): number {
   if (!left) return -1;
-  return left.localeCompare(right);
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /**

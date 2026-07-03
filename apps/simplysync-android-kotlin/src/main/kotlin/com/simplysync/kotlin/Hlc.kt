@@ -12,7 +12,7 @@ object Hlc {
         return "$time-$count-$deviceId"
     }
 
-    /** Returns negative / 0 / positive like `localeCompare`. A null/empty left is always less. */
+    /** Returns negative / 0 / positive by natural UTF-16 code-unit order, matching `@simplysync/protocol`'s `compareHlc`. A null/empty left is always less. */
     fun compare(left: String?, right: String): Int {
         if (left == null || left.isEmpty()) return -1
         if (left == right) return 0

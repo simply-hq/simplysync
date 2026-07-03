@@ -121,4 +121,4 @@ node verify/gen-xcodeproj.mjs
 - **Not ported:** binary blobs, the encrypted DB export/import (snapshot) format,
   legacy import, and the fluent index builder.
 - Column names in row `value`s should be lowercase-ASCII so canonical-JSON key
-  ordering matches JS `localeCompare` (see `CanonicalJSON.swift`).
+  ordering matches JS code-unit order (see `CanonicalJSON.swift`).

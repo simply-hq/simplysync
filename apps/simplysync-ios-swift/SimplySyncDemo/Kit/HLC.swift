@@ -10,7 +10,8 @@ enum HLC {
         return "\(time)-\(count)-\(deviceId)"
     }
 
-    /// Returns negative / 0 / positive like `localeCompare`. A nil/empty left is
+    /// Returns negative / 0 / positive by Unicode-scalar (code-unit) order,
+    /// matching `@simplysync/protocol`'s `compareHlc`. A nil/empty left is
     /// always less (matches `if (!left) return -1`).
     static func compare(_ left: String?, _ right: String) -> Int {
         guard let left, !left.isEmpty else { return -1 }

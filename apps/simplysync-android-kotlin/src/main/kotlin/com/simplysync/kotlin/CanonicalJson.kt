@@ -13,7 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * Key ordering uses natural String ordering (UTF-16 code-unit order). The
  * protocol only ever canonicalizes lowercase-ASCII keys, for which this matches
- * JS's localeCompare and Swift's `<`. Keep column names lowercase-ASCII.
+ * JS's code-unit order and Swift's `<`. Keep column names lowercase-ASCII.
  */
 sealed class JsonValue {
     data class Str(val value: String) : JsonValue()

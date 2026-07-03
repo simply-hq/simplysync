@@ -6,7 +6,8 @@ import Foundation
 ///
 /// Key ordering uses Swift's `<` (Unicode scalar order). The protocol only ever
 /// canonicalizes lowercase-ASCII keys (header fields, payload fields, and your
-/// column names), for which scalar order matches JS's `localeCompare`. Keep app
+/// column names), for which scalar order matches JS's code-unit order
+/// (`canonicalJson`'s `<` key sort). Keep app
 /// column names lowercase-ASCII to stay compatible.
 indirect enum JSONValue {
     case string(String)
