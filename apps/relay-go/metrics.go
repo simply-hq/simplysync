@@ -70,7 +70,11 @@ func setCompactionInfo(c CompactionResult) {
 }
 
 // routeLabel collapses dynamic + secret path segments so per-endpoint counts
-// stay bounded and the secret admin path isn't echoed back.
+// stay bounded and the secret admin path isn't echoed back. Any path that
+// isn't one of the known, fixed routes collapses to a single "<other>"
+// bucket — otherwise an unauthenticated client could plant an arbitrary
+// string (later rendered unescaped in the ops dashboard) or grow byEndpoint
+// without bound just by requesting distinct junk paths.
 func routeLabel(cfg Config, method, path string) string {
 	if strings.HasPrefix(path, blobPathPrefix) {
 		return method + " /v1/blobs/:hash"
@@ -85,7 +89,17 @@ func routeLabel(cfg Config, method, path string) string {
 			return method + " /admin/compact"
 		}
 	}
-	return method + " " + path
+	switch path {
+	case "/health":
+		return method + " /health"
+	case "/v1/events":
+		return method + " /v1/events"
+	case "/v1/usage":
+		return method + " /v1/usage"
+	case "/v1/status":
+		return method + " /v1/status"
+	}
+	return method + " <other>"
 }
 
 // statusRecorder captures the response status for metrics.

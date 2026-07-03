@@ -28,6 +28,13 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN ?? "";
 // without already knowing the secret and needs zero extra config. Override with
 // ADMIN_PATH=/your-path. The resolved path is logged at startup.
 const ADMIN_BASE = ADMIN_TOKEN ? resolveAdminBase(ADMIN_TOKEN) : "";
+// Defense-in-depth for the ops dashboard: escaping (see admin.ts) is the
+// primary XSS defense, but this blocks exfiltration to external hosts and
+// injected <script src>/external loads even if a future dashboard field
+// forgets to escape. 'unsafe-inline' is required because the dashboard's
+// script/styles are inline with no external file to reference.
+const DASHBOARD_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'";
 
 function resolveAdminBase(token: string): string {
   const explicit = process.env.ADMIN_PATH?.trim();
@@ -277,7 +284,10 @@ Bun.serve({
     const url = new URL(request.url);
     // Instrument every request for the ops dashboard, then delegate to routing.
     const response = await route(request, url);
-    recordRequest(routeLabel(request.method, url.pathname), response.status);
+    recordRequest(
+      routeLabel(request.method, url.pathname, ADMIN_BASE),
+      response.status,
+    );
     return response;
   },
 });
@@ -404,7 +414,10 @@ function handleAdmin(request: Request, url: URL): Response {
   // path is itself proof you already know the path, so it's safe to serve.
   if (url.pathname === ADMIN_BASE && request.method === "GET") {
     return new Response(ADMIN_PAGE, {
-      headers: { "Content-Type": "text/html; charset=utf-8" },
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Content-Security-Policy": DASHBOARD_CSP,
+      },
     });
   }
 

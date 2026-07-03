@@ -16,6 +16,13 @@ const (
 	adminLockMs   = 5 * 60 * 1000
 )
 
+// dashboardCSP is defense-in-depth for the ops dashboard: escaping (see
+// admin_page.go) is the primary XSS defense, but this blocks exfiltration to
+// external hosts and injected <script src>/external loads even if a future
+// dashboard field forgets to escape. 'unsafe-inline' is required because the
+// dashboard's script/styles are inline with no external file to reference.
+const dashboardCSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'"
+
 var (
 	adminMu    sync.Mutex
 	adminFails = map[string]*failRec{}
@@ -79,6 +86,7 @@ func handleAdmin(cfg Config, st *store, w http.ResponseWriter, r *http.Request) 
 	if path == cfg.AdminBase && r.Method == http.MethodGet {
 		writeCORS(w)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", dashboardCSP)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(adminPage))
 		return

@@ -30,10 +30,35 @@ export function recordRequest(label: string, status: number): void {
   if (status >= 500) totalErrors += 1;
 }
 
-/** Collapses dynamic path segments so per-endpoint counts stay bounded. */
-export function routeLabel(method: string, pathname: string): string {
+/**
+ * Collapses dynamic + secret path segments so per-endpoint counts stay
+ * bounded. Any path that isn't one of the known, fixed routes collapses to a
+ * single "<other>" bucket — otherwise an unauthenticated client could plant
+ * an arbitrary string (later rendered unescaped in the ops dashboard) or
+ * grow byEndpoint without bound just by requesting distinct junk paths.
+ */
+export function routeLabel(
+  method: string,
+  pathname: string,
+  adminBase = "",
+): string {
   if (pathname.startsWith("/v1/blobs/")) return `${method} /v1/blobs/:hash`;
-  return `${method} ${pathname}`;
+  if (adminBase) {
+    if (pathname === adminBase) return `${method} /admin`;
+    if (pathname === `${adminBase}/stats`) return `${method} /admin/stats`;
+    if (pathname === `${adminBase}/compact`) return `${method} /admin/compact`;
+  }
+  switch (pathname) {
+    case "/health":
+      return `${method} /health`;
+    case "/v1/events":
+      return `${method} /v1/events`;
+    case "/v1/usage":
+      return `${method} /v1/usage`;
+    case "/v1/status":
+      return `${method} /v1/status`;
+  }
+  return `${method} <other>`;
 }
 
 interface Sample {

@@ -100,6 +100,11 @@ const TOKEN_KEY = "simplysync_relay_admin_token";
 const STATS_URL = location.pathname.replace(/\\/+$/, "") + "/stats";
 const $ = (id) => document.getElementById(id);
 
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
+}
+
 function fmtBytes(n) {
   if (!n) return "0 B";
   const u = ["B","KB","MB","GB","TB"]; let i = 0; let v = n;
@@ -154,7 +159,7 @@ async function tick() {
   $('updated').textContent = 'updated ' + new Date(s.now).toLocaleTimeString();
 
   $('warnings').innerHTML = (s.capacity.warnings || [])
-    .map(w => '<div class="warn">⚠ ' + w + '</div>').join('');
+    .map(w => '<div class="warn">⚠ ' + escapeHtml(w) + '</div>').join('');
 
   const cap = s.capacity, sys = s.system, st = s.storage, tr = s.traffic;
   const runway = cap.diskRunwayDays == null ? '—'
@@ -184,10 +189,10 @@ async function tick() {
 
   $('endpoints').querySelector('tbody').innerHTML = Object.entries(tr.byEndpoint)
     .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => '<tr><td>' + k + '</td><td class="num">' + fmtNum(v) + '</td></tr>').join('');
+    .map(([k, v]) => '<tr><td>' + escapeHtml(k) + '</td><td class="num">' + fmtNum(v) + '</td></tr>').join('');
 
   $('owners').querySelector('tbody').innerHTML = (st.topOwners || [])
-    .map(o => '<tr><td><code>' + o.ownerId + '</code></td><td class="num">' + fmtBytes(o.storedBytes) + '</td></tr>').join('');
+    .map(o => '<tr><td><code>' + escapeHtml(o.ownerId) + '</code></td><td class="num">' + fmtBytes(o.storedBytes) + '</td></tr>').join('');
 }
 
 function showLogin(msg) {
