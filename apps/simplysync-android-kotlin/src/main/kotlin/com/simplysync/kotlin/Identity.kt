@@ -46,13 +46,17 @@ object IdentityDeriver {
     private const val DERIVED_KEY_BYTES = 32
     private const val WRITE_KEY_BYTES = 16
 
-    // PINNED to "Evolu" (NOT "SimplySync"): the app migrated from Evolu, so a
-    // recovery phrase must resolve to the SAME ownerId / encryption key / write
-    // key (= relayAuth) the existing data and relay use. (The export/import-only
-    // BackupKey path stays "SimplySync" — see SnapshotCrypto.)
-    private val ownerIdPath = listOf("Evolu", "OwnerIdBytes")
-    private val encryptionKeyPath = listOf("Evolu", "OwnerEncryptionKey")
-    private val writeKeyPath = listOf("Evolu", "OwnerWriteKey")
+    // SLIP-21 identity paths — MUST match the TS protocol
+    // (@simplysync/protocol OWNER_ID_PATH / ENCRYPTION_KEY_PATH / WRITE_KEY_PATH)
+    // and the Swift port so the SAME recovery phrase resolves to the SAME
+    // ownerId / encryption key / write key (= relayAuth) on every platform
+    // (cross-language wire compatibility; enforced by ConformanceTest against the
+    // shared vectors.json corpus). Reconciled from the previous "Evolu" pin
+    // (finding PROTO-01). MIGRATION NOTE: existing Evolu-derived Android data
+    // re-derives to a new ownerId under this change — an accepted trade-off.
+    private val ownerIdPath = listOf("SimplySync", "OwnerIdBytes")
+    private val encryptionKeyPath = listOf("SimplySync", "OwnerEncryptionKey")
+    private val writeKeyPath = listOf("SimplySync", "OwnerWriteKey")
 
     /** Auto-detects an `sf1_` recovery key vs a BIP39 phrase, like the TS `deriveIdentity`. */
     fun derive(recoveryKey: String): Identity {

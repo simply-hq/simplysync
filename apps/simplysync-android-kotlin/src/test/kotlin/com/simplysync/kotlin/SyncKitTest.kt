@@ -54,9 +54,12 @@ class SyncKitTest {
     }
 
     @Test
-    fun identityUsesEvoluPathsAndIsStable() {
-        // Regression: the SLIP-21 identity paths must be "Evolu" (not "SimplySync"),
-        // or synced data orphans and the relay rejects the token.
+    fun identityUsesSimplySyncPathsAndIsStable() {
+        // Regression: mnemonic-derived identity is stable and cross-language
+        // compatible via the SLIP-21 "SimplySync" paths (matching TS/Swift) —
+        // reconciled from the old "Evolu" pin (PROTO-01). The exact
+        // cross-language ownerId/ciphertext is asserted in ConformanceTest
+        // against the shared corpus; this just checks stability + shape.
         val id1 = IdentityDeriver.fromMnemonic(abandonMnemonic)
         val id2 = IdentityDeriver.derive(abandonMnemonic)
         assertEquals(id1.ownerId, id2.ownerId)
