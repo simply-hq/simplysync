@@ -14,6 +14,33 @@ static binary, ~10 MB, low memory) and pointing the app at it.
 
 ---
 
+## TL;DR — the 5-minute path
+
+If you just want it running and don't care yet about the trade-offs:
+
+```bash
+# 1. From the repo root, start the relay (data persists in a Docker volume).
+ADMIN_TOKEN=$(openssl rand -hex 16) docker compose -f apps/relay-go/docker-compose.yml up -d
+
+# 2. Confirm it's healthy.
+curl http://localhost:4100/health        # -> {"ok":true}
+```
+
+Then in the app: **Settings → Sync Servers → Add Sync Server** and enter your
+relay's address:
+
+| Where the relay runs | Address to enter |
+| --- | --- |
+| Same Wi-Fi as your phone | `ws://<its-LAN-IP>:4100` (won't sync on cellular) |
+| Reachable over Tailscale *(recommended)* | `ws://<box>.<tailnet>.ts.net:4100` |
+| Behind a domain with TLS (Caddy/Cloudflare) | `wss://relay.example.com` |
+
+That's it — your phone starts syncing to your own server, which only ever sees
+ciphertext. **Want it to sync anywhere without exposing a port?** Read Path 2
+(Tailscale) below — it's the recommended setup and takes ~20 minutes.
+
+---
+
 ## Which path should I pick?
 
 | Path | Syncs on cellular? | TLS setup | Effort | Best for |
