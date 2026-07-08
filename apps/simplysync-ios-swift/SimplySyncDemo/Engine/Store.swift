@@ -171,11 +171,34 @@ final class Store {
 /// high-water mark to `_sync_meta` so it stays monotonic across restarts, and
 /// `observe` absorbs the physical time of every remote HLC pulled (the HLC
 /// "receive" step) so a later local write can never sort below an edit we've seen.
+///
+/// Two guards keep a single bad device from poisoning the whole fleet (plan 010),
+/// mirroring the TS engine's `createClock` (`packages/simplysync-engine/src/engine/store.ts`)
+/// and the Kotlin port so all four stay convergent:
+///  - `maxDriftMillis` bounds how far `observe` will raise the high-water mark
+///    for a *remote* time. All of an owner's events come from that owner's own
+///    devices, so without a bound one device with a far-future wall clock would
+///    mint far-future HLCs that every peer absorbs on pull, permanently detaching
+///    the fleet from wall-clock time. 5 minutes is a generous bound on real clock
+///    skew (NTP-class drift is seconds, not minutes) while still rejecting
+///    "clock reset to year 2099" style corruption. Times beyond it are ignored —
+///    same defensive posture as a malformed HLC.
+///  - `hlcCounterMax` guards the counter `nextHlc` increments on repeat writes
+///    within the same millisecond. `HLC.make` encodes the counter in a fixed
+///    4-digit base-36 field; widening it would change every stored HLC's string
+///    length and break the fixed-width lexical ordering the whole system relies
+///    on. Instead, once the counter would overflow the field, logical time rolls
+///    forward by 1ms and the counter resets to 0 — standard HLC "counter rollover
+///    advances logical time" behavior, self-correcting on the next `nextHlc`.
 final class Clock {
+    static let maxDriftMillis: Int64 = 5 * 60_000
+    static let hlcCounterMax = 36 * 36 * 36 * 36 - 1 // HLC.make pads the counter to 4 base-36 digits
+
     private let store: Store
     let deviceId: String
     private(set) var time: Int64 = 0
     private(set) var counter: Int = 0
+    private let lock = NSLock()
 
     init(store: Store, deviceId: String) {
         self.store = store
@@ -184,6 +207,7 @@ final class Clock {
 
     /// Re-seed the in-memory high-water mark from persisted metadata (on boot).
     func seedFromMeta() {
+        lock.lock(); defer { lock.unlock() }
         time = Int64(store.getMeta("hlc:time") ?? "0") ?? 0
         counter = Int(store.getMeta("hlc:counter") ?? "0") ?? 0
     }
@@ -194,19 +218,32 @@ final class Clock {
     }
 
     func nextHlc() -> String {
+        lock.lock(); defer { lock.unlock() }
         let now = Int64(Date().timeIntervalSince1970 * 1000)
-        let nextTime = max(now, time)
-        counter = nextTime == time ? counter + 1 : 0
+        var nextTime = max(now, time)
+        var nextCounter = nextTime == time ? counter + 1 : 0
+        if nextCounter > Self.hlcCounterMax {
+            // Counter rollover: the 4-digit base-36 field can't hold this value.
+            // Advance logical time by 1ms and reset the counter rather than
+            // widening the field (see the class doc above).
+            nextTime += 1
+            nextCounter = 0
+        }
+        counter = nextCounter
         time = nextTime
         persist()
-        return HLC.make(deviceId: deviceId, millis: nextTime, counter: counter)
+        return HLC.make(deviceId: deviceId, millis: nextTime, counter: nextCounter)
     }
 
     func observe(_ remote: String) {
         let parts = remote.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count >= 3, parts[0].count == 10,
               let millis = Int64(parts[0], radix: 36) else { return }
+        // Absurd future drift is treated like a malformed value (see class doc).
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        if millis > now + Self.maxDriftMillis { return }
         let c = Int(parts[1], radix: 36) ?? 0
+        lock.lock(); defer { lock.unlock() }
         if millis > time { time = millis; counter = c }
         else if millis == time && c > counter { counter = c }
         else { return }
