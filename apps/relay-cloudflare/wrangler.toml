@@ -13,7 +13,7 @@ crons = ["0 */6 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "simplysync-relay"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "76cc5a2b-beea-425c-b3e9-ca1d1dae1709"
 migrations_dir = "migrations"
 
 # R2: encrypted, content-addressed blob chunks (cheap storage, free egress).

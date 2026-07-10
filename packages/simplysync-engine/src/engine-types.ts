@@ -211,6 +211,14 @@ export interface SyncEngineConfig {
   readonly encryptionKey?: unknown;
   /** Poll interval (ms) for pulling remote changes. Default 5000. */
   readonly syncIntervalMs?: number;
+  /**
+   * Retention window for the automatic tombstone sweep that runs (at most once
+   * a day) during sync: soft-deleted rows older than this are hard-deleted
+   * locally and their relay streams compacted away (`POST /v1/streams/compact`)
+   * on every configured relay. Default 30 days. Pass `false` to disable the
+   * automatic sweep (manual `purgeDeleted` / `purgeRows` still work).
+   */
+  readonly tombstoneRetentionMs?: number | false;
 }
 
 /** Structured reason a sync attempt failed, so a consumer can show *why*. */
@@ -351,6 +359,19 @@ export interface SyncEngine<S extends SchemaDefinition> {
    * purged.
    */
   purgeDeleted(options?: { olderThanMs?: number }): { purged: number };
+  /**
+   * Immediately hard-delete specific tombstoned rows ("Delete Permanently" /
+   * "Empty Trash"), skipping the age window. Rows that aren't tombstones, or
+   * whose delete event hasn't reached a relay yet (while relays are
+   * configured), are skipped and stay in the trash — retry after a sync.
+   * Purged rows' relay streams are queued for compaction and dropped from
+   * every configured relay on the next sync. Note: a device that stays offline
+   * past the purge never learns of the delete — permanent delete is
+   * best-effort on multi-device, not a guaranteed global erase.
+   */
+  purgeRows(
+    rows: ReadonlyArray<{ table: keyof S & string; id: Id }>,
+  ): { purged: number };
   readonly appOwner: Promise<AppOwner | null>;
   useOwner(options: { transports?: readonly Transport[] }): () => void;
   /**

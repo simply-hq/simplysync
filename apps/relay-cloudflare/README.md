@@ -43,8 +43,8 @@ load before the next, more expensive one runs:
      precisely (duplicates cost nothing).
    - `MAX_OWNERS` — global fleet cap via a single counter row (no `count(*)`
      scan on the hot path). New owners can't be minted past it.
-   - `MAX_EVENT_BYTES`, `MAX_EVENTS_PER_PUSH/PULL`, `MAX_BLOB_BYTES` — per-
-     request bounds.
+   - `MAX_EVENT_BYTES`, `MAX_EVENTS_PER_PUSH/PULL`, `MAX_BLOB_BYTES`,
+     `MAX_STREAMS_PER_COMPACT` — per-request bounds.
    - `RELAY_DISABLED=true` — kill switch: writes return 503, reads still work.
 
 6. **Blob caching.** Blobs are encrypted + content-addressed, so a cache rule on

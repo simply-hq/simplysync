@@ -1,6 +1,7 @@
 import {
   compareHlc,
   decryptEnvelope,
+  deriveStreamId,
   encryptPayload,
   type SyncEnvelope,
   type SyncPayload,
@@ -13,7 +14,12 @@ import type {
   SyncFailureKind,
   Transport,
 } from "../engine-types";
-import { SYNC_OUTBOX_TABLE, SYNC_SEEN_TABLE } from "./constants";
+import {
+  PURGE_SWEEP_INTERVAL_MS,
+  SYNC_OUTBOX_TABLE,
+  SYNC_SEEN_TABLE,
+  TOMBSTONE_RETENTION_MS,
+} from "./constants";
 import type { QueryCache } from "./query-cache";
 import type { EngineState } from "./state";
 import type { Clock, Store } from "./store";
@@ -193,6 +199,91 @@ export function createRelaySync(
     });
     store.setMeta(cursorKey, events[events.length - 1]!.event_id);
     return events.length;
+  };
+
+  // Matches the relays' MAX_STREAMS_PER_COMPACT bound (wire limit, like
+  // MAX_EVENTS_PER_PUSH for push).
+  const COMPACT_STREAMS_BATCH = 1000;
+
+  // Ask one relay to drop every event of the given (already locally-purged)
+  // streams. Idempotent on the relay; ok=false means "retry next sync".
+  const postCompactStreams = async (
+    base: string,
+    streamIds: readonly string[],
+  ): Promise<boolean> => {
+    const { identity } = state;
+    if (!identity) return false;
+    const response = await fetchImpl(`${base}/v1/streams/compact`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${identity.relayAuth}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ ownerId: identity.ownerId, streamIds }),
+    });
+    return response.ok;
+  };
+
+  // Drain the durable stream-purge queue (_sync_purge, written atomically by
+  // the store's hard deletes): derive each purged row's streamId — possible
+  // only because the queue kept the (table, rowId) plaintext; the row itself
+  // is gone — and tell every configured relay to drop that stream. A relay
+  // base is recorded per-row as it acks; the row leaves the queue once every
+  // currently-configured relay has acked, so relays added mid-drain (or a
+  // relay that was down) are retried on later syncs. Failures never throw:
+  // purging is space reclamation, not sync correctness.
+  const drainPurgeQueue = async (bases: string[]): Promise<void> => {
+    const { identity, driver } = state;
+    if (!identity || !driver) return;
+    const entries = store.listPurgeQueue();
+    if (entries.length === 0) return;
+    // No relay to notify, or an identity without a streamKey can't name
+    // streams (its events were pushed untagged and are unreachable by
+    // stream-compaction anyway) — the queue has nothing actionable.
+    if (bases.length === 0 || !identity.streamKey) {
+      for (const e of entries) store.dropPurgeEntry(e.table, e.rowId);
+      return;
+    }
+    const streamKey = identity.streamKey;
+    const withIds = await Promise.all(
+      entries.map(async (e) => ({
+        ...e,
+        streamId: await deriveStreamId(streamKey, e.table, e.rowId),
+      })),
+    );
+    for (const base of bases) {
+      const pending = withIds.filter((e) => !e.ackedBases.includes(base));
+      for (let i = 0; i < pending.length; i += COMPACT_STREAMS_BATCH) {
+        const batch = pending.slice(i, i + COMPACT_STREAMS_BATCH);
+        let ok = false;
+        try {
+          ok = await postCompactStreams(
+            base,
+            batch.map((e) => e.streamId),
+          );
+        } catch {
+          ok = false; // network-level failure — retry on a later sync
+        }
+        if (!ok) {
+          store.appendSyncLog({
+            relay: base,
+            phase: "purge",
+            result: "fail",
+            message: `stream compaction not acked (${batch.length} streams)`,
+          });
+          break; // don't hammer a failing relay with the remaining batches
+        }
+        for (const e of batch) {
+          store.ackPurgeBase(e.table, e.rowId, base);
+          e.ackedBases.push(base);
+        }
+      }
+    }
+    for (const e of withIds) {
+      if (bases.every((b) => e.ackedBases.includes(b))) {
+        store.dropPurgeEntry(e.table, e.rowId);
+      }
+    }
   };
 
   // Returns true when the row was written, false when the local copy wins (LWW).
@@ -431,6 +522,30 @@ export function createRelaySync(
       pruneSeen();
       // Drop outbox events now delivered to every relay (cursors advanced above).
       store.pruneOutbox(bases);
+      // Retention sweep (at most once per PURGE_SWEEP_INTERVAL_MS): hard-delete
+      // tombstones older than the retention window. Their (table, rowId) land
+      // in the durable purge queue, which the drain below converts into
+      // `POST /v1/streams/compact` calls — so the relays' copies shrink to
+      // match the device instead of holding every ever-deleted row forever.
+      if (config.tombstoneRetentionMs !== false) {
+        const lastSweep = Number(store.getMeta("purge:lastSweepAt") ?? 0);
+        if (
+          !Number.isFinite(lastSweep) ||
+          Date.now() - lastSweep >= PURGE_SWEEP_INTERVAL_MS
+        ) {
+          store.purgeDeleted(
+            typeof config.tombstoneRetentionMs === "number"
+              ? config.tombstoneRetentionMs
+              : TOMBSTONE_RETENTION_MS,
+            Date.now(),
+          );
+          store.setMeta("purge:lastSweepAt", String(Date.now()));
+        }
+      }
+      // Drain runs every sync (not just on sweep days): manual purges
+      // (purgeRows / "Delete Permanently") enqueue at any time. Best-effort by
+      // design — a failed relay stays pending and is retried next sync.
+      await drainPurgeQueue(bases);
 
       if (anySuccess || !firstFailure) {
         state.setSyncState({

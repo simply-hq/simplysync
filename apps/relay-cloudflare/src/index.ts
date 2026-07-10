@@ -33,6 +33,7 @@ interface Env {
   DEFAULT_EVENTS_PER_PULL: string;
   MAX_BLOB_BYTES: string;
   MAX_OWNERS: string;
+  MAX_STREAMS_PER_COMPACT?: string;
   RELAY_DISABLED: string;
 }
 
@@ -77,6 +78,9 @@ export default {
     try {
       if (request.method === "POST" && url.pathname === "/v1/events") {
         return await handlePush(request, env, cfg, ip);
+      }
+      if (request.method === "POST" && url.pathname === "/v1/streams/compact") {
+        return await handleCompactStreams(request, env, cfg);
       }
       if (request.method === "GET" && url.pathname === "/v1/events") {
         return await handlePull(request, env, cfg, url);
@@ -311,6 +315,116 @@ async function handlePush(
   const duplicate = events.length - accepted;
 
   return json({ accepted, duplicate });
+}
+
+// -----------------------------------------------------------------------------
+// Compact streams (client-driven tombstone GC)
+// -----------------------------------------------------------------------------
+
+// Base64url, 22 chars — the exact shape sealPayload emits.
+const STREAM_ID_SHAPE = /^[A-Za-z0-9_-]{22}$/u;
+
+// D1 caps bound parameters per statement (~100), so the IN lists are chunked;
+// all chunks still land in ONE env.DB.batch — a single implicit transaction —
+// with each chunk's usage-reclaim ordered before its delete (the reclaim's
+// subquery reads the rows the delete removes), mirroring compactLog.
+const COMPACT_CHUNK = 80;
+
+// The owner names fully-purged streams (opaque HMAC ids — the relay learns
+// nothing about tables/rows/contents) and every event of those streams is
+// dropped, tombstone included. Only the key holder can compute a streamId and
+// auth proves ownership; clients call this after their retention window.
+// Idempotent: unknown streamIds are a no-op. R2 blobs are untouched (no blob
+// GC here — tracked separately).
+async function handleCompactStreams(
+  request: Request,
+  env: Env,
+  cfg: Config,
+): Promise<Response> {
+  if (cfg.relayDisabled) return json({ error: "Relay is read-only" }, 503);
+
+  const relayAuth = getBearerToken(request);
+  if (!relayAuth) return json({ error: "Missing bearer token" }, 401);
+
+  // 22 chars + JSON quoting/comma overhead — 64 bytes/stream is generous.
+  if (exceedsContentLength(request, 64 * cfg.maxStreamsPerCompact + 1024)) {
+    return json({ error: "Payload too large" }, 413);
+  }
+
+  const body = (await request.json().catch(() => null)) as {
+    ownerId?: unknown;
+    streamIds?: unknown;
+  } | null;
+
+  if (
+    !body ||
+    typeof body.ownerId !== "string" ||
+    !Array.isArray(body.streamIds)
+  ) {
+    return json({ error: "Invalid compact body" }, 400);
+  }
+  if (body.streamIds.length > cfg.maxStreamsPerCompact) {
+    return json({ error: "Too many streams in one compact" }, 413);
+  }
+  for (const id of body.streamIds) {
+    if (typeof id !== "string" || !STREAM_ID_SHAPE.test(id)) {
+      return json({ error: "Invalid stream id" }, 400);
+    }
+  }
+
+  // Same gate as push, but never create an owner on a purge call.
+  const auth = await ensureOwnerAuth(env, cfg, body.ownerId, relayAuth, {
+    createIfMissing: false,
+  });
+  if (!auth.ok) return auth.response;
+
+  if (!(await env.WRITE_LIMITER.limit({ key: body.ownerId })).success) {
+    return json({ error: "Rate limited" }, 429);
+  }
+
+  const ownerId = body.ownerId;
+  const streamIds = body.streamIds as string[];
+  if (streamIds.length === 0) {
+    return json({ deletedEvents: 0, reclaimedBytes: 0 });
+  }
+
+  // Reported reclaimed bytes come from a pre-read (the batch's own reclaim
+  // subquery is what actually adjusts usage, atomically with the delete); a
+  // concurrent push racing this call can skew the *reported* number only.
+  let reclaimedBytes = 0;
+  const statements: D1PreparedStatement[] = [];
+  for (let i = 0; i < streamIds.length; i += COMPACT_CHUNK) {
+    const chunk = streamIds.slice(i, i + COMPACT_CHUNK);
+    const inList = chunk.map(() => "?").join(", ");
+    const preRead = await env.DB.prepare(
+      `select coalesce(sum(stored_bytes), 0) as b from events
+       where owner_id = ? and stream_id in (${inList})`,
+    )
+      .bind(ownerId, ...chunk)
+      .first<{ b: number }>();
+    reclaimedBytes += preRead?.b ?? 0;
+    statements.push(
+      env.DB.prepare(
+        `update owners set stored_bytes = max(0, stored_bytes - coalesce((
+           select sum(stored_bytes) from events
+           where owner_id = ?1 and stream_id in (${chunk
+             .map((_, j) => `?${j + 2}`)
+             .join(", ")})), 0))
+         where owner_id = ?1`,
+      ).bind(ownerId, ...chunk),
+      env.DB.prepare(
+        `delete from events where owner_id = ? and stream_id in (${inList})`,
+      ).bind(ownerId, ...chunk),
+    );
+  }
+
+  const results = await env.DB.batch(statements);
+  let deletedEvents = 0;
+  results.forEach((res, i) => {
+    if (i % 2 === 1) deletedEvents += res.meta?.changes ?? 0; // delete stmts
+  });
+
+  return json({ deletedEvents, reclaimedBytes });
 }
 
 // -----------------------------------------------------------------------------
@@ -723,6 +837,7 @@ interface Config {
   defaultEventsPerPull: number;
   maxBlobBytes: number;
   maxOwners: number;
+  maxStreamsPerCompact: number;
   relayDisabled: boolean;
 }
 
@@ -735,6 +850,7 @@ function readConfig(env: Env): Config {
     defaultEventsPerPull: readPositiveInt(env.DEFAULT_EVENTS_PER_PULL, 1000),
     maxBlobBytes: readPositiveInt(env.MAX_BLOB_BYTES, 8 * 1024 * 1024),
     maxOwners: readPositiveInt(env.MAX_OWNERS, 100000),
+    maxStreamsPerCompact: readPositiveInt(env.MAX_STREAMS_PER_COMPACT, 1000),
     relayDisabled: env.RELAY_DISABLED === "true",
   };
 }

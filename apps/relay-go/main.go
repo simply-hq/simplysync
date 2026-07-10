@@ -32,6 +32,7 @@ type Config struct {
 	MaxEventsPerPush     int
 	MaxEventsPerPull     int
 	DefaultEventsPerPull int
+	MaxStreamsPerCompact int
 	MaxBlobBytes         int64
 	CompactionInterval   time.Duration
 	MaxOwners            int
@@ -57,6 +58,7 @@ func loadConfig() Config {
 		MaxEventsPerPush:     envInt("MAX_EVENTS_PER_PUSH", 1000),
 		MaxEventsPerPull:     envInt("MAX_EVENTS_PER_PULL", 5000),
 		DefaultEventsPerPull: envInt("DEFAULT_EVENTS_PER_PULL", 1000),
+		MaxStreamsPerCompact: envInt("MAX_STREAMS_PER_COMPACT", 1000),
 		MaxBlobBytes:         envInt64("MAX_BLOB_BYTES", 8*1024*1024),
 		CompactionInterval:   resolveCompactionInterval(),
 		MaxOwners:            envInt("MAX_OWNERS", 100000),

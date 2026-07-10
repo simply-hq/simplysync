@@ -48,6 +48,18 @@ object Envelope {
         return seal(identity, eventId, deviceId, createdAt, payload, nonce)
     }
 
+    /**
+     * The pseudonymous stream id the relay sees for a logical row:
+     * HMAC(streamKey, "<table> <rowId>"), base64url, truncated to 22 chars.
+     * Mirrors `deriveStreamId` in @simplysync/protocol — exposed so a client
+     * can name a row's stream without sealing an envelope (e.g. to ask a
+     * relay to drop a fully-purged stream via `POST /v1/streams/compact`).
+     */
+    fun streamId(identity: Identity, table: String, rowId: String): String {
+        val hash = Crypto.hmacSha256(identity.streamKey, "$table $rowId".toByteArray(Charsets.UTF_8))
+        return Base64Url.encode(hash).take(22)
+    }
+
     /** Encrypt with an explicit nonce — used by deterministic test vectors. */
     fun seal(
         identity: Identity,
@@ -57,8 +69,7 @@ object Envelope {
         payload: SyncPayload,
         nonce: ByteArray,
     ): SyncEnvelope {
-        val streamHash = Crypto.hmacSha256(identity.streamKey, "${payload.table} ${payload.rowId}".toByteArray(Charsets.UTF_8))
-        val streamId = Base64Url.encode(streamHash).take(22)
+        val streamId = streamId(identity, payload.table, payload.rowId)
 
         val aad = headerObject(1, identity.ownerId, eventId, deviceId, createdAt, streamId).canonicalData()
         val plaintext = payloadObject(payload).canonicalData()

@@ -32,7 +32,7 @@
 // the same envelope shape a real client sends.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { sha256Base64UrlBytes } from "@simplysync/protocol";
+import { deriveStreamId, sha256Base64UrlBytes } from "@simplysync/protocol";
 import {
   cleanupGoBinary,
   isGoAvailable,
@@ -44,8 +44,10 @@ import {
   createTestIdentity,
   makeEnvelope,
   makeEnvelopes,
+  type TestIdentity,
 } from "./conformance/envelopes";
 import {
+  compactStreams,
   getBlob,
   getStatus,
   getUsage,
@@ -487,6 +489,127 @@ describe.each(kinds)("oversized body guard — %s", (kind) => {
       },
       body: bigBody,
     });
+    expect(res.status).toBe(413);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stream compaction (plan 017): client-driven tombstone GC. The owner names
+// fully-purged streams via POST /v1/streams/compact and the relay drops every
+// event of those streams — winners and tombstones included.
+// ---------------------------------------------------------------------------
+
+describe.each(kinds)("stream compaction — %s", (kind) => {
+  let relay: LaunchedRelay;
+  beforeAll(async () => {
+    relay = await launchRelay(kind, { RATE_LIMIT_ENABLED: "false" });
+  }, 45_000);
+  afterAll(async () => {
+    await relay?.kill();
+  });
+
+  const usedBytes = async (t: TestIdentity): Promise<number> => {
+    const res = await getUsage(relay.baseUrl, t);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { storedBytes: number };
+    return body.storedBytes;
+  };
+
+  test("compacting a stream removes all its events (updates + tombstone) and reclaims usage; survivors are untouched", async () => {
+    const t = await createTestIdentity();
+    const streamKey = t.identity.streamKey!;
+    // Row A: three generations ending in a tombstone. Row B: one live event.
+    const rowA = [
+      await makeEnvelope(t, { rowId: "row-a", counter: 0 }),
+      await makeEnvelope(t, { rowId: "row-a", counter: 1 }),
+      await makeEnvelope(t, { rowId: "row-a", counter: 2, op: "delete" }),
+    ];
+    const rowB = await makeEnvelope(t, { rowId: "row-b", counter: 3 });
+    const pushRes = await pushEvents(relay.baseUrl, t, [...rowA, rowB]);
+    expect(pushRes.status).toBe(200);
+    const before = await usedBytes(t);
+
+    const streamA = await deriveStreamId(streamKey, "note", "row-a");
+    const res = await compactStreams(relay.baseUrl, t, [streamA]);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      deletedEvents: number;
+      reclaimedBytes: number;
+    };
+    expect(body.deletedEvents).toBe(3);
+    expect(body.reclaimedBytes).toBeGreaterThan(0);
+
+    // Only row B survives, and usage dropped by exactly the reported bytes.
+    const pullRes = await pullEvents(relay.baseUrl, t, "");
+    const pullBody = (await pullRes.json()) as { events: { eventId: string }[] };
+    expect(pullBody.events.map((e) => e.eventId)).toEqual([rowB.eventId]);
+    expect(await usedBytes(t)).toBe(before - body.reclaimedBytes);
+  });
+
+  test("compaction is idempotent: unknown/already-compacted streams are a 200 no-op", async () => {
+    const t = await createTestIdentity();
+    const event = await makeEnvelope(t, { rowId: "row-x" });
+    expect((await pushEvents(relay.baseUrl, t, [event])).status).toBe(200);
+
+    const streamX = await deriveStreamId(t.identity.streamKey!, "note", "row-x");
+    const first = await compactStreams(relay.baseUrl, t, [streamX]);
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { deletedEvents: number }).deletedEvents).toBe(1);
+
+    const again = await compactStreams(relay.baseUrl, t, [streamX]);
+    expect(again.status).toBe(200);
+    expect((await again.json()) as object).toEqual({
+      deletedEvents: 0,
+      reclaimedBytes: 0,
+    });
+  });
+
+  test("auth gating: missing bearer 401; wrong bearer 401; never creates an owner", async () => {
+    const t = await createTestIdentity();
+    const event = await makeEnvelope(t, { rowId: "row-y" });
+    expect((await pushEvents(relay.baseUrl, t, [event])).status).toBe(200);
+    const streamY = await deriveStreamId(t.identity.streamKey!, "note", "row-y");
+
+    const noBearer = await fetch(`${relay.baseUrl}/v1/streams/compact`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ownerId: t.identity.ownerId, streamIds: [streamY] }),
+    });
+    expect(noBearer.status).toBe(401);
+
+    const wrongBearer = await compactStreams(relay.baseUrl, t, [streamY], {
+      bearer: "not-the-real-token",
+    });
+    expect(wrongBearer.status).toBe(401);
+
+    // An owner that never pushed must not be created by a compact call
+    // (createIfMissing=false): expect a 4xx, not a silent 200.
+    const fresh = await createTestIdentity();
+    const freshStream = await deriveStreamId(
+      fresh.identity.streamKey!,
+      "note",
+      "row-z",
+    );
+    const unknownOwner = await compactStreams(relay.baseUrl, fresh, [freshStream]);
+    expect([401, 404]).toContain(unknownOwner.status);
+    // ...and the compact must not have minted the owner as a side effect.
+    expect((await getStatus(relay.baseUrl, fresh)).status).toBe(404);
+  });
+
+  test("malformed stream ids are rejected 400; over-limit batches 413", async () => {
+    const t = await createTestIdentity();
+    const event = await makeEnvelope(t);
+    expect((await pushEvents(relay.baseUrl, t, [event])).status).toBe(200);
+
+    for (const bad of ["", "short", "x".repeat(23), "has spaces spaces spac"]) {
+      const res = await compactStreams(relay.baseUrl, t, [bad]);
+      expect(res.status).toBe(400);
+    }
+
+    const tooMany = Array.from({ length: 1001 }, (_, i) =>
+      `${i}`.padStart(22, "A"),
+    );
+    const res = await compactStreams(relay.baseUrl, t, tooMany);
     expect(res.status).toBe(413);
   });
 });

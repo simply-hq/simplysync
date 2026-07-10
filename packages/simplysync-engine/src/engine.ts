@@ -14,6 +14,7 @@ import type {
   SyncEngineDeps,
 } from "./engine-types";
 import { createEngineState } from "./engine/state";
+import { TOMBSTONE_RETENTION_MS } from "./engine/constants";
 import { createStore, createClock } from "./engine/store";
 import { createQueryCache } from "./engine/query-cache";
 import { createRelaySync } from "./engine/relay";
@@ -34,7 +35,8 @@ export { createIdFromString } from "./engine/ids";
 
 // Default tombstone grace period for `purgeDeleted`: long enough that a delete
 // has reached the relay and any active peer before its row is reclaimed.
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+// Shared with the sync loop's automatic sweep (see engine/constants.ts).
+const THIRTY_DAYS_MS = TOMBSTONE_RETENTION_MS;
 
 /** Builds a compile-only Kysely instance (SQLite dialect, no real driver). */
 function createCompiler<S extends SchemaDefinition>(): Kysely<Database<S>> {
@@ -213,7 +215,16 @@ export const createSync =
       },
       purgeDeleted(options) {
         const olderThanMs = options?.olderThanMs ?? THIRTY_DAYS_MS;
-        return { purged: store.purgeDeleted(olderThanMs, Date.now()) };
+        const purged = store.purgeDeleted(olderThanMs, Date.now());
+        // Nudge the relay-side stream compaction along without waiting for the
+        // next poll; failures are retried by the sync loop's drain.
+        if (purged > 0) void relay.sync();
+        return { purged };
+      },
+      purgeRows(rows) {
+        const purged = store.purgeRows(rows);
+        if (purged > 0) void relay.sync();
+        return { purged };
       },
       setTransports(next) {
         relay.setTransports(next);

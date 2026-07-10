@@ -41,6 +41,20 @@ enum Envelope {
                         createdAt: createdAt, payload: payload, nonce: nonce)
     }
 
+    /// The pseudonymous stream id the relay sees for a logical row:
+    /// HMAC(streamKey, "<table> <rowId>"), base64url, truncated to 22 chars.
+    /// Mirrors `deriveStreamId` in @simplysync/protocol — exported so a client
+    /// can name a row's stream without sealing an envelope (e.g. to ask a
+    /// relay to drop a fully-purged stream via `POST /v1/streams/compact`).
+    static func streamId(identity: Identity, table: String, rowId: String) -> String {
+        String(
+            Base64URL.encode(
+                Crypto.hmacSHA256(key: identity.streamKey,
+                                  data: Data("\(table) \(rowId)".utf8))
+            ).prefix(22)
+        )
+    }
+
     /// Encrypt with an explicit nonce — used by the deterministic test vectors.
     static func seal(
         identity: Identity,
@@ -50,11 +64,8 @@ enum Envelope {
         payload: SyncPayload,
         nonce: Data
     ) throws -> SyncEnvelope {
-        let streamId = Base64URL.encode(
-            Crypto.hmacSHA256(key: identity.streamKey,
-                              data: Data("\(payload.table) \(payload.rowId)".utf8))
-        ).prefix(22)
-        let streamIdString = String(streamId)
+        let streamIdString = streamId(identity: identity, table: payload.table,
+                                      rowId: payload.rowId)
 
         let header = headerObject(
             version: 1, ownerId: identity.ownerId, eventId: eventId,

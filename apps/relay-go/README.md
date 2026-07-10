@@ -44,6 +44,7 @@ runs on any Linux distro (glibc *or* musl/Alpine).
 | `MAX_EVENT_BYTES` | `262144` | per-event cap (256 KiB) |
 | `MAX_BLOB_BYTES` | `8388608` | per-chunk cap (8 MiB) |
 | `MAX_EVENTS_PER_PUSH` / `_PULL` | `1000` / `5000` | batch bounds |
+| `MAX_STREAMS_PER_COMPACT` | `1000` | max streamIds per `POST /v1/streams/compact` (client-driven tombstone GC) |
 | `COMPACTION_INTERVAL_MS` | `21600000` | log compaction cadence; `0` disables |
 | `ADMIN_TOKEN` | — | enables the dashboard; unset => admin paths 404 |
 | `ADMIN_PATH` | derived | override the secret dashboard path |

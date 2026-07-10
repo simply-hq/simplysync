@@ -11,6 +11,7 @@ import {
   SYNC_LOG_TABLE,
   SYNC_META_TABLE,
   SYNC_OUTBOX_TABLE,
+  SYNC_PURGE_TABLE,
   SYNC_SEEN_TABLE,
 } from "./constants";
 import type { SyncFailureKind, SyncLogEntry } from "../engine-types";
@@ -143,6 +144,18 @@ export function createStore(
         `pushed integer not null default 0, pulled integer not null default 0, ` +
         `applied integer not null default 0);`,
     );
+    // Purged rows whose relay streams still await `POST /v1/streams/compact`.
+    // Written in the SAME transaction as the hard delete (purgeDeleted /
+    // purgeRows) because the streamId can't be re-derived once the row is gone
+    // — the HMAC input is (table, rowId). `acked_bases` is a JSON array of
+    // relay base URLs that have acknowledged; the drain (relay.ts) deletes the
+    // row once every currently-configured relay is in it.
+    driver.exec(
+      `create table if not exists "${SYNC_PURGE_TABLE}" (` +
+        `table_name text not null, row_id text not null, ` +
+        `acked_bases text not null default '[]', ` +
+        `primary key (table_name, row_id));`,
+    );
   };
 
   // --- Sync diagnostics log (device-local; not synced) -----------------------
@@ -251,6 +264,7 @@ export function createStore(
     driver.exec(`delete from "${SYNC_SEEN_TABLE}"`);
     driver.exec(`delete from "${SYNC_META_TABLE}"`);
     driver.exec(`delete from "${SYNC_LOG_TABLE}"`);
+    driver.exec(`delete from "${SYNC_PURGE_TABLE}"`);
   };
 
   // Reclaim local space by hard-deleting old soft-deleted rows (tombstones).
@@ -261,6 +275,24 @@ export function createStore(
   // delete it never sent. The relay retains the latest event per row
   // (compaction keeps tombstones), so a fresh re-sync re-applies the delete —
   // purging never resurrects data on a synced peer. Returns rows purged.
+  //
+  // Each hard delete also enqueues (table, id) in _sync_purge — atomically, in
+  // the same transaction — so the sync loop can later ask every relay to drop
+  // the row's stream (`POST /v1/streams/compact`). The queue must be written
+  // here and not derived later: the streamId HMAC's input is (table, rowId),
+  // which no longer exists anywhere once this delete commits.
+  const hardDeleteRow = (table: string, id: string) => {
+    const { driver } = state;
+    if (!driver) return;
+    driver.transaction(() => {
+      driver.exec(`delete from "${table}" where id = ?`, [id]);
+      driver.exec(
+        `insert or ignore into "${SYNC_PURGE_TABLE}" (table_name, row_id) values (?, ?)`,
+        [table, id],
+      );
+    });
+  };
+
   const purgeDeleted = (olderThanMs: number, nowMs: number): number => {
     const { driver } = state;
     if (!driver) return 0;
@@ -281,11 +313,100 @@ export function createStore(
           );
           if (pending.length > 0) continue; // delete not yet on the relay
         }
-        driver.exec(`delete from "${table}" where id = ?`, [row.id]);
+        hardDeleteRow(table, row.id);
         purged += 1;
       }
     }
     return purged;
+  };
+
+  // Immediate, user-initiated purge ("Delete Permanently" / "Empty Trash"):
+  // hard-delete specific rows now, skipping the age window but keeping the two
+  // non-negotiable guards — the row must already be a tombstone (never hard-
+  // delete live data), and its delete event must have reached at least one
+  // relay when relays are configured (otherwise an offline device would forget
+  // a delete it never sent). Skipped rows stay in the trash; the caller can
+  // report them ("will be removed after next sync"). Returns rows purged.
+  const purgeRows = (
+    rows: ReadonlyArray<{ table: string; id: string }>,
+  ): number => {
+    const { driver } = state;
+    if (!driver) return 0;
+    const requirePushed = state.transports.length > 0;
+    let purged = 0;
+    for (const target of rows) {
+      if (!(target.table in schema)) continue; // unknown table — never raw-SQL it
+      const row = driver.select<{ id: string; updatedAt: string }>(
+        `select id, updatedAt from "${target.table}" where id = ? and isDeleted = 1`,
+        [target.id],
+      )[0];
+      if (!row) continue; // absent or not a tombstone
+      if (requirePushed) {
+        const pending = driver.select(
+          `select 1 from "${SYNC_OUTBOX_TABLE}" where event_id = ? and pushed_at is null limit 1`,
+          [row.updatedAt],
+        );
+        if (pending.length > 0) continue; // delete not yet on the relay
+      }
+      hardDeleteRow(target.table, row.id);
+      purged += 1;
+    }
+    return purged;
+  };
+
+  // --- Relay stream-purge queue (drained by relay.ts during sync) ------------
+
+  const listPurgeQueue = (): Array<{
+    table: string;
+    rowId: string;
+    ackedBases: string[];
+  }> => {
+    const { driver } = state;
+    if (!driver) return [];
+    return driver
+      .select<{ table_name: string; row_id: string; acked_bases: string }>(
+        `select table_name, row_id, acked_bases from "${SYNC_PURGE_TABLE}"`,
+      )
+      .map((row) => {
+        let acked: string[] = [];
+        try {
+          const parsed = JSON.parse(row.acked_bases);
+          if (Array.isArray(parsed)) acked = parsed.filter((b) => typeof b === "string");
+        } catch {
+          // Corrupt acked list reads as "no acks yet" — worst case a re-send,
+          // and the endpoint is idempotent.
+        }
+        return { table: row.table_name, rowId: row.row_id, ackedBases: acked };
+      });
+  };
+
+  const ackPurgeBase = (table: string, rowId: string, base: string) => {
+    const { driver } = state;
+    if (!driver) return;
+    const row = driver.select<{ acked_bases: string }>(
+      `select acked_bases from "${SYNC_PURGE_TABLE}" where table_name = ? and row_id = ?`,
+      [table, rowId],
+    )[0];
+    if (!row) return;
+    let acked: string[] = [];
+    try {
+      const parsed = JSON.parse(row.acked_bases);
+      if (Array.isArray(parsed)) acked = parsed.filter((b) => typeof b === "string");
+    } catch {
+      /* treat as empty */
+    }
+    if (!acked.includes(base)) acked.push(base);
+    driver.exec(
+      `update "${SYNC_PURGE_TABLE}" set acked_bases = ? where table_name = ? and row_id = ?`,
+      [JSON.stringify(acked), table, rowId],
+    );
+  };
+
+  const dropPurgeEntry = (table: string, rowId: string) => {
+    state.driver?.exec(
+      `delete from "${SYNC_PURGE_TABLE}" where table_name = ? and row_id = ?`,
+      [table, rowId],
+    );
   };
 
   // Bound the outbox (a send queue, not an archive): drop events confirmed
@@ -465,6 +586,10 @@ export function createStore(
     setMeta,
     wipeLocalData,
     purgeDeleted,
+    purgeRows,
+    listPurgeQueue,
+    ackPurgeBase,
+    dropPurgeEntry,
     pruneOutbox,
     insertPendingOutboxEvent,
     writeRow,

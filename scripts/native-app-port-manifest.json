@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-08T15:06:36.972Z",
+  "updatedAt": "2026-07-10T19:21:24.524Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -11,7 +11,7 @@
         ".ts"
       ],
       "note": "Protocol constants, crypto, envelopes, snapshots, and HLC behavior changed; review native kits and app ports.",
-      "sha256": "f4e75d436d41a420d6c5c4123bd873f29f5af3be769a803940af8acb090cd19a",
+      "sha256": "57a3dd806a84b88cb93820efac65a61e963be98138f54eb2ecd6952152c62177",
       "fileCount": 4
     },
     {
@@ -22,7 +22,7 @@
         ".ts"
       ],
       "note": "The reference engine changed; review native engine ports and app SyncEngine implementations.",
-      "sha256": "90cc0b0beb665dc46993f32a865c5657b19e2b54965c8cc18aacb6d24d149110",
+      "sha256": "dee29ffc867c1315a03b4bad50ff4f747b23f5a3a74169fbaebc3faba0e57184",
       "fileCount": 17
     },
     {
@@ -33,7 +33,7 @@
         ".swift"
       ],
       "note": "The Swift protocol kit changed; review SimplyFinance SimplySyncKit.",
-      "sha256": "2c4895adf02fce7275f4f2a772a006ee60b7c0e98f59b5e1b71231bd2d8a7ebc",
+      "sha256": "8809acd348df0f1c2b7c6593b02c91aa641a23c4b446da70a2fbaed0cfcf6872",
       "fileCount": 9
     },
     {
@@ -55,7 +55,7 @@
         ".kt"
       ],
       "note": "The Kotlin native port changed; review Android synckit and app SyncEngine.",
-      "sha256": "b10c9cd18ed5ae1c67a9c3d7cb018fca9bec172154072ec1c072a47185d9a0ab",
+      "sha256": "1e335abb64e286737139724ecc05578c88c6f92942c8a5f8226f93bc2ec41e18",
       "fileCount": 20
     },
     {
@@ -66,7 +66,7 @@
         ".swift"
       ],
       "note": "The iOS app protocol kit changed; confirm the upstream native Swift port is still represented.",
-      "sha256": "c3a3c9b853175d2e1faaa8f16964727e040f768498eaa19678ad4acb9140938f",
+      "sha256": "72b1b0b499f2192a3042007cbcb6366a096e8f38ccf47be0673cda723ce17fb7",
       "fileCount": 11
     },
     {
@@ -84,7 +84,7 @@
         "SyncEngine.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "4325d68146b929e619a42e3503e6f9bb9945de8533c388c97832130b52c74bc2",
+      "sha256": "ca0e735843360c4a5d573f60e82f254be06e00fd4aaebc758978f6d38080cd14",
       "fileCount": 8
     },
     {
@@ -95,7 +95,7 @@
         ".kt"
       ],
       "note": "The Android app protocol kit changed; confirm the upstream native Kotlin port is still represented.",
-      "sha256": "f03e7abc277e2805aafa0ae4258a78b6de5676eee2d75af73dd2760bc9c7dea3",
+      "sha256": "4a59fd9e84cca74d92987c0c72150ca00da3b31108598623cb1dc3564b961ca8",
       "fileCount": 11
     },
     {
@@ -112,7 +112,7 @@
         "SyncEngine.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "590fe3d00d184ab6c81f27be878e6deba32e45d3762aa9f27047b95f66dc0ff3",
+      "sha256": "fc0cb5caac138195d8bf1ac3bbda817222fe309eb5c4e7b7e9ef8f5039873f35",
       "fileCount": 7
     }
   ]

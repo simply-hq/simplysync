@@ -39,6 +39,22 @@ export async function pullEvents(
   });
 }
 
+export async function compactStreams(
+  baseUrl: string,
+  test: TestIdentity,
+  streamIds: string[],
+  { bearer }: { bearer?: string } = {},
+): Promise<Response> {
+  return fetch(`${baseUrl}/v1/streams/compact`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${bearer ?? test.identity.relayAuth}`,
+    },
+    body: JSON.stringify({ ownerId: test.identity.ownerId, streamIds }),
+  });
+}
+
 export async function getUsage(
   baseUrl: string,
   test: TestIdentity,

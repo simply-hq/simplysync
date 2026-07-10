@@ -483,6 +483,62 @@ type CompactionResult struct {
 // the HLC: the highest per stream is the last-writer-wins value, and any device
 // pulling only survivors reconstructs identical state. Untagged events (no
 // stream_id) are never touched.
+// compactStreams drops every event of the given (owner, streamId) groups —
+// winners and tombstones included: the owner has asserted the logical rows
+// are fully purged (client-driven tombstone GC, `POST /v1/streams/compact`).
+// Mirrors compactLog's accounting: sum the victims' bytes, decrement the
+// owner's usage (clamped >= 0), delete, then return freed pages to the OS.
+// Per-stream statements in one transaction keep SQL arity constant.
+func (s *store) compactStreams(ownerID string, streamIDs []string) (deleted int64, reclaimed int64, err error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	for _, streamID := range streamIDs {
+		var bytes int64
+		if err := tx.QueryRow(
+			`select coalesce(sum(stored_bytes), 0) from events where owner_id = ? and stream_id = ?`,
+			ownerID, streamID,
+		).Scan(&bytes); err != nil {
+			return 0, 0, err
+		}
+		res, err := tx.Exec(
+			`delete from events where owner_id = ? and stream_id = ?`,
+			ownerID, streamID,
+		)
+		if err != nil {
+			return 0, 0, err
+		}
+		n, _ := res.RowsAffected()
+		if n > 0 {
+			deleted += n
+			reclaimed += bytes
+		}
+	}
+
+	if reclaimed > 0 {
+		if _, err := tx.Exec(
+			`update owners set stored_bytes = max(0, stored_bytes - ?) where owner_id = ?`,
+			reclaimed, ownerID,
+		); err != nil {
+			return 0, 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	if deleted > 0 {
+		_, _ = s.db.Exec(`pragma wal_checkpoint(TRUNCATE)`)
+	}
+	return deleted, reclaimed, nil
+}
+
 func (s *store) compactLog() (CompactionResult, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

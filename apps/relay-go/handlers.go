@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -57,6 +58,8 @@ func routeHandler(cfg Config, st *store) http.Handler {
 		switch {
 		case r.Method == http.MethodPost && path == "/v1/events":
 			handlePush(cfg, st, w, r)
+		case r.Method == http.MethodPost && path == "/v1/streams/compact":
+			handleCompactStreams(cfg, st, w, r)
 		case r.Method == http.MethodGet && path == "/v1/events":
 			handlePull(cfg, st, w, r)
 		case r.Method == http.MethodGet && path == "/v1/usage":
@@ -135,6 +138,77 @@ func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": out.accepted, "duplicate": out.duplicate})
+}
+
+// streamIDShape is the exact form sealPayload emits: base64url, 22 chars.
+var streamIDShape = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
+
+// handleCompactStreams is client-driven tombstone GC: the owner names
+// fully-purged streams (opaque HMAC ids — the relay learns nothing about
+// tables/rows/contents) and every event of those streams is dropped,
+// tombstone included. Only the key holder can compute a streamId and auth
+// proves ownership; the client calls this after its own retention window.
+// Idempotent: unknown streamIds are a no-op.
+func handleCompactStreams(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
+	relayAuth := bearerToken(r)
+	if relayAuth == "" {
+		writeJSON(w, http.StatusUnauthorized, errBody("Missing bearer token"))
+		return
+	}
+
+	// 22 chars + JSON quoting/comma overhead — 64 bytes/stream is generous.
+	maxBody := int64(64*cfg.MaxStreamsPerCompact + 1024)
+	if contentLengthExceeds(r, maxBody) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Payload too large"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBody+1<<10)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Payload too large"))
+		return
+	}
+
+	var body struct {
+		OwnerID   string   `json:"ownerId"`
+		StreamIDs []string `json:"streamIds"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil || body.OwnerID == "" || body.StreamIDs == nil {
+		writeJSON(w, http.StatusBadRequest, errBody("Invalid compact body"))
+		return
+	}
+	if len(body.StreamIDs) > cfg.MaxStreamsPerCompact {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Too many streams in one compact"))
+		return
+	}
+	for _, id := range body.StreamIDs {
+		if !streamIDShape.MatchString(id) {
+			writeJSON(w, http.StatusBadRequest, errBody("Invalid stream id"))
+			return
+		}
+	}
+
+	// Same gate as push, but never create an owner on a purge call.
+	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, false)
+	if !auth.ok {
+		writeJSON(w, auth.status, errBody(auth.msg))
+		return
+	}
+
+	if rateLimitOn && !writeLimiter.allow(body.OwnerID) {
+		writeJSON(w, http.StatusTooManyRequests, errBody("Rate limited"))
+		return
+	}
+
+	deleted, reclaimed, err := st.compactStreams(body.OwnerID, body.StreamIDs)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errBody("Failed to compact streams"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deletedEvents":  deleted,
+		"reclaimedBytes": reclaimed,
+	})
 }
 
 func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {

@@ -65,6 +65,11 @@ const MAX_EVENTS_PER_PULL = readPositiveIntegerEnv(
   "MAX_EVENTS_PER_PULL",
   5_000,
 );
+// Wire bound for POST /v1/streams/compact, like MAX_EVENTS_PER_PUSH for push.
+const MAX_STREAMS_PER_COMPACT = readPositiveIntegerEnv(
+  "MAX_STREAMS_PER_COMPACT",
+  1_000,
+);
 const DEFAULT_EVENTS_PER_PULL = readPositiveIntegerEnv(
   "DEFAULT_EVENTS_PER_PULL",
   1_000,
@@ -259,6 +264,22 @@ const deleteLosers = db.prepare(`
                       and e2.stream_id = events.stream_id)
 `);
 
+// Client-driven stream purge (`POST /v1/streams/compact`): unlike compactLog,
+// which keeps each stream's winner, this drops a stream ENTIRELY — the owner
+// is asserting the logical row (typically an expired tombstone) is gone
+// everywhere. Per-stream statements looped in one transaction, so arity stays
+// constant regardless of how many streamIds a request carries.
+const streamBytes = db.prepare<{ b: number }, [string, string]>(`
+  select coalesce(sum(stored_bytes), 0) as b from events
+  where owner_id = ? and stream_id = ?
+`);
+const deleteStream = db.prepare(`
+  delete from events where owner_id = ? and stream_id = ?
+`);
+const reclaimOwnerBytes = db.prepare(`
+  update owners set stored_bytes = max(0, stored_bytes - ?) where owner_id = ?
+`);
+
 let lastCompaction: CompactionResult | null = null;
 
 function compactLog(): CompactionResult {
@@ -371,6 +392,10 @@ async function route(request: Request, url: URL): Promise<Response> {
 
   if (request.method === "POST" && url.pathname === "/v1/events") {
     return handlePush(request);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/streams/compact") {
+    return handleCompactStreams(request);
   }
 
   if (request.method === "GET" && url.pathname === "/v1/events") {
@@ -576,6 +601,82 @@ async function handlePush(request: Request): Promise<Response> {
     }
     console.error(error);
     return json({ error: "Failed to store events" }, 500);
+  }
+}
+
+// Base64url, 22 chars — the exact shape sealPayload emits. Anything else is
+// rejected before touching SQL.
+const STREAM_ID_SHAPE = /^[A-Za-z0-9_-]{22}$/u;
+
+// Client-driven tombstone GC: the owner names fully-purged streams (opaque
+// HMAC ids — the relay still learns nothing about tables/rows/contents) and
+// every event of those streams is dropped, tombstone included. Safe because
+// only the key holder can compute a streamId, auth proves ownership, and the
+// client only calls this after its own retention window. Idempotent: unknown
+// streamIds are a no-op.
+async function handleCompactStreams(request: Request): Promise<Response> {
+  const relayAuth = getBearerToken(request);
+  if (!relayAuth) return json({ error: "Missing bearer token" }, 401);
+
+  // 22 chars + JSON quoting/comma overhead — 64 bytes/stream is generous.
+  if (exceedsContentLength(request, 64 * MAX_STREAMS_PER_COMPACT + 1024)) {
+    return json({ error: "Payload too large" }, 413);
+  }
+
+  const body = (await request.json().catch(() => null)) as {
+    ownerId?: unknown;
+    streamIds?: unknown;
+  } | null;
+
+  if (
+    !body ||
+    typeof body.ownerId !== "string" ||
+    !Array.isArray(body.streamIds)
+  ) {
+    return json({ error: "Invalid compact body" }, 400);
+  }
+  if (body.streamIds.length > MAX_STREAMS_PER_COMPACT) {
+    return json({ error: "Too many streams in one compact" }, 413);
+  }
+  for (const id of body.streamIds) {
+    if (typeof id !== "string" || !STREAM_ID_SHAPE.test(id)) {
+      return json({ error: "Invalid stream id" }, 400);
+    }
+  }
+
+  // Same gate as push: never create an owner on a purge call.
+  const authResult = await ensureOwnerAuth(body.ownerId, relayAuth, false);
+  if (!authResult.ok) return authResult.response;
+
+  if (RATE_LIMIT_ENABLED && !writeLimiter.allow(body.ownerId)) {
+    return json({ error: "Rate limited" }, 429);
+  }
+
+  const ownerId = body.ownerId;
+  const streamIds = body.streamIds as string[];
+  const run = db.transaction(() => {
+    let deletedEvents = 0;
+    let reclaimedBytes = 0;
+    for (const streamId of streamIds) {
+      const bytes = streamBytes.get(ownerId, streamId)?.b ?? 0;
+      const deleted = deleteStream.run(ownerId, streamId).changes;
+      if (deleted > 0) {
+        deletedEvents += deleted;
+        reclaimedBytes += bytes;
+      }
+    }
+    if (reclaimedBytes > 0) reclaimOwnerBytes.run(reclaimedBytes, ownerId);
+    return { deletedEvents, reclaimedBytes };
+  });
+
+  try {
+    const { deletedEvents, reclaimedBytes } = run();
+    // Same page-reclaim as compactLog: return freed space to the OS.
+    if (deletedEvents > 0) db.exec(`pragma wal_checkpoint(TRUNCATE)`);
+    return json({ deletedEvents, reclaimedBytes });
+  } catch (error) {
+    console.error(error);
+    return json({ error: "Failed to compact streams" }, 500);
   }
 }
 

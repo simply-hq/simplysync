@@ -170,10 +170,20 @@ wire-compatible against the same relay.
 
 ## Storage hygiene (long-lived apps)
 
-- **`engine.purgeDeleted({ olderThanMs? })`** — reclaim space by hard-deleting
-  old tombstones. Safe: a grace window (default 30 days) lets deletes replicate,
-  un-pushed deletes are kept, and the relay retains tombstones so a re-sync
-  re-applies them (synced peers are never resurrected).
+- **Automatic tombstone retention** — during sync (at most once a day) the
+  engine hard-deletes tombstones older than `tombstoneRetentionMs` (default
+  30 days; `false` disables) and asks every configured relay to drop those
+  rows' streams (`POST /v1/streams/compact`), so relay storage tracks the
+  device instead of holding every ever-deleted row forever. Purged streams are
+  queued durably (`_sync_purge`) and retried until every relay acks.
+- **`engine.purgeDeleted({ olderThanMs? })`** — the same sweep, on demand.
+  Safe: a grace window (default 30 days) lets deletes replicate, un-pushed
+  deletes are kept, and the relay retains tombstones inside the window so a
+  re-sync re-applies them (synced peers are never resurrected).
+- **`engine.purgeRows(rows)`** — immediate "Delete Permanently"/"Empty Trash":
+  hard-delete specific tombstones now, skipping the age window (the pushed-to-
+  a-relay guard still applies). Best-effort on multi-device — a device offline
+  past the purge never learns of the delete.
 - **Outbox pruning is automatic** — after a successful sync, events confirmed
   delivered to every configured relay are dropped from the send queue, so the
   outbox doesn't grow without bound.

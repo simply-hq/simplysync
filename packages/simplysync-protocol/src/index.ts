@@ -218,6 +218,24 @@ export function compareHlc(left: string | null | undefined, right: string): numb
 }
 
 /**
+ * Derives the pseudonymous stream id the relay sees for a logical row:
+ * HMAC(streamKey, "<table> <rowId>"), base64url, truncated to 22 chars. Same
+ * (table, row) always yields the same id; the relay can't reverse it. Exported
+ * (besides feeding {@link sealPayload}) so a client can name a row's stream
+ * without sealing an envelope — e.g. to ask a relay to drop a fully-purged
+ * stream via `POST /v1/streams/compact` (tombstone GC).
+ */
+export async function deriveStreamId(
+  streamKey: Uint8Array,
+  table: string,
+  rowId: string,
+): Promise<string> {
+  return base64UrlEncode(
+    await hmacSha256(streamKey, encodeUtf8(`${table} ${rowId}`)),
+  ).slice(0, 22);
+}
+
+/**
  * Encrypts `payload` into a {@link SyncEnvelope} using an explicit `nonce`
  * instead of generating one. This is the deterministic core of
  * {@link encryptPayload}, split out so tests and cross-language conformance
@@ -240,12 +258,7 @@ export async function sealPayload<T>(
   // Group key for compaction: same (table,row) => same streamId, but the relay
   // can't reverse it. Included in the AAD header so it's tamper-evident.
   const streamId = identity.streamKey
-    ? base64UrlEncode(
-        await hmacSha256(
-          identity.streamKey,
-          encodeUtf8(`${payload.table} ${payload.rowId}`),
-        ),
-      ).slice(0, 22)
+    ? await deriveStreamId(identity.streamKey, payload.table, payload.rowId)
     : undefined;
   const envelopeHeader = {
     version: 1 as const,
