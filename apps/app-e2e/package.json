@@ -1,0 +1,16 @@
+{
+  "name": "@simplysync/app-e2e",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Headless, engine-level e2e sync harness: drives the real iOS (Swift) and Android (Kotlin) app SyncEngines against a shared Go relay to prove cross-platform convergence.",
+  "scripts": {
+    "e2e": "bun run src/cli.ts",
+    "test": "bun run src/test-entry.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "~5.9.2"
+  }
+}

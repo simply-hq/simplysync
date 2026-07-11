@@ -1,0 +1,31 @@
+{
+  "name": "pin-parity",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "idFromString", "device": "A", "value": "simply-finance-setting", "capture": "settingId" },
+    { "do": "pinMakeHash", "device": "A", "pin": "428913", "capture": "pinA" },
+    { "do": "mutate", "device": "A", "table": "setting", "rowId": "$settingId.id",
+      "values": { "pinCodeEnabled": 1, "pinCodeHash": "$pinA.hash" } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+
+    { "do": "readRow", "device": "B", "table": "setting", "rowId": "$settingId.id", "capture": "bSetting" },
+    { "assert": "matches", "actual": "$bSetting.pinCodeHash", "pattern": "^[0-9a-f]{32}:[0-9a-f]{64}$" },
+    { "do": "pinVerify", "device": "B", "pin": "428913", "stored": "$bSetting.pinCodeHash", "capture": "vRight" },
+    { "assert": "equals", "actual": "$vRight.valid", "expected": true },
+    { "do": "pinVerify", "device": "B", "pin": "000000", "stored": "$bSetting.pinCodeHash", "capture": "vWrong" },
+    { "assert": "equals", "actual": "$vWrong.valid", "expected": false },
+
+    { "do": "pinMakeHash", "device": "B", "pin": "135790", "capture": "pinB" },
+    { "do": "mutate", "device": "B", "table": "setting", "rowId": "$settingId.id", "values": { "pinCodeHash": "$pinB.hash" } },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "readRow", "device": "A", "table": "setting", "rowId": "$settingId.id", "capture": "aSetting" },
+    { "do": "pinVerify", "device": "A", "pin": "135790", "stored": "$aSetting.pinCodeHash", "capture": "vRotated" },
+    { "assert": "equals", "actual": "$vRotated.valid", "expected": true }
+  ]
+}

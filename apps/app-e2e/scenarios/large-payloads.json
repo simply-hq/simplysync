@@ -1,0 +1,29 @@
+{
+  "name": "large-payloads",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }, { "id": "r2", "env": { "MAX_EVENT_BYTES": "4096" } }],
+  "steps": [
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-1", "values": { "name": "Checking", "currency": "USD" } },
+    { "do": "mutate", "device": "A", "table": "ledger", "rowId": "big-1",
+      "values": { "accountId": "acct-1", "amount": -100, "type": "needs", "title": "big",
+        "note": { "$repeat": { "of": "x", "times": 100000 } } } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+
+    { "do": "mutate", "device": "A", "table": "ledger", "rowId": "big-2",
+      "values": { "accountId": "acct-1", "amount": -100, "type": "needs", "title": "toobig",
+        "note": { "$repeat": { "of": "y", "times": 8192 } } } },
+    { "do": "syncExpectError", "device": "A", "relay": "r2", "capture": "e" },
+    { "assert": "equals", "actual": "$e.threw", "expected": true },
+    { "assert": "equals", "actual": "$e.kind", "expected": "quotaExceeded" },
+
+    { "do": "sync", "device": "A", "relay": "r1", "capture": "s3" },
+    { "assert": "atLeast", "actual": "$s3.pushed", "expected": 1 },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] }
+  ]
+}

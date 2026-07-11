@@ -18,6 +18,7 @@
     "expo": "bun run --cwd apps/simplysync-expo start",
     "docs:dev": "bun run --cwd apps/simplysync-docs dev",
     "kotlin:test": "cd apps/simplysync-android-kotlin && ./gradlew test",
+    "app-e2e": "bun run --cwd apps/app-e2e e2e",
     "app-port:check": "node scripts/check-native-app-port-drift.mjs",
     "app-port:update": "node scripts/check-native-app-port-drift.mjs --update",
     "sync:diff": "node scripts/diff-sync-port.mjs"

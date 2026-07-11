@@ -1,0 +1,26 @@
+{
+  "name": "multi-relay-backfill",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }, { "id": "r2" }],
+  "steps": [
+    { "do": "mutateRange", "device": "A", "table": "account", "rowIdPrefix": "acct-", "count": 10,
+      "values": { "name": "Account", "currency": "USD" } },
+    { "do": "sync", "device": "A", "relay": "r1", "capture": "s1" },
+    { "assert": "equals", "actual": "$s1.pushed", "expected": 10 },
+
+    { "do": "pruneOutbox", "device": "A", "relays": ["r1", "r2"] },
+    { "assert": "outboxCount", "device": "A", "expect": 10 },
+
+    { "do": "sync", "device": "A", "relay": "r2", "capture": "s2" },
+    { "assert": "atLeast", "actual": "$s2.pushed", "expected": 10 },
+
+    { "do": "pruneOutbox", "device": "A", "relays": ["r1", "r2"] },
+    { "assert": "outboxCount", "device": "A", "expect": 0 },
+
+    { "do": "sync", "device": "B", "relay": "r2" },
+    { "assert": "statesEqual", "devices": ["A", "B"] }
+  ]
+}

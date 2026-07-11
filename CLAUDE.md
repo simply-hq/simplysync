@@ -21,9 +21,11 @@ Kotlin, and Swift — and all four must stay wire-compatible.
 | Dev: native demo | `bun run expo` | Expo demo: expo-sqlite + expo-secure-store |
 | Dev: docs site | `bun run docs:dev` | static docs site + playground |
 
-There is no CI workflow in this tree yet (`.github/workflows/ci.yml` does not
-exist) — plan `plans/011` is introducing one; don't assume these suites are
-gated in CI until that lands.
+CI lives in `.github/workflows/ci.yml`: Bun typecheck+tests, the Go relay, the
+Kotlin port, and the cross-platform app sync e2e (`app-e2e-android` per-PR on
+Linux; `app-e2e-cross` on macOS, main+nightly only). The e2e jobs check out the
+private `example-maintainer/{simplyfinance,android-simplyfinance}` app repos, which
+requires an `APP_REPOS_TOKEN` secret (a PAT with read access to both).
 
 ## Map
 

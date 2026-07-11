@@ -1,0 +1,26 @@
+{
+  "name": "offline-queue-reconnect",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-1", "values": { "name": "A1", "currency": "USD" } },
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-2", "values": { "name": "A2", "currency": "USD" } },
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-3", "values": { "name": "A3", "currency": "USD" } },
+
+    { "do": "syncExpectError", "device": "A", "relayUrl": "http://127.0.0.1:1", "capture": "err" },
+    { "assert": "equals", "actual": "$err.threw", "expected": true },
+    { "assert": "equals", "actual": "$err.kind", "expected": "unreachable" },
+    { "assert": "outboxCount", "device": "A", "expect": 3 },
+
+    { "do": "sync", "device": "A", "relay": "r1", "capture": "s" },
+    { "assert": "equals", "actual": "$s.pushed", "expected": 3 },
+    { "do": "pruneOutbox", "device": "A", "relays": ["r1"] },
+    { "assert": "outboxCount", "device": "A", "expect": 0 },
+
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] }
+  ]
+}

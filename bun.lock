@@ -8,6 +8,14 @@
         "turbo": "2.9.16",
       },
     },
+    "apps/app-e2e": {
+      "name": "@simplysync/app-e2e",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "~5.9.2",
+      },
+    },
     "apps/relay-cloudflare": {
       "name": "@simplysync/relay-cloudflare",
       "version": "0.0.1",
@@ -636,6 +644,8 @@
     "@scure/bip39": ["@scure/bip39@2.2.0", "", { "dependencies": { "@noble/hashes": "2.2.0", "@scure/base": "2.2.0" } }, "sha512-T/Bj/YvYMNkIPq6EENO6/rcs2e7qTNuyoUXf0KBFDmp0ZDu0H2X4Lq6yC3i0c8PcWkov5EbW+yQZZbdMmk154A=="],
 
     "@simplysync/ai-chat": ["@simplysync/ai-chat@workspace:apps/simplysync-ai-chat"],
+
+    "@simplysync/app-e2e": ["@simplysync/app-e2e@workspace:apps/app-e2e"],
 
     "@simplysync/docs": ["@simplysync/docs@workspace:apps/simplysync-docs"],
 

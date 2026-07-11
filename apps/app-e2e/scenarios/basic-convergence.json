@@ -1,0 +1,56 @@
+{
+  "name": "basic-convergence",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "idFromString", "device": "A", "value": "simply-finance-setting", "capture": "idA" },
+    { "do": "idFromString", "device": "B", "value": "simply-finance-setting", "capture": "idB" },
+    { "assert": "equals", "actual": "$idA.id", "expected": "$idB.id" },
+
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-1",
+      "values": { "name": "Checking", "type": "checking", "currency": "USD", "order": 0 } },
+    { "do": "mutate", "device": "A", "table": "ledgerCategory", "rowId": "cat-1",
+      "values": { "name": "Groceries", "type": "needs" } },
+    { "do": "mutate", "device": "A", "table": "tag", "rowId": "tag-1",
+      "values": { "name": "reimbursable", "hidden": 0 } },
+    { "do": "mutate", "device": "A", "table": "setting", "rowId": "$idA.id",
+      "values": { "currency": "USD", "pinCodeEnabled": 0 } },
+    { "do": "mutate", "device": "A", "table": "budget", "rowId": "budget-1",
+      "values": { "name": "Groceries", "amount": 40000, "categoryId": "cat-1", "period": "monthly" } },
+    { "do": "mutate", "device": "A", "table": "goal", "rowId": "goal-1",
+      "values": { "name": "Emergency", "type": "SaveUp", "targetAmountCents": 500000, "currency": "USD" } },
+    { "do": "mutate", "device": "A", "table": "ledger", "rowId": "ledger-1",
+      "values": { "accountId": "acct-1", "amount": -1299, "date": "2026-07-01T12:00:00.000Z", "type": "needs", "title": "Milk", "categoryId": "cat-1" } },
+    { "do": "mutate", "device": "A", "table": "recurringTransaction", "rowId": "rec-1",
+      "values": { "accountId": "acct-1", "amount": -1000, "type": "needs", "title": "Netflix", "frequency": "monthly" } },
+    { "do": "mutate", "device": "A", "table": "textImportRule", "rowId": "rule-1",
+      "values": { "name": "Bank SMS", "template": "spent {amount} at {merchant}" } },
+    { "do": "mutate", "device": "A", "table": "aiConversation", "rowId": "conv-1",
+      "values": { "title": "Budget help", "lastActivityAt": "2026-07-01T12:00:00.000Z" } },
+    { "do": "mutate", "device": "A", "table": "aiMessage", "rowId": "msg-1",
+      "values": { "conversationId": "conv-1", "role": "user", "content": "How much did I spend?", "seq": 1 } },
+
+    { "do": "sync", "device": "A", "relay": "r1", "capture": "aPush" },
+    { "do": "sync", "device": "B", "relay": "r1", "capture": "bPull" },
+    { "assert": "atLeast", "actual": "$aPush.pushed", "expected": 11 },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "row", "device": "B", "table": "account", "rowId": "acct-1", "expect": { "name": "Checking", "isDeleted": 0 } },
+    { "assert": "row", "device": "B", "table": "ledger", "rowId": "ledger-1", "expect": { "title": "Milk", "amount": -1299 } },
+
+    { "do": "mutate", "device": "B", "table": "account", "rowId": "acct-1",
+      "values": { "name": "Savings", "type": "savings", "currency": "USD", "order": 0 } },
+    { "do": "mutate", "device": "B", "table": "ledger", "rowId": "ledger-1", "op": "delete", "values": {} },
+    { "do": "mutate", "device": "B", "table": "ledger", "rowId": "ledger-2",
+      "values": { "accountId": "acct-1", "amount": 25000, "date": "2026-07-02T09:00:00.000Z", "type": "income", "title": "Paycheck" } },
+
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "row", "device": "A", "table": "account", "rowId": "acct-1", "expect": { "name": "Savings" } },
+    { "assert": "row", "device": "A", "table": "ledger", "rowId": "ledger-1", "expect": { "isDeleted": 1 } },
+    { "assert": "row", "device": "A", "table": "ledger", "rowId": "ledger-2", "expect": { "title": "Paycheck", "isDeleted": 0 } }
+  ]
+}

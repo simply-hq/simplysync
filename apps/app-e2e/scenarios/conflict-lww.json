@@ -1,0 +1,33 @@
+{
+  "name": "conflict-lww",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-1", "values": { "name": "Original-1", "currency": "USD" } },
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-2", "values": { "name": "Original-2", "currency": "USD" } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-1", "values": { "name": "A-edit", "currency": "USD" } },
+    { "do": "mutate", "device": "B", "table": "account", "rowId": "acct-1", "values": { "name": "B-edit", "currency": "USD" } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "row", "device": "A", "table": "account", "rowId": "acct-1", "expect": { "name": "B-edit" } },
+    { "assert": "row", "device": "B", "table": "account", "rowId": "acct-1", "expect": { "name": "B-edit" } },
+
+    { "do": "mutate", "device": "B", "table": "account", "rowId": "acct-2", "values": { "name": "B-edit-2", "currency": "USD" } },
+    { "do": "mutate", "device": "A", "table": "account", "rowId": "acct-2", "values": { "name": "A-edit-2", "currency": "USD" } },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "row", "device": "A", "table": "account", "rowId": "acct-2", "expect": { "name": "A-edit-2" } },
+    { "assert": "row", "device": "B", "table": "account", "rowId": "acct-2", "expect": { "name": "A-edit-2" } }
+  ]
+}
