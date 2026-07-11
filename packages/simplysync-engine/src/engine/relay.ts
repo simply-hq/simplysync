@@ -503,8 +503,20 @@ export function createRelaySync(
             decryptFailures: 0,
             applyFailures: 0,
           };
+          const pullCursorKey = `cursor:${base}`;
+          let firstPage = true;
           while (true) {
+            const cursorBefore = store.getMeta(pullCursorKey) ?? "";
             const page = await pullAndApply(base);
+            const advanced =
+              (store.getMeta(pullCursorKey) ?? "") !== cursorBefore;
+            // Forward-progress guard: a non-empty page that didn't advance the
+            // cursor is the relay re-serving events we already have. The FIRST
+            // page of a sync still counts (a resend is real pull traffic and
+            // the sync log should say so — "pulled N, applied 0"), but a
+            // repeat mid-drain is double counting, and looping on it would
+            // spin forever; stop and let the next poll retry from the cursor.
+            if (!firstPage && page.pulled > 0 && !advanced) break;
             for (const table of page.changed) changed.add(table);
             r.pulled += page.pulled;
             r.applied += page.applied;
@@ -512,7 +524,9 @@ export function createRelaySync(
             r.applyFailures += page.applyFailures;
             pulled = r.pulled;
             applied = r.applied;
+            firstPage = false;
             if (page.pulled === 0) break;
+            if (!advanced) break; // counted once — don't spin on a stuck cursor
             emitProgress();
           }
           anySuccess = true;
