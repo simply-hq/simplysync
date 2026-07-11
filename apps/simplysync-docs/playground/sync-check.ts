@@ -1,6 +1,6 @@
 // End-to-end check of the playground's headline feature: two engines (devices)
 // sharing one owner, syncing through a real relay, converging — and resolving a
-// conflicting edit last-writer-wins. Spawns the Bun relay, so it is NOT part of
+// conflicting edit last-writer-wins. Spawns the Go relay, so it is NOT part of
 // the hermetic `bun test` suite. Run with:
 //   bun run apps/simplysync-docs/playground/sync-check.ts
 import { resolve } from "node:path";
@@ -14,7 +14,7 @@ import { schema, type PlaygroundSchema } from "./schema";
 import { createSqlJsDriverFactory, type SnapshotStore } from "./sql-driver";
 
 const RELAY_URL = "http://localhost:4100";
-const relayRoot = resolve(import.meta.dir, "../../simplysync-relay");
+const relayRoot = resolve(import.meta.dir, "../../relay-go");
 const WASM_PATH = Bun.resolveSync("sql.js/dist/sql-wasm.wasm", import.meta.dir);
 
 type Engine = SyncEngine<PlaygroundSchema>;
@@ -70,7 +70,7 @@ async function main(): Promise<void> {
   }, 25_000);
 
   console.log("spawning relay…");
-  const relay = Bun.spawn(["bun", "run", "src/index.ts"], {
+  const relay = Bun.spawn(["go", "run", "."], {
     cwd: relayRoot,
     stdout: "ignore",
     stderr: "inherit",

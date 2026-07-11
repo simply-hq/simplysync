@@ -1,4 +1,4 @@
-// Boots a real relay (Bun or Go) as a subprocess on a free port with a
+// Boots the real Go relay as a subprocess on a free port with a
 // throwaway data dir, and hands back { baseUrl, kill() } so black-box HTTP
 // tests can drive it exactly like a client would. No relay internals are
 // imported — this only ever talks to the process over HTTP.
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type RelayKind = "bun" | "go";
+export type RelayKind = "go";
 
 export interface LaunchedRelay {
   readonly kind: RelayKind;
@@ -21,7 +21,6 @@ export interface LaunchedRelay {
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../../../..");
-const bunRelayRoot = resolve(repoRoot, "apps/simplysync-relay");
 const goRelayRoot = resolve(repoRoot, "apps/relay-go");
 
 /** Whether `go` is on PATH. Cached — checked once per test run. */
@@ -150,7 +149,7 @@ async function waitForHealth(
 }
 
 /**
- * Boots one relay instance (Bun or Go) as a subprocess: a free port, a fresh
+ * Boots one Go relay instance as a subprocess: a free port, a fresh
  * temp RELAY_DATA_DIR, optional extra env (e.g. ADMIN_TOKEN, MAX_OWNER_BYTES),
  * and waits for GET /health to return 200 before resolving.
  */
@@ -171,27 +170,18 @@ export async function launchRelay(
   let proc: import("bun").Subprocess;
   // Go's first build can take a little while; the boot poll timeout accounts
   // for that even though we pre-build the binary before spawning it.
-  const bootTimeoutMs = kind === "go" ? 30_000 : 15_000;
+  const bootTimeoutMs = 30_000;
 
-  if (kind === "bun") {
-    proc = Bun.spawn(["bun", "run", "src/index.ts"], {
-      cwd: bunRelayRoot,
-      env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-  } else {
-    if (!isGoAvailable()) {
-      throw new Error("go is not on PATH — cannot launch the Go relay");
-    }
-    const bin = await goBinary();
-    proc = Bun.spawn([bin], {
-      cwd: goRelayRoot,
-      env,
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+  if (!isGoAvailable()) {
+    throw new Error("go is not on PATH — cannot launch the Go relay");
   }
+  const bin = await goBinary();
+  proc = Bun.spawn([bin], {
+    cwd: goRelayRoot,
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
 
   const stdoutTail = tailCollector(proc.stdout as ReadableStream<Uint8Array>);
   const stderrTail = tailCollector(proc.stderr as ReadableStream<Uint8Array>);

@@ -2,7 +2,7 @@
 
 A serverless deployment of the local-first sync relay on **Cloudflare Workers +
 D1 + R2**. It is wire-compatible with the Bun reference relay
-(`apps/simplysync-relay`): same endpoints, same request/response shapes, same
+(`apps/relay-go`): same endpoints, same request/response shapes, same
 end-to-end-encrypted threat model. Point the app's relay URL at your Worker and
 nothing else changes.
 

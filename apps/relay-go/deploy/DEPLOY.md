@@ -1,8 +1,8 @@
 # Deploying the relay to a single VPS
 
-A flat-cost, no-Docker production setup for `apps/simplysync-relay`:
+A flat-cost, no-Docker production setup for `apps/relay-go`:
 
-- **Bun** runs a single bundled `relay.js` under **systemd** (auto-restart).
+- The **Go relay** runs as a single static binary under **systemd** (auto-restart).
 - **Litestream** streams the SQLite WAL to **Cloudflare R2** (durable backup,
   point-in-time restore, free egress).
 - **Caddy** terminates TLS (auto Let's Encrypt) and reverse-proxies localhost.
@@ -27,12 +27,9 @@ sudo mkdir -p /var/lib/simplysync-relay /etc/simplysync-relay /var/log/caddy
 sudo chown -R simplysync:simplysync /var/lib/simplysync-relay
 ```
 
-## 1. Install Bun, Litestream, Caddy
+## 1. Install Litestream and Caddy
 
 ```bash
-# Bun (system-wide)
-curl -fsSL https://bun.sh/install | sudo BUN_INSTALL=/usr/local bash
-
 # Litestream (https://litestream.io/install)
 LS=0.3.13
 curl -fsSL "https://github.com/benbjohnson/litestream/releases/download/v${LS}/litestream-v${LS}-linux-amd64.tar.gz" \
@@ -45,16 +42,13 @@ sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https
 
 ## 2. Build the relay artifact (locally) and copy it up
 
-`bun build` bundles the workspace dep (`@simplysync/protocol`) into one file —
-no `node_modules` on the server.
+Build the static relay binary for the target server architecture.
 
 ```bash
-# from the repo root
-cd apps/simplysync-relay
-bun build src/index.ts --target bun --outfile dist/relay.js
-
-scp dist/relay.js  YOUR_BOX:/tmp/relay.js
-ssh YOUR_BOX 'sudo install -o simplysync -g simplysync /tmp/relay.js /opt/simplysync-relay/relay.js'
+# from apps/relay-go
+make build-linux
+scp bin/relay-linux-amd64 YOUR_BOX:/tmp/relay
+ssh YOUR_BOX 'sudo install -o simplysync -g simplysync /tmp/relay /opt/simplysync-relay/relay'
 ```
 
 ## 3. Configure backups (R2)
@@ -168,6 +162,6 @@ and each owner's quota reflects *current* footprint, not lifetime writes.
 
 ## Upgrades
 
-Rebuild `relay.js` (step 2), `scp` it over, then
+Rebuild the relay binary (step 2), `scp` it over, then
 `sudo systemctl restart simplysync-relay`. Litestream keeps replicating across the
 restart; no migration needed (the relay creates tables idempotently on boot).

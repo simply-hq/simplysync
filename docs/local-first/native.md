@@ -107,7 +107,7 @@ Above `Kit/`, `Engine/` ports `@simplysync/engine`: a typed schema, a real SQLit
 store, typed mutations, and reactive `LiveQuery` results — so the example above is
 the *low-level* path, and most app code uses the engine instead (see the
 [Client API → Swift](./guide-swift.html) guide). Run the demo from Xcode against a
-local relay (`bun run relay:bun`), then **⋯ → Show recovery key** and paste the
+local relay (`bun run relay:go`), then **⋯ → Show recovery key** and paste the
 same key into a second simulator, the web playground, or the Expo app to watch them
 converge. Full run/verify steps are in the
 [Swift README](../../apps/simplysync-ios-swift/README.md).

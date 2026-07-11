@@ -1,0 +1,17 @@
+{
+  "name": "@simplysync/relay-conformance",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@simplysync/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "~5.9.2"
+  }
+}

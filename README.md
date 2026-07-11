@@ -31,7 +31,7 @@ this and shows you how to audit it yourself in ten minutes.
 bun install
 
 # Run the canonical (Go) relay — stores only ciphertext
-bun run relay:go            # needs Go 1.24+; or `bun run relay:bun` for the Bun relay
+bun run relay:go            # needs Go 1.25+
 
 # In another terminal: spin up a relay + sync two clients, printing the
 # decrypted state on each plus a sample opaque envelope
@@ -52,7 +52,7 @@ bun run expo                # Expo demo: expo-sqlite + expo-secure-store
 | [`packages/simplysync-engine`](packages/simplysync-engine) | Schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted). |
 | [`packages/simplysync-react`](packages/simplysync-react) | React hooks for binding the engine into a UI. |
 | [`apps/relay-go`](apps/relay-go) | **Canonical** self-hostable relay: Go + SQLite, stores only ciphertext. |
-| [`apps/simplysync-relay`](apps/simplysync-relay) | Bun + SQLite relay — reference implementation, wire-identical to the Go relay. |
+| [`apps/relay-conformance`](apps/relay-conformance) | Black-box contract tests for the canonical Go relay. |
 | [`apps/relay-cloudflare`](apps/relay-cloudflare) | Serverless relay on Cloudflare Workers + D1 + R2. |
 | [`apps/simplysync-example`](apps/simplysync-example) | CLI reference client + one-shot two-client sync demo. |
 | [`apps/simplysync-expo`](apps/simplysync-expo) | Native Expo demo. |

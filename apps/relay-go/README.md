@@ -1,8 +1,7 @@
 # SimplySync Go relay
 
 A single-binary, low-memory deployment of the local-first sync relay. **Wire-
-compatible** with the Bun reference relay (`apps/simplysync-relay`) and the
-Cloudflare relay (`apps/relay-cloudflare`): identical endpoints, request/response
+compatible** with the Cloudflare relay (`apps/relay-cloudflare`): identical endpoints, request/response
 shapes, and the same end-to-end-encrypted threat model (the relay only ever
 holds ciphertext + an owner id + an auth hash). Point an app's relay URL at it
 and nothing else changes.
@@ -20,7 +19,7 @@ memory — ideal for a small always-on box.
 - **Log compaction**: keeps only the highest-`eventId` event per
   `(owner, streamId)` and reclaims usage (periodic + on-demand `POST <admin>/compact`).
 - **Ops dashboard** at a secret, token-derived path with brute-force lockout
-  (disk/runway/memory/load, growth trends, top owners) — same UI as the Bun relay.
+  (disk/runway/memory/load, growth trends, top owners).
 
 ## Build
 
@@ -62,14 +61,12 @@ curl -s https://sync.example.com/health
 
 Backups (Litestream → R2), TLS (Caddy), the Cloudflare edge config, and the
 backup/restore drill are **language-agnostic** — follow
-[`../simplysync-relay/deploy/DEPLOY.md`](../simplysync-relay/deploy/DEPLOY.md)
-and just substitute this `simplysync-relay.service` (it runs the binary instead of Bun).
+[`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 Litestream replicates the same `relay.db` WAL regardless of which relay wrote it.
 
 ## Storage
 
 SQLite via the pure-Go `modernc.org/sqlite` driver (no cgo). WAL mode,
 `busy_timeout`, reads concurrent on a small pool; writes serialized so quota
-accounting stays atomic. Same schema as the Bun relay (`owners` / `events` with
-`stream_id` / `blobs`), so a Litestream-restored DB from either relay is
-interchangeable.
+accounting stays atomic. The database uses `owners` / `events` with
+`stream_id` / `blobs` and is backed up through Litestream.

@@ -11,13 +11,12 @@ Kotlin, and Swift — and all four must stay wire-compatible.
 | Purpose | Command | Notes |
 | --- | --- | --- |
 | Install | `bun install` | Bun `1.3.9`-pinned (`package.json:12`) workspace monorepo, turbo-orchestrated |
-| Test | `bun run test` | `turbo run test`: protocol + engine (84 tests) + docs playground suites |
-| Typecheck | `bun run typecheck` | `tsc --noEmit` across 7 workspaces |
+| Test | `bun run test` | `turbo run test`: protocol + engine + Go relay conformance + docs playground suites |
+| Typecheck | `bun run typecheck` | `tsc --noEmit` across 8 workspaces |
 | Kotlin tests | `bun run kotlin:test` | Gradle JUnit suite, pure JVM, no Android SDK needed |
 | App sync-port drift | `bun run app-port:check` | Fails when upstream sync/protocol code or the iOS/Android app ports changed without an intentional baseline refresh |
 | Go relay build/vet | `cd apps/relay-go && go build ./... && go vet ./...` | Go 1.25 toolchain (auto-fetched via `GOTOOLCHAIN=auto`), cgo-free |
 | Dev: canonical relay | `bun run relay:go` | Go relay, ciphertext-only store |
-| Dev: reference relay | `bun run relay:bun` | Bun relay, wire-identical to the Go relay |
 | Dev: CLI demo | `bun run demo` | spins up a relay and syncs two clients |
 | Dev: native demo | `bun run expo` | Expo demo: expo-sqlite + expo-secure-store |
 | Dev: docs site | `bun run docs:dev` | static docs site + playground |
@@ -32,7 +31,7 @@ gated in CI until that lands.
 - `packages/simplysync-engine` — schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted).
 - `packages/simplysync-react` — React hooks for binding the engine into a UI.
 - `apps/relay-go` — canonical self-hostable relay: Go + SQLite, stores only ciphertext.
-- `apps/simplysync-relay` — Bun + SQLite relay, reference implementation, wire-identical to the Go relay.
+- `apps/relay-conformance` — black-box HTTP contract tests for the canonical Go relay.
 - `apps/relay-cloudflare` — serverless relay on Cloudflare Workers + D1 + R2.
 - `apps/simplysync-example` — CLI reference client + one-shot two-client sync demo.
 - `apps/simplysync-expo` — native Expo demo.
@@ -44,7 +43,7 @@ gated in CI until that lands.
 ## Frozen invariants — do not casually touch these
 
 1. the fixed protocol-v1 `DERIVATION_SALT` byte sequence (`packages/simplysync-protocol/src/crypto.ts:7`) is a wire-protocol constant. Renaming or changing it remaps every existing user's recovery phrase to a different identity and key set — effectively a permanent lockout from their own data.
-2. The protocol core is **pinned** (`README.md`, "What's in the box": "Treat as pinned — update wholesale, don't fork."). Any change to the HLC format, envelope format, canonical JSON, or key derivation must be mirrored across the Kotlin port (`apps/simplysync-android-kotlin`), the Swift port (`apps/simplysync-ios-swift`), and both relays (`apps/relay-go`, `apps/simplysync-relay`) — otherwise clients stop being able to sync with each other.
+2. The protocol core is **pinned** (`README.md`, "What's in the box": "Treat as pinned — update wholesale, don't fork."). Any change to the HLC format, envelope format, canonical JSON, or key derivation must be mirrored across the Kotlin port (`apps/simplysync-android-kotlin`), the Swift port (`apps/simplysync-ios-swift`), and relay implementations (`apps/relay-go`, `apps/relay-cloudflare`) — otherwise clients stop being able to sync with each other.
 3. The Simply Finance app ports are app-owned copies, not symlinks. After changing protocol/engine/native-port code, run `bun run app-port:check` from this repo. If it fails, review and port the change into `../simplyfinance` and `../android-simplyfinance`, then refresh the checked-in baseline with `bun run app-port:update`.
 4. Conflict resolution is **last-write-wins by HLC**, not CRDT merging — `compareHlc` is the sole tiebreaker (`packages/simplysync-engine/src/engine/relay.ts:160`).
 5. Deletes are **soft tombstones** that must replicate (`packages/simplysync-engine/src/engine/mutations-lifecycle.ts:114-118`); a hard delete resurrects rows from peers on the next pull.

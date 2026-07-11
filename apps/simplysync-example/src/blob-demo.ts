@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   let relayProcess: Bun.Subprocess | null = null;
   if (!(await isRelayHealthy())) {
     cleanRelayData();
-    relayProcess = Bun.spawn(["bun", "run", "src/index.ts"], {
+    relayProcess = Bun.spawn(["go", "run", "."], {
       cwd: relayRoot,
       stdout: "inherit",
       stderr: "inherit",

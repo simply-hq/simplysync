@@ -29,7 +29,7 @@
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Allow http://localhost (and other local hostnames) so the demo can
-		     reach a relay you run on your Mac via `bun run relay:bun`. -->
+		     reach a relay you run on your Mac via `bun run relay:go`. -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>

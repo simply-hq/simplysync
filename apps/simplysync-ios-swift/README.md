@@ -63,7 +63,7 @@ verify/                host-side checks (run with swiftc, no simulator needed)
 1. **Start a relay** (from the repo root). The iOS Simulator reaches your Mac at
    `localhost`:
    ```sh
-   bun run relay:bun        # serves http://localhost:4100
+   bun run relay:go         # serves http://localhost:4100
    ```
 2. **Open & run** in Xcode:
    ```sh

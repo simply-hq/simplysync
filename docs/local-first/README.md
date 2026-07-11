@@ -69,7 +69,7 @@ bun install
 bun run demo                 # CLI: relay + two clients sync, one shot
 
 # Or the browser demo, two devices side by side:
-bun run relay:bun            # terminal 1 — relay on :4100
+bun run relay:go             # terminal 1 — relay on :4100
 bun run docs:dev             # terminal 2 — docs + demo on :4200
 ```
 
@@ -91,7 +91,7 @@ one or [self-host](./self-hosting.md):
 | Relay | Stack |
 | --- | --- |
 | `apps/relay-go` | Go + SQLite — the canonical implementation. |
-| `apps/simplysync-relay` | Bun + SQLite — reference implementation. |
+| `apps/relay-go` | Go + SQLite — canonical self-hosted relay. |
 | `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
 
 **Reference clients:** `apps/simplysync-example` (CLI) and `apps/simplysync-expo`

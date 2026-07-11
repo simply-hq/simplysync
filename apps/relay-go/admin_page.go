@@ -3,7 +3,7 @@ package main
 // Self-contained operational dashboard (no external assets/CDNs, CSP-clean).
 // It prompts for the admin token, keeps it in sessionStorage, polls <base>/stats
 // (derived from its own path — the base is secret), and renders cards + inline
-// SVG sparklines. Kept wire-identical to the Bun relay's dashboard.
+// SVG sparklines for the self-hosted relay dashboard.
 const adminPage = `<!doctype html>
 <html lang="en">
 <head>

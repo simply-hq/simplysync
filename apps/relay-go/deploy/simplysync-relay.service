@@ -5,8 +5,7 @@
 #   sudo systemctl enable --now simplysync-relay
 #   journalctl -u simplysync-relay -f
 #
-# Litestream (backups) and Caddy (TLS) are language-agnostic — reuse the units
-# in ../../simplysync-relay/deploy/ (litestream*.service, Caddyfile).
+# Litestream (backups) and Caddy (TLS) use the adjacent deployment files.
 
 [Unit]
 Description=SimplySync relay (Go)

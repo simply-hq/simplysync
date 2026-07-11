@@ -12,7 +12,7 @@ export const exampleRoot = resolve(
   "..",
 );
 export const repoRoot = resolve(exampleRoot, "../..");
-export const relayRoot = resolve(repoRoot, "apps/simplysync-relay");
+export const relayRoot = resolve(repoRoot, "apps/relay-go");
 export const relayUrl = process.env.RELAY_URL ?? "http://localhost:4100";
 
 export function sleep(ms: number): Promise<void> {

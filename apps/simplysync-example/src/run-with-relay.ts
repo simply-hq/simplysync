@@ -20,7 +20,7 @@ async function main(): Promise<void> {
     console.log(`Using existing relay at ${relayUrl}`);
   } else {
     cleanRelayData();
-    relayProcess = Bun.spawn(["bun", "run", "src/index.ts"], {
+    relayProcess = Bun.spawn(["go", "run", "."], {
       cwd: relayRoot,
       stdout: "inherit",
       stderr: "inherit",

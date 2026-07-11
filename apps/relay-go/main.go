@@ -1,10 +1,9 @@
 // Cloudflare-free, single-binary relay for the local-first sync protocol.
 //
-// Wire-compatible with apps/simplysync-relay (the Bun reference relay): same
-// endpoints, same request/response shapes, same end-to-end-encrypted threat
-// model (the relay only ever holds ciphertext + an owner id + an auth hash).
-// Ported to Go so the production deploy is a single static binary with stable,
-// low memory — no runtime to install on the box.
+// Canonical self-hosted relay: the same endpoints, request/response shapes, and
+// end-to-end-encrypted threat model as the Cloudflare relay (the relay only ever
+// holds ciphertext + an owner id + an auth hash). It deploys as a single static
+// binary with stable, low memory — no runtime to install on the box.
 package main
 
 import (
@@ -20,8 +19,7 @@ import (
 	"time"
 )
 
-// Config is resolved from the environment at startup (same knobs as the Bun
-// relay, plus COMPACTION_INTERVAL_MS).
+// Config is resolved from the environment at startup.
 type Config struct {
 	Port                 int
 	DataDir              string

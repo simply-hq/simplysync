@@ -20,6 +20,17 @@
         "wrangler": "4.98.0",
       },
     },
+    "apps/relay-conformance": {
+      "name": "@simplysync/relay-conformance",
+      "version": "0.0.1",
+      "dependencies": {
+        "@simplysync/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "~5.9.2",
+      },
+    },
     "apps/simplysync-ai-chat": {
       "name": "@simplysync/ai-chat",
       "version": "0.0.1",
@@ -90,17 +101,6 @@
       "devDependencies": {
         "@types/react": "~19.2.2",
         "babel-preset-expo": "~55.0.8",
-        "typescript": "~5.9.2",
-      },
-    },
-    "apps/simplysync-relay": {
-      "name": "@simplysync/relay",
-      "version": "0.0.1",
-      "dependencies": {
-        "@simplysync/protocol": "workspace:*",
-      },
-      "devDependencies": {
-        "@types/bun": "latest",
         "typescript": "~5.9.2",
       },
     },
@@ -649,7 +649,7 @@
 
     "@simplysync/react": ["@simplysync/react@workspace:packages/simplysync-react"],
 
-    "@simplysync/relay": ["@simplysync/relay@workspace:apps/simplysync-relay"],
+    "@simplysync/relay-conformance": ["@simplysync/relay-conformance@workspace:apps/relay-conformance"],
 
     "@sinclair/typebox": ["@sinclair/typebox@0.27.10", "", {}, "sha512-MTBk/3jGLNB2tVxv6uLlFh1iu64iYOQ2PbdOSK3NW8JZsmlaOh2q6sdtKowBhfw8QFLmYNzTW4/oK4uATIi6ZA=="],
 

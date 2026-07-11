@@ -17,13 +17,13 @@ MAX_OWNER_BYTES=1073741824 \
 MAX_EVENTS_PER_PUSH=1000 \
 MAX_EVENTS_PER_PULL=5000 \
 DEFAULT_EVENTS_PER_PULL=1000 \
-bun run simplysync:relay
+bun run relay:go
 ```
 
 Run it with a local relay:
 
 ```sh
-bun run simplysync:relay
+bun run relay:go
 ```
 
 Then in another terminal:

@@ -28,7 +28,7 @@ It leaves the relay running after the demo until you press Ctrl-C.
 Terminal 1:
 
 ```sh
-bun run simplysync:relay
+bun run relay:go
 ```
 
 Terminal 2:

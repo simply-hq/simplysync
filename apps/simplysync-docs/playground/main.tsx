@@ -1,7 +1,7 @@
 // The SimplySync browser demo — a comprehensive, two-device sync demo.
 //
 // Two engines ("Alice" and "Bob") share one owner and sync through a relay you
-// run locally (`bun run relay:bun`). Everything runs on-device: local SQLite
+// run locally (`bun run relay:go`). Everything runs on-device: local SQLite
 // (sql.js) is the source of truth, the engine encrypts each write into an opaque
 // envelope, and the relay only ever moves ciphertext. Edit on one device, sync,
 // and watch the other converge — including last-writer-wins on conflicts. The
@@ -472,7 +472,7 @@ function TopBar({
           </span>
         </label>
         <p className="pg-hint">
-          Run a relay with <code>bun run relay:bun</code>, then Connect. Without
+          Run a relay with <code>bun run relay:go</code>, then Connect. Without
           one, edits stay local (local-first) and sync shows “not synced”.
         </p>
 

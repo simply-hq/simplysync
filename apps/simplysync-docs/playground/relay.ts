@@ -1,5 +1,5 @@
 // The relay both devices sync through. Defaults to a local relay the visitor
-// runs (`bun run relay:bun`); editable and persisted in localStorage.
+// runs (`bun run relay:go`); editable and persisted in localStorage.
 
 import type { Transport } from "@simplysync/engine";
 

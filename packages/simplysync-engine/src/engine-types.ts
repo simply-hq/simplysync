@@ -237,7 +237,20 @@ export type SyncFailureKind =
 
 export type SyncState =
   | { readonly type: "SyncStateInitial" }
-  | { readonly type: "SyncStateIsSyncing" }
+  | {
+      readonly type: "SyncStateIsSyncing";
+      /**
+       * Live counters, re-emitted after every push batch / pull page so a UI
+       * can show movement during a large sync (a new-relay backfill moves
+       * thousands of events — a status that only flips at the end of the
+       * cycle is indistinguishable from a hang). Absent on the initial flip.
+       */
+      readonly progress?: {
+        readonly pendingPush: number;
+        readonly pulled: number;
+        readonly applied: number;
+      };
+    }
   | { readonly type: "SyncStateIsSynced"; readonly lastSyncedAt: string }
   | {
       readonly type: "SyncStateIsNotSynced";

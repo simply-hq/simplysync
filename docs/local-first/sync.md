@@ -245,7 +245,7 @@ the edge:
 | `MAX_EVENTS_PER_PUSH` | `1000` | Max envelopes per push request. Over → `413`. |
 | `MAX_EVENTS_PER_PULL` | `5000` | Hard cap on pull page size. |
 | `DEFAULT_EVENTS_PER_PULL` | `1000` | Pull page size when the client omits `limit`. |
-| `COMPACTION_INTERVAL_MS` | `21600000` (6h) | How often the Bun relay compacts the log (see below). |
+| `COMPACTION_INTERVAL_MS` | `21600000` (6h) | How often the Go relay compacts the log (see below). |
 
 **Reaching the quota.** When an owner crosses `MAX_OWNER_BYTES`, the relay returns
 `413` on the next push or blob upload, and the engine surfaces a *terminal*
@@ -298,7 +298,7 @@ state regardless of where its cursor sits.
 
 `stream_id` comes from the envelope header: `HMAC(streamKey, table‖rowId)`
 truncated to 16 bytes, base64url. The relay groups by it but can't reverse it to a
-table/row. The Bun relay runs compaction on a timer (`COMPACTION_INTERVAL_MS`,
+table/row. The Go relay runs compaction on a timer (`COMPACTION_INTERVAL_MS`,
 default 6h) or on demand; the Cloudflare relay runs it from a Cron-triggered
 Worker. After compaction, per-owner `stored_bytes` is decremented so the quota
 reflects *current* footprint, not lifetime writes.

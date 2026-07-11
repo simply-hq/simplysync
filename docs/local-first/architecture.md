@@ -127,8 +127,7 @@ bun run test                       # turbo: all package tests
 bun run typecheck                  # turbo: all typechecks
 
 bun run demo                       # relay + two clients + sync, one shot
-bun run relay:go                   # canonical Go relay (needs Go 1.24+)
-bun run relay:bun                  # Bun relay on :4100
+bun run relay:go                   # canonical Go relay (needs Go 1.25+)
 bun run docs:dev                   # these docs + the browser Demo on :4200
 bun run --cwd apps/simplysync-example blob-demo   # encrypted image round-trip
 ```

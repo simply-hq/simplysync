@@ -473,9 +473,48 @@ export function createRelaySync(
       // (per-relay log entries, not collapsed to the first failure).
       for (const base of bases) {
         try {
-          const pushed = await pushOutbox(base);
-          const r = await pullAndApply(base);
-          for (const table of r.changed) changed.add(table);
+          // Drain within THIS sync (plan 008 step 2): a big backlog (e.g. a
+          // new-relay backfill) must not trickle out one batch per poll cycle,
+          // flashing a misleading "synced" between batches while thousands of
+          // events are still pending. Re-emit SyncStateIsSyncing with live
+          // counters per batch/page so subscribers can show real movement.
+          let pushed = 0;
+          let pulled = 0;
+          let applied = 0;
+          const emitProgress = () =>
+            state.setSyncState({
+              type: "SyncStateIsSyncing",
+              progress: {
+                pendingPush: store.pendingOutboxCount(),
+                pulled,
+                applied,
+              },
+            });
+          while (true) {
+            const batch = await pushOutbox(base);
+            pushed += batch;
+            if (batch > 0) emitProgress();
+            if (batch < 1000) break; // partial batch = outbox drained
+          }
+          const r: PullResult = {
+            changed,
+            pulled: 0,
+            applied: 0,
+            decryptFailures: 0,
+            applyFailures: 0,
+          };
+          while (true) {
+            const page = await pullAndApply(base);
+            for (const table of page.changed) changed.add(table);
+            r.pulled += page.pulled;
+            r.applied += page.applied;
+            r.decryptFailures += page.decryptFailures;
+            r.applyFailures += page.applyFailures;
+            pulled = r.pulled;
+            applied = r.applied;
+            if (page.pulled === 0) break;
+            emitProgress();
+          }
           anySuccess = true;
           relayHealth.set(base, { lastSyncedAt: new Date().toISOString() });
           store.appendSyncLog({

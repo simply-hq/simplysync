@@ -284,7 +284,7 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 	accepted, duplicate := 0, 0
 	for _, ev := range events {
 		// Byte-accounting basis (frozen, plan 009): raw received envelope
-		// bytes. Bun/CF measure JSON.stringify(event) instead — identical
+		// bytes. Cloudflare measures JSON.stringify(event) instead — identical
 		// for compliant canonical envelopes; the conformance suite's
 		// cross-relay comparison guards that they stay equal.
 		storedBytes := int64(len(ev.raw))
@@ -470,7 +470,7 @@ func (s *store) topOwners(limit int) ([]ownerUsage, error) {
 
 // --- Compaction --------------------------------------------------------------
 
-// CompactionResult mirrors the Bun relay's shape for /admin/stats parity.
+// CompactionResult is returned by the admin maintenance API.
 type CompactionResult struct {
 	RanAt          string `json:"ranAt"`
 	DeletedEvents  int64  `json:"deletedEvents"`

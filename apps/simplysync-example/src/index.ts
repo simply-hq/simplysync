@@ -185,7 +185,7 @@ function helpCommand(): void {
 Secure local-first example
 
 Start relay in another terminal:
-  bun run --cwd apps/simplysync-relay start
+  bun run relay:go
 
 Commands:
   bun run --cwd apps/simplysync-example start init --client alice

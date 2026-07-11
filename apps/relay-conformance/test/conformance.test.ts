@@ -1,31 +1,11 @@
-// Black-box HTTP conformance suite for the reference relays.
+// Black-box HTTP conformance suite for the canonical Go relay.
 //
-// All three relays (apps/simplysync-relay [Bun], apps/relay-go [Go],
-// apps/relay-cloudflare [Cloudflare Workers + D1]) claim to be
-// "wire-identical": same endpoints, same request/response shapes, same
-// auth/quota semantics. Nothing tested that claim before this suite. This
-// file boots the Bun and Go relays as real subprocesses (never importing
-// their internals) and runs the identical assertions against each over
-// plain HTTP, so a contract divergence shows up as a failure scoped to one
-// relay's describe block instead of shipping silently.
+// This file boots the Go relay as a real subprocess (never importing its
+// internals) and drives its public contract over plain HTTP.
 //
-// Cloudflare is NOT covered here (deferred, see plan 006 Step 4). Confirmed
-// by an actual `wrangler dev --local` attempt against apps/relay-cloudflare,
-// which hit two real blockers rather than just "seems hard":
-//   1. `wrangler d1 migrations apply --local` and `wrangler dev` don't share
-//      local D1 state unless sequenced/persisted carefully — a `dev` started
-//      before migrations are applied gets "no such table: owners" on every
-//      request, and applying migrations after requires restarting `dev`.
-//   2. apps/relay-cloudflare/migrations/0002_stream_id.sql unconditionally
-//      does `alter table events add column stream_id text`, but
-//      0001_init.sql already creates that column — migration 0002 fails with
-//      "duplicate column name: stream_id" on any fresh local D1. (A
-//      CF-specific migration bug, out of scope here — not touched.)
-// The three `unsafe.bindings` ratelimit bindings also report Mode: "remote"
-// even under `--local`, i.e. real network/Cloudflare-API access, which is a
-// poor fit for a hermetic test process. Booting this headlessly in CI is a
-// real project, not a small addition — hence deferred rather than attempted
-// further here.
+// Cloudflare is not covered here because its D1/R2 and rate-limit bindings
+// require a separate Workers integration harness rather than a hermetic local
+// subprocess.
 //
 // Envelopes are generated with the real @simplysync/protocol crypto
 // (deriveIdentity -> encryptPayload), not hand-built JSON, so pushes exercise
@@ -62,26 +42,11 @@ const ADMIN_PATH = "conformance-admin";
 const ADMIN_BASE = `/${ADMIN_PATH}`;
 const TINY_OWNER_QUOTA_BYTES = 4096;
 
-const goAvailable = isGoAvailable();
-if (!goAvailable) {
-  console.warn(
-    "[conformance] `go` was not found on PATH — skipping the Go relay leg " +
-      "of the conformance suite (Bun leg still runs).",
-  );
+if (!isGoAvailable()) {
+  throw new Error("[conformance] `go` was not found on PATH");
 }
 
-const kinds: RelayKind[] = goAvailable ? ["bun", "go"] : ["bun"];
-
-// Populated by the quota test for each relay kind, compared once both legs
-// have run (see the "cross-relay comparison" describe block below). Plan 009
-// aligned the byte-accounting basis across all three relays (raw received
-// envelope bytes, mirroring relay-go's `len(ev.raw)`) — the JS relays'
-// re-serialization is byte-identical to that for compliant canonical
-// envelopes — so the comparison below now asserts equality rather than only
-// logging a delta.
-const quotaFindings: Partial<
-  Record<RelayKind, { pushesAccepted: number; usedBytesAtFailure: number }>
-> = {};
+const kinds: RelayKind[] = ["go"];
 
 describe.each(kinds)("relay conformance — %s", (kind) => {
   let relay: LaunchedRelay;
@@ -269,16 +234,13 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
     const usage = (await (await getUsage(specialRelay.baseUrl, t)).json()) as {
       storedBytes: number;
     };
-    quotaFindings[kind] = {
-      pushesAccepted: accepted,
-      usedBytesAtFailure: usage.storedBytes,
-    };
+    expect(accepted).toBeGreaterThan(0);
+    expect(usage.storedBytes).toBeGreaterThan(0);
   });
 
   // --- metric-label bound (supports plan 003) ---------------------------------
 
-  // Plan 003 (merged) fixed this: routeLabel() in both
-  // apps/simplysync-relay/src/metrics.ts and apps/relay-go/metrics.go now
+  // Plan 003 (merged) fixed this: routeLabel() in apps/relay-go/metrics.go now
   // collapses unmatched paths to a fixed "<other>" bucket, so an
   // unauthenticated GET /<raw-path> can no longer plant an arbitrary string
   // (or grow byEndpoint without bound) in the admin metrics. This was
@@ -337,7 +299,7 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
   });
 
   // Plan 009 (SECURITY-03): the blob quota check now runs inside the same
-  // locked transaction as the insert on both Go and Bun, instead of a
+  // locked transaction as the insert, instead of a
   // separate pre-transaction read. Driving true concurrent PUTs isn't
   // practical from this black-box HTTP suite, so this drives the check
   // sequentially against specialRelay's tiny quota: it can't observe the
@@ -616,37 +578,4 @@ describe.each(kinds)("stream compaction — %s", (kind) => {
 
 afterAll(() => {
   cleanupGoBinary();
-});
-
-// ---------------------------------------------------------------------------
-// Cross-relay comparison. Declared after describe.each above so it executes
-// once both relay legs have finished (bun:test runs top-level blocks in
-// declaration order) and quotaFindings is fully populated.
-// ---------------------------------------------------------------------------
-
-describe("cross-relay comparison", () => {
-  test("quota accounting (pushesAccepted, usedBytes) is identical across relays", () => {
-    const entries = Object.entries(quotaFindings) as [
-      RelayKind,
-      { pushesAccepted: number; usedBytesAtFailure: number },
-    ][];
-    if (entries.length < 2) {
-      console.log(
-        "[conformance] only one relay leg ran — nothing to cross-compare.",
-      );
-      expect(entries.length).toBeGreaterThan(0);
-      return;
-    }
-    // Plan 009 aligned the byte-accounting basis (raw received envelope
-    // bytes) across all three relays, so an identical push sequence must now
-    // produce identical quota accounting — a divergence here is a real
-    // regression, not an expected implementation difference.
-    const [[kindA, a], [kindB, b]] = entries;
-    console.log(
-      `[conformance] quota accounting for ${kindA} vs ${kindB}: ` +
-        `${JSON.stringify(a)} / ${JSON.stringify(b)}`,
-    );
-    expect(a.pushesAccepted).toBe(b.pushesAccepted);
-    expect(a.usedBytesAtFailure).toBe(b.usedBytesAtFailure);
-  });
 });

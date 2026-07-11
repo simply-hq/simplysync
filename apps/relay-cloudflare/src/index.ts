@@ -1,7 +1,7 @@
 /**
  * Cloudflare Workers relay for the local-first sync protocol.
  *
- * Wire-compatible with `apps/simplysync-relay` (the Bun reference relay):
+ * Wire-compatible with `apps/relay-go` (the canonical self-hosted relay):
  * same endpoints, same request/response shapes, same end-to-end-encrypted
  * threat model (the relay only ever sees ciphertext + an owner id + an auth
  * hash). The difference is the substrate and the cost model:
@@ -113,7 +113,7 @@ export default {
   },
 
   // Cron Trigger (see wrangler.toml [triggers]): compact the append-only event
-  // log. Same invariant as the Bun relay — eventId === HLC, and event_id order
+  // log. Same invariant as the Go relay — eventId === HLC, and event_id order
   // is the client's LWW order, so keeping the max event_id per (owner, streamId)
   // is exactly the last-writer value. A fresh device pulling only survivors
   // reconstructs identical state. Events without a streamId are never touched.
@@ -218,7 +218,7 @@ async function handlePush(
   }
 
   // Enforce the quota against ACCEPTED (genuinely-new) bytes only, matching
-  // Bun/Go: an over-cap push of new bytes is rejected whole (nothing stored),
+  // Go: an over-cap push of new bytes is rejected whole (nothing stored),
   // but a re-push of already-stored events must NOT 413 just because a naive
   // sum of every submitted event would cross the cap (the CORRECTNESS-05a
   // divergence). So we read which submitted eventIds already exist and count
@@ -229,23 +229,29 @@ async function handlePush(
   // skips it (no seq consumed in our range) and we charge only our real
   // inserts — we under-charge here, never double. Residual overshoot is thus
   // only possible across concurrent pushes (inherent to D1 having no
-  // cross-request write lock), exactly like Bun/Go's own concurrent overshoot.
-  const existing = await env.DB.prepare(
-    `select event_id from events
-     where owner_id = ? and event_id in (${prepared.map(() => "?").join(", ")})`,
-  )
-    .bind(ownerId, ...prepared.map((p) => p.event.eventId))
-    .all<{ event_id: string }>();
-  const existingIds = new Set(
-    (existing.results ?? []).map((row) => row.event_id),
-  );
+  // cross-request write lock), matching the Go relay's concurrent overshoot.
+  // D1 caps bound parameters per statement (~100) — far below
+  // MAX_EVENTS_PER_PUSH — so the IN list must be chunked or a full 500-event
+  // push batch 500s ("Internal error") before storing anything. Same chunking
+  // as handleCompactStreams.
+  const existingIds = new Set<string>();
+  for (let i = 0; i < prepared.length; i += COMPACT_CHUNK) {
+    const chunk = prepared.slice(i, i + COMPACT_CHUNK);
+    const existing = await env.DB.prepare(
+      `select event_id from events
+       where owner_id = ? and event_id in (${chunk.map(() => "?").join(", ")})`,
+    )
+      .bind(ownerId, ...chunk.map((p) => p.event.eventId))
+      .all<{ event_id: string }>();
+    for (const row of existing.results ?? []) existingIds.add(row.event_id);
+  }
   const acceptedBytes = prepared.reduce(
     (sum, p) => (existingIds.has(p.event.eventId) ? sum : sum + p.bytes),
     0,
   );
-  // Note the one intentional, benign difference from Bun/Go's per-event
+  // Note the one intentional, benign difference from the Go relay's per-event
   // check: a pure-duplicate re-push while the owner sits exactly AT cap has
-  // acceptedBytes === 0 here and returns 200/duplicate, whereas Bun/Go add
+  // acceptedBytes === 0 here and returns 200/duplicate, whereas Go adds
   // the duplicate's bytes per-event and can 413. A no-op store shouldn't
   // 413, so we don't replicate that quirk.
   if (auth.storedBytes + acceptedBytes > cfg.maxOwnerBytes) {
@@ -471,10 +477,14 @@ async function handlePull(
     (row) => JSON.parse(row.envelope_json) as SyncEnvelope,
   );
   const nextCursor = String(rows.at(-1)?.seq ?? afterSeq);
-  // Pull is the one large response; gzip it when the client supports it. The
-  // ciphertext won't shrink, but the base64 inflation + repeated JSON
-  // scaffolding across a full page of envelopes does.
-  return jsonMaybeGzip(request, { events, nextCursor });
+  // Pull is the one large response, but do NOT compress it manually here: on
+  // Workers, setting Content-Encoding on a hand-gzipped body without
+  // `encodeBody: "manual"` makes the runtime re-encode the stream — clients
+  // receive double-compressed bytes and every >1 KiB pull fails to parse
+  // (which bricked initial sync against a fresh relay). Cloudflare's edge
+  // already gzip/brotli-encodes JSON responses per Accept-Encoding, so plain
+  // JSON gets the same wire savings with none of the footguns.
+  return json({ events, nextCursor });
 }
 
 async function handleUsage(
@@ -499,7 +509,7 @@ async function handleUsage(
 
 // Per-owner health + quota surface a client app polls to tell apart "relay
 // down" / "network" / "quota" / "auth" / "healthy-but-behind". Mirrors relay-go
-// + the Bun relay. A reachable-but-never-synced owner gets 404 from auth, which
+// + the Go relay. A reachable-but-never-synced owner gets 404 from auth, which
 // the client reads as "relay up, account empty".
 async function handleStatus(
   request: Request,
@@ -871,43 +881,6 @@ function clampPositiveInteger(
 
 function json(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: corsHeaders() });
-}
-
-// Below this, gzip's header/CPU overhead isn't worth it — small responses go
-// out as-is. The client's fetch sends Accept-Encoding and inflates the body
-// transparently, so no client change is needed.
-const GZIP_MIN_BYTES = 1024;
-
-function acceptsGzip(request: Request): boolean {
-  return /\bgzip\b/iu.test(request.headers.get("accept-encoding") ?? "");
-}
-
-// Like json(), but streams the body through gzip when the client advertises
-// support and it's large enough to benefit. Vary: Accept-Encoding keeps a
-// cache from handing a gzipped body to a client that can't decode it.
-function jsonMaybeGzip(
-  request: Request,
-  body: unknown,
-  status = 200,
-): Response {
-  const text = JSON.stringify(body);
-  const headers: Record<string, string> = {
-    ...corsHeaders(),
-    "Content-Type": "application/json; charset=utf-8",
-    Vary: "Accept-Encoding",
-  };
-  if (
-    text.length >= GZIP_MIN_BYTES &&
-    acceptsGzip(request) &&
-    typeof CompressionStream !== "undefined"
-  ) {
-    headers["Content-Encoding"] = "gzip";
-    const stream = new Response(text).body!.pipeThrough(
-      new CompressionStream("gzip"),
-    );
-    return new Response(stream, { status, headers });
-  }
-  return new Response(text, { status, headers });
 }
 
 function corsHeaders(): Record<string, string> {
