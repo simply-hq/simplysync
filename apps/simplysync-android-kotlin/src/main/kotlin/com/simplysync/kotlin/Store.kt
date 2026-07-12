@@ -10,6 +10,7 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
     companion object {
         const val OUTBOX = "_sync_outbox"
         const val SEEN = "_sync_seen"
+        const val DEFERRED = "_sync_deferred"
         const val META = "_sync_meta"
     }
 
@@ -47,6 +48,7 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
         }
         driver.exec("create table if not exists \"$OUTBOX\" (event_id text primary key, envelope_json text not null, pushed_at text);")
         driver.exec("create table if not exists \"$SEEN\" (event_id text primary key);")
+        driver.exec("create table if not exists \"$DEFERRED\" (event_id text primary key, payload_json text not null);")
         driver.exec("create table if not exists \"$META\" (key text primary key, value text not null);")
     }
 
@@ -59,6 +61,28 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
         driver?.exec(
             "insert into \"$META\" (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
             listOf(SqliteValue.Text(key), SqliteValue.Text(value)),
+        )
+    }
+
+    fun deferRemoteEvent(eventId: String, payloadJson: String) {
+        driver?.exec(
+            "insert or replace into \"$DEFERRED\" (event_id, payload_json) values (?, ?)",
+            listOf(SqliteValue.Text(eventId), SqliteValue.Text(payloadJson)),
+        )
+    }
+
+    fun deferredEvents(): List<Pair<String, String>> = driver?.select(
+        "select event_id, payload_json from \"$DEFERRED\" order by event_id asc",
+    )?.mapNotNull { row ->
+        val eventId = (row["event_id"] as? SqliteValue.Text)?.value ?: return@mapNotNull null
+        val payloadJson = (row["payload_json"] as? SqliteValue.Text)?.value ?: return@mapNotNull null
+        eventId to payloadJson
+    } ?: emptyList()
+
+    fun dropDeferredEvent(eventId: String) {
+        driver?.exec(
+            "delete from \"$DEFERRED\" where event_id = ?",
+            listOf(SqliteValue.Text(eventId)),
         )
     }
 
@@ -124,6 +148,7 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
         for (table in schema.tableNames) driver.exec("delete from \"$table\"")
         driver.exec("delete from \"$OUTBOX\"")
         driver.exec("delete from \"$SEEN\"")
+        driver.exec("delete from \"$DEFERRED\"")
         driver.exec("delete from \"$META\"")
     }
 

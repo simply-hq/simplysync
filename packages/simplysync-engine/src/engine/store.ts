@@ -7,6 +7,7 @@ import type {
 } from "../engine-types";
 import {
   LEGACY_IMPORT_VERSION,
+  SYNC_DEFERRED_TABLE,
   SYNC_LOG_CAP,
   SYNC_LOG_TABLE,
   SYNC_META_TABLE,
@@ -135,6 +136,9 @@ export function createStore(
       `create table if not exists "${SYNC_SEEN_TABLE}" (event_id text primary key);`,
     );
     driver.exec(
+      `create table if not exists "${SYNC_DEFERRED_TABLE}" (event_id text primary key, payload_json text not null);`,
+    );
+    driver.exec(
       `create table if not exists "${SYNC_META_TABLE}" (key text primary key, value text not null);`,
     );
     driver.exec(
@@ -254,6 +258,35 @@ export function createStore(
     );
   };
 
+  const deferRemoteEvent = (eventId: string, payloadJson: string): void => {
+    state.driver?.exec(
+      `insert or replace into "${SYNC_DEFERRED_TABLE}" (event_id, payload_json) values (?, ?)`,
+      [eventId, payloadJson],
+    );
+  };
+
+  const listDeferredEvents = (): Array<{
+    eventId: string;
+    payloadJson: string;
+  }> => {
+    if (!state.driver) return [];
+    return state.driver
+      .select<{ event_id: string; payload_json: string }>(
+        `select event_id, payload_json from "${SYNC_DEFERRED_TABLE}" order by event_id asc`,
+      )
+      .map((row) => ({
+        eventId: row.event_id,
+        payloadJson: row.payload_json,
+      }));
+  };
+
+  const dropDeferredEvent = (eventId: string): void => {
+    state.driver?.exec(
+      `delete from "${SYNC_DEFERRED_TABLE}" where event_id = ?`,
+      [eventId],
+    );
+  };
+
   const wipeLocalData = () => {
     const { driver } = state;
     if (!driver) return;
@@ -262,6 +295,7 @@ export function createStore(
     }
     driver.exec(`delete from "${SYNC_OUTBOX_TABLE}"`);
     driver.exec(`delete from "${SYNC_SEEN_TABLE}"`);
+    driver.exec(`delete from "${SYNC_DEFERRED_TABLE}"`);
     driver.exec(`delete from "${SYNC_META_TABLE}"`);
     driver.exec(`delete from "${SYNC_LOG_TABLE}"`);
     driver.exec(`delete from "${SYNC_PURGE_TABLE}"`);
@@ -584,6 +618,9 @@ export function createStore(
     ensureSchema,
     getMeta,
     setMeta,
+    deferRemoteEvent,
+    listDeferredEvents,
+    dropDeferredEvent,
     wipeLocalData,
     purgeDeleted,
     purgeRows,
@@ -663,16 +700,16 @@ export function createClock(state: EngineState, store: Store) {
     return createHlc(state.deviceId || "local", nextTime, nextCounter);
   };
 
-  const observeHlc = (remote: string): void => {
+  const observeHlc = (remote: string): boolean => {
     // A well-formed HLC is `<10-char base36 millis>-<base36 counter>-<deviceId>`.
     // Parse defensively: anything malformed is ignored rather than risk poisoning
     // the clock with a garbage time it could never recover from.
     const parts = remote.split("-");
-    if (parts.length < 3 || parts[0]!.length !== 10) return;
+    if (parts.length < 3 || parts[0]!.length !== 10) return false;
     const millis = Number.parseInt(parts[0]!, 36);
-    if (!Number.isFinite(millis)) return;
+    if (!Number.isFinite(millis)) return false;
     // Absurd future drift is treated like a malformed value (see class doc).
-    if (millis > Date.now() + MAX_DRIFT_MS) return;
+    if (millis > Date.now() + MAX_DRIFT_MS) return false;
     const counter = Number.parseInt(parts[1] ?? "", 36);
     const c = Number.isFinite(counter) ? counter : 0;
     // Raise the high-water mark; nextHlc() folds in the wall clock via Math.max,
@@ -683,9 +720,10 @@ export function createClock(state: EngineState, store: Store) {
     } else if (millis === state.hlcTime && c > state.hlcCounter) {
       state.hlcCounter = c;
     } else {
-      return; // already at or above the observed time — nothing to absorb
+      return true; // already at or above the observed time — still acceptable
     }
     persist();
+    return true;
   };
 
   return { nextHlc, observeHlc };

@@ -100,6 +100,14 @@ enum Envelope {
         return try parsePayload(plaintext)
     }
 
+    static func encodePayload(_ payload: SyncPayload) -> String {
+        payloadObject(payload).canonical()
+    }
+
+    static func decodePayload(_ json: String) throws -> SyncPayload {
+        try parsePayload(Data(json.utf8))
+    }
+
     // MARK: header / payload as canonical-JSON objects
 
     private static func headerObject(

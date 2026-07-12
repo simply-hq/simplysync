@@ -315,6 +315,41 @@ export function createRelaySync(
     return true;
   };
 
+  // Apply payloads staged by an older app version once this version knows their
+  // table. The payload is independent of the relay cursor, so an upgrade can
+  // recover it even if the original relay page is no longer available.
+  const replayDeferred = (): Set<string> => {
+    const changed = new Set<string>();
+    const { driver } = state;
+    if (!driver) return changed;
+    const staged = store.listDeferredEvents();
+    if (staged.length === 0) return changed;
+    driver.transaction(() => {
+      for (const row of staged) {
+        let payload: SyncPayload<Record<string, unknown>>;
+        try {
+          payload = JSON.parse(row.payloadJson) as SyncPayload<
+            Record<string, unknown>
+          >;
+        } catch {
+          store.dropDeferredEvent(row.eventId);
+          continue;
+        }
+        if (!(payload.table in schema)) continue;
+        try {
+          if (clock.observeHlc(payload.hlc) && applyRemoteRow(payload)) {
+            changed.add(payload.table);
+          }
+          store.dropDeferredEvent(row.eventId);
+        } catch {
+          // A valid staged row may need a later compatible schema; keep it.
+        }
+      }
+    });
+    if (changed.size > 0) queryCache.refreshQueries(changed);
+    return changed;
+  };
+
   interface PullResult {
     changed: Set<string>;
     pulled: number;
@@ -355,6 +390,7 @@ export function createRelaySync(
     const decrypted: Array<{
       eventId: string;
       payload: SyncPayload<Record<string, unknown>>;
+      acceptableHlc: boolean;
     }> = [];
     for (const envelope of body.events) {
       const seen = driver.select(
@@ -380,13 +416,13 @@ export function createRelaySync(
       // below is a style choice, not a correctness requirement — it must run
       // for every decrypted event regardless of apply outcome, which this
       // preserves.
-      clock.observeHlc(payload.hlc);
+      const acceptableHlc = clock.observeHlc(payload.hlc);
       // Collect for the batched sync phase below. The apply itself (via
       // applyRemoteRow, which projects onto the local schema per plan 004) and
       // the seen-insert happen inside ONE transaction there (plan 008). A
       // genuine write error is caught there, counted as applyFailures, and the
       // event is still marked seen (terminal) so it can't wedge the cursor.
-      decrypted.push({ eventId: envelope.eventId, payload });
+      decrypted.push({ eventId: envelope.eventId, payload, acceptableHlc });
     }
 
     // Sync phase: apply every decrypted row and record it as seen inside ONE
@@ -395,7 +431,7 @@ export function createRelaySync(
     // nothing async runs inside the transaction callback.
     if (decrypted.length > 0) {
       driver.transaction(() => {
-        for (const { eventId, payload } of decrypted) {
+        for (const { eventId, payload, acceptableHlc } of decrypted) {
           // Re-check "seen" here (not just in the async phase above): a
           // duplicate eventId within the same page — which a relay shouldn't
           // send, but we stay defensive — would otherwise be applied twice.
@@ -405,13 +441,17 @@ export function createRelaySync(
               [eventId],
             ).length === 0;
           if (!stillUnseen) continue;
-          if (payload.table in schema) {
+          if (!acceptableHlc) {
+            result.applyFailures += 1;
+          } else if (payload.table in schema) {
             try {
               if (applyRemoteRow(payload)) result.applied += 1;
               result.changed.add(payload.table);
             } catch {
               result.applyFailures += 1;
             }
+          } else {
+            store.deferRemoteEvent(eventId, JSON.stringify(payload));
           }
           driver.exec(
             `insert or ignore into "${SYNC_SEEN_TABLE}" (event_id) values (?)`,
@@ -739,5 +779,6 @@ export function createRelaySync(
     setTransports,
     relayBaseUrls,
     getRelayStatuses,
+    replayDeferred,
   };
 }

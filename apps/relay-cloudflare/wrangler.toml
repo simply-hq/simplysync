@@ -1,6 +1,6 @@
 name = "simplysync-relay"
 main = "src/index.ts"
-compatibility_date = "2025-05-01"
+compatibility_date = "2026-07-13"
 
 # Cron Trigger: compact the event log every 6 hours (drops superseded edits so
 # D1 stays small and per-owner quotas reflect current footprint).
@@ -13,7 +13,6 @@ crons = ["0 */6 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "simplysync-relay"
-database_id = "76cc5a2b-beea-425c-b3e9-ca1d1dae1709"
 migrations_dir = "migrations"
 
 # R2: encrypted, content-addressed blob chunks (cheap storage, free egress).
@@ -21,9 +20,9 @@ migrations_dir = "migrations"
 binding = "BLOBS"
 bucket_name = "simplysync-relay-blobs"
 
-# Workers Rate Limiting bindings (in-colo, in-memory — cheap defense-in-depth).
-# `period` may only be 10 or 60 seconds. These are the wallet guard *inside*
-# the Worker; the primary guard is the zone-level WAF rate-limit rule (README).
+# Workers Rate Limiting bindings (in-colo, in-memory — cheap protection for
+# both workers.dev and custom-domain deployments). `period` may only be 10 or
+# 60 seconds. Larger shared deployments can add an optional zone WAF rule.
 
 # General per-IP request budget across the whole API.
 [[unsafe.bindings]]

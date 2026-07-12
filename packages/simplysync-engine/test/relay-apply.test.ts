@@ -379,4 +379,84 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
       .get(rowId) as { id: string; title: string; isDeleted: number };
     expect(row).toEqual({ id: rowId, title: "Plain row", isDeleted: 0 });
   });
+
+  test("an unknown-table event is staged and replayed after schema upgrade", async () => {
+    const relay = createFakeRelay();
+    const db = new Database(":memory:");
+    const storage = memoryStorage();
+    const makeWithSchema = <S extends Parameters<ReturnType<typeof createSync>>[0]>(
+      nextSchema: S,
+      name: string,
+    ) =>
+      createSync({
+        createSqliteDriver: () => wrapDriver(db),
+        secureStorage: storage,
+        fetch: relay.fetchImpl,
+      })(nextSchema, {
+        name,
+        externalAppOwner: { id: "", mnemonic: MNEMONIC, writeKey: "" },
+        syncIntervalMs: 3_600_000,
+      });
+
+    const oldEngine = makeWithSchema(schema, "unknown-table-upgrade");
+    await oldEngine.ready;
+    const hlc = createHlc("device-remote", Date.now(), 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 2,
+      table: "task",
+      op: "upsert",
+      rowId: "task-1",
+      hlc,
+      value: {
+        title: "Arrived before this table existed",
+        createdAt: new Date().toISOString(),
+        updatedAt: hlc,
+        isDeleted: 0,
+      },
+    });
+    oldEngine.setTransports([{ type: "Http", url: RELAY_URL }]);
+    await settle(oldEngine as SyncEngine<typeof schema>);
+    expect(
+      db.prepare(`select count(*) as c from _sync_deferred`).get(),
+    ).toEqual({ c: 1 });
+    oldEngine.setTransports([]);
+
+    const upgradedSchema = {
+      ...schema,
+      task: { id: id("Task"), title: NonEmptyString },
+    };
+    const upgraded = makeWithSchema(upgradedSchema, "unknown-table-upgrade");
+    await upgraded.ready;
+    expect(
+      db.prepare(`select title from task where id = ?`).get("task-1"),
+    ).toEqual({ title: "Arrived before this table existed" });
+    expect(
+      db.prepare(`select count(*) as c from _sync_deferred`).get(),
+    ).toEqual({ c: 0 });
+  });
+
+  test("an absurd future HLC is rejected before last-write-wins apply", async () => {
+    const relay = createFakeRelay();
+    const { engine, db } = makeDevice(relay.fetchImpl, "future-hlc-apply");
+    await engine.ready;
+    const hlc = createHlc("device-remote", Date.now() + 10 * 60_000, 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId: "future-row",
+      hlc,
+      value: {
+        title: "must not win",
+        createdAt: new Date().toISOString(),
+        updatedAt: hlc,
+        isDeleted: 0,
+      },
+    });
+
+    await connect(engine);
+    expect(db.prepare(`select 1 from note where id = ?`).get("future-row")).toBeNull();
+    expect(isSeen(db, hlc)).toBe(true);
+    expect(engine.getSyncLog(5)[0]?.kind).toBe("applyFailed");
+  });
 });

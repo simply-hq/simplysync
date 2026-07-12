@@ -66,5 +66,8 @@ test-results/
 # Compiled relay-go binary (build artifact)
 apps/relay-go/simplysync-relay-go
 
-# Installed agent skills (reproducible from skills-lock.json)
-.agents/skills/
+# Installed agent skills (reproducible from skills-lock.json). Keep the
+# repo-owned relay-hosting skill available in fresh clones.
+.agents/skills/*
+!.agents/skills/host-relay/
+!.agents/skills/host-relay/**

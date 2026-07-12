@@ -4,6 +4,10 @@
 export const SYNC_OUTBOX_TABLE = "_sync_outbox";
 export const SYNC_META_TABLE = "_sync_meta";
 export const SYNC_SEEN_TABLE = "_sync_seen";
+// Decrypted events for tables that this app version does not know yet. The
+// relay cursor can advance while the payload remains durable for replay after
+// an additive schema upgrade.
+export const SYNC_DEFERRED_TABLE = "_sync_deferred";
 // Device-local diagnostics: a bounded ring buffer of recent sync attempts so a
 // consumer can show *why* and *when* sync failed (never synced to the relay).
 export const SYNC_LOG_TABLE = "_sync_log";

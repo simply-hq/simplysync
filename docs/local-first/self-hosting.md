@@ -1,224 +1,140 @@
-# Self-Hosting a Sync Server
+# Self-Hosting a Sync Relay
 
-You don't have to rely on the bundled sync server. Because every byte is
-**end-to-end encrypted on your device before it's uploaded**, the server only
-ever holds ciphertext plus an owner id and an auth hash — it can never read your
-finances. That makes it safe to run your own.
+You can run a Simply Finance sync relay in your own Cloudflare account without
+using a terminal or knowing how to manage a server. The relay gets a public
+`workers.dev` URL that works from anywhere.
 
-This guide covers running the [`relay-go`](../../apps/relay-go) server (a single
-static binary, ~10 MB, low memory) and pointing the app at it.
+Your relay URL does not need to be secret. Simply Finance encrypts every sync
+event on your device before uploading it, and the relay never receives the key
+that can decrypt your finances. Each owner is also protected by a private write
+capability derived from the recovery phrase.
 
-> **The app needs no changes.** Add your server's URL under
-> **Settings → Sync Servers → Add Sync Server**, and the app starts syncing to
-> it. You can run it *alongside* the default server or *replace* it.
+The built-in relay is the managed default and is intended for ongoing use, not
+just testing. Simply Finance plans to keep it available for as long as capacity
+allows, but it may be retired later if demand grows beyond what can be
+sustainably provided. Hosting your own relay gives you an independent sync
+path.
 
----
+## Easiest setup: ask an AI agent
 
-## TL;DR — the 5-minute path
+Open this SimplySync repository in ChatGPT/Codex or Claude Code and say:
 
-If you just want it running and don't care yet about the trade-offs:
-
-```bash
-# 1. From the repo root, start the relay (data persists in a Docker volume).
-ADMIN_TOKEN=$(openssl rand -hex 16) docker compose -f apps/relay-go/docker-compose.yml up -d
-
-# 2. Confirm it's healthy.
-curl http://localhost:4100/health        # -> {"ok":true}
+```text
+Host my own SimplySync relay.
 ```
 
-Then in the app: **Settings → Sync Servers → Add Sync Server** and enter your
-relay's address:
+The repository includes the same `host-relay` skill for both agents. It checks
+and installs local tooling, opens Cloudflare signup or OAuth when needed,
+creates D1 and R2, applies migrations, deploys the relay, verifies `/health`,
+and returns the URL to paste into Simply Finance.
 
-| Where the relay runs | Address to enter |
+The agent pauses only when Cloudflare requires you to enter a password, MFA,
+CAPTCHA, billing details, or accept terms. Enter those details directly in the
+Cloudflare page; never paste them into the chat.
+
+You can also invoke it directly with `Use $host-relay to host my own SimplySync
+relay.`
+
+## Alternative: deploy in your browser
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simply-hq/simplysync/tree/main/apps/relay-cloudflare)
+
+1. Select **Deploy to Cloudflare** above.
+2. Sign in to Cloudflare. Connect GitHub or GitLab if Cloudflare asks where to
+   create your copy of the relay.
+3. Keep the suggested names and select **Deploy**.
+4. Wait for Cloudflare to finish. It creates the relay, encrypted-event
+   database, and encrypted-blob storage automatically.
+5. Copy the address ending in `.workers.dev`.
+6. In Simply Finance, open **Settings → Sync Relays**, add that address, and
+   leave the mode on **Built-in + custom** while verifying the new relay.
+
+That is the complete setup. You do not need a domain, VPS, Docker, port
+forwarding, private networking, or a TLS certificate. Cloudflare provides HTTPS
+for the public relay address.
+
+## Check that it works
+
+1. Open the relay address in a browser with `/health` added to the end.
+2. Confirm the page shows `"ok": true`.
+3. Add or edit something in Simply Finance and wait for the relay status to
+   become healthy.
+4. Restore the same recovery phrase on a second device and confirm the change
+   appears there.
+5. After verification, keep **Built-in + custom** for redundancy or choose
+   **Custom only** if you prefer to stop using the built-in relay.
+
+## What Cloudflare creates
+
+| Resource | Purpose |
 | --- | --- |
-| Same Wi-Fi as your phone | `ws://<its-LAN-IP>:4100` (won't sync on cellular) |
-| Reachable over Tailscale *(recommended)* | `ws://<box>.<tailnet>.ts.net:4100` |
-| Behind a domain with TLS (Caddy/Cloudflare) | `wss://relay.example.com` |
+| Worker | Receives authenticated sync requests at your public relay URL. |
+| D1 database | Stores encrypted events and small routing metadata. |
+| R2 bucket | Stores encrypted attachment chunks. |
 
-That's it — your phone starts syncing to your own server, which only ever sees
-ciphertext. **Want it to sync anywhere without exposing a port?** Read Path 2
-(Tailscale) below — it's the recommended setup and takes ~20 minutes.
+The default relay includes per-IP and per-owner rate limits, request-size caps,
+an owner-count cap, and per-owner storage quotas. A personal deployment can use
+its generated `workers.dev` address directly. Custom domains and additional WAF
+rules are optional controls for larger shared deployments, not setup
+requirements.
 
----
+## Basic maintenance
 
-## Which path should I pick?
+- Keep the Cloudflare account accessible and enable usage notifications if you
+  want alerts.
+- Cloudflare runs log compaction automatically every six hours.
+- If the relay is unavailable, Simply Finance keeps working locally and resumes
+  sync when it returns.
+- Removing a custom relay from the app does not delete your local finance data.
 
-| Path | Syncs on cellular? | TLS setup | Effort | Best for |
-| --- | --- | --- | --- | --- |
-| **VPS + Caddy** | ✅ | automatic | ~30 min | Always-on, public domain |
-| **Home box + Tailscale** | ✅ | not needed¹ | ~20 min | Privacy, no public exposure |
-| **Home box + Cloudflare Tunnel** | ✅ | automatic | ~20 min | No open ports, free TLS |
-| **LAN-only** | ❌ (home Wi-Fi only) | none | ~10 min | Trying it out |
+For implementation details and advanced controls, see the
+[`relay-cloudflare` README](../../apps/relay-cloudflare/README.md).
 
-¹ Tailscale encrypts all traffic itself, so plain `ws://` over the tailnet is
-already private.
+## Advanced: host the Go relay on your own machine
 
-**Recommended:** a home box (or a $5/mo VPS) reached over **Tailscale**. It syncs
-anywhere — including cellular — with no port-forwarding, no public exposure, and
-no certificate to manage.
-
-> ⚠️ **Pure LAN-only has a catch:** your phone only syncs while it's on the same
-> Wi-Fi. The moment it's on cellular, it goes stale until it's home again. Use it
-> to try things out, then upgrade to Tailscale/Caddy for sync-anywhere.
-
----
-
-## Run the server (Docker — recommended)
-
-From the repo root:
+This route is for people who already manage a VPS, NAS, or server. It is not
+required for ordinary self-hosting.
 
 ```bash
-# Build and start in the background.
-ADMIN_TOKEN=$(openssl rand -hex 16) docker compose -f apps/relay-go/docker-compose.yml up -d
-
-# Confirm it's healthy.
-curl http://localhost:4100/health        # -> {"ok":true}
-
-# Find the secret ops-dashboard path (only printed when ADMIN_TOKEN is set).
-docker compose -f apps/relay-go/docker-compose.yml logs | grep "Ops dashboard"
+git clone https://github.com/simply-hq/simplysync.git
+cd simplysync
+./scripts/self-host-relay.sh
 ```
 
-Data persists in the `relay-data` named volume (all SQLite WAL files live under
-`/data`). `docker compose down` stops the server without deleting data.
+The starter builds the Go relay, runs it with persistent Docker storage, and
+checks `http://localhost:4100/health`. Before adding it to a phone, expose it at
+a normal public `https://` address with a reverse proxy such as Caddy:
 
-### Without Docker
+```caddyfile
+relay.example.com {
+    reverse_proxy 127.0.0.1:4100
+}
+```
 
-The server is a single static binary — see
-[`apps/relay-go/README.md`](../../apps/relay-go/README.md) for `make build-linux`
-+ systemd instructions. Everything below (TLS, Tailscale, Cloudflare) applies the
-same way.
+Then add `https://relay.example.com` under **Settings → Sync Relays**. See the
+[`relay-go` deployment guide](../../apps/relay-go/deploy/DEPLOY.md) for backups,
+systemd, and production operations.
 
----
+## Moving existing data to your relay
 
-## Path 1 — VPS + Caddy (public domain, auto-TLS)
+Your data, identity, and encryption keys derive from your recovery phrase; they
+are not tied to a particular relay.
 
-On a small VPS with a domain pointed at it:
+1. Add the new relay while using **Built-in + custom** mode.
+2. The next sync backfills your encrypted history to it.
+3. Confirm sync and restore on another device.
+4. Optionally switch to **Custom only**.
 
-1. Run the server (Docker, as above) listening on `127.0.0.1:4100`.
-2. Put [Caddy](https://caddyserver.com) in front for automatic Let's Encrypt TLS:
+## Security model
 
-   ```caddyfile
-   # /etc/caddy/Caddyfile
-   relay.example.com {
-       reverse_proxy 127.0.0.1:4100
-   }
-   ```
+The relay stores only:
 
-3. In the app: **Add Sync Server → `wss://relay.example.com`**.
+- encrypted event ciphertext,
+- a pseudonymous owner id,
+- a hash of the owner's write capability, and
+- encrypted attachment chunks.
 
-`wss://` (TLS) means it syncs from anywhere, including cellular.
-
----
-
-## Path 2 — Home box + Tailscale (recommended)
-
-Run the server on any always-on machine at home (NAS, mini-PC, Raspberry Pi):
-
-1. Install [Tailscale](https://tailscale.com) on the box and on your phone, both
-   signed into the same account: `tailscale up`.
-2. Run the server (Docker, as above).
-3. Find the box's tailnet address — either its `100.x.y.z` IP or its MagicDNS
-   name (`tailscale status`).
-4. In the app: **Add Sync Server → `ws://home-box.your-tailnet.ts.net:4100`**
-   (plain `ws://` is fine — Tailscale already encrypts the link).
-
-Now your phone syncs to home over the encrypted tailnet from anywhere, with no
-ports exposed to the public internet and no certificates to manage.
-
----
-
-## Path 3 — Home box + Cloudflare Tunnel (no open ports)
-
-If you have a Cloudflare-managed domain and don't want to open any ports:
-
-1. Run the server (Docker, as above) on `127.0.0.1:4100`.
-2. Install `cloudflared` and create a tunnel mapping a hostname to the relay:
-
-   ```bash
-   cloudflared tunnel create simplysync-relay
-   cloudflared tunnel route dns simplysync-relay relay.example.com
-   # ingress: relay.example.com -> http://localhost:4100
-   cloudflared tunnel run simplysync-relay
-   ```
-
-3. In the app: **Add Sync Server → `wss://relay.example.com`**.
-
-Cloudflare provides TLS at the edge and the box needs no inbound ports.
-
----
-
-## Path 4 — LAN-only (simplest, home Wi-Fi only)
-
-For a quick local trial:
-
-1. Run the server on a machine on your Wi-Fi and note its LAN IP (e.g.
-   `192.168.1.50`).
-2. In the app: **Add Sync Server → `ws://192.168.1.50:4100`**.
-
-Both devices must be on the same network. **This will not sync over cellular.**
-When you're ready to sync anywhere, layer Tailscale on top (Path 2) — the server
-doesn't change, only the address you point the app at.
-
-> 💡 **Auto-discovery:** set `MDNS_ENABLE=1` and use host networking
-> (uncomment the lines in `docker-compose.yml`) and the app can find the server
-> on your LAN automatically — no typing IP addresses. See the discovery section
-> in the app's Add Sync Server screen.
-
----
-
-## Peer-to-peer on your LAN (no cloud)
-
-You don't need a cloud server at all. Because the sync protocol is just HTTP and
-every relay is a dumb encrypted-event store, the supported "device-to-device"
-setup is:
-
-1. Run `relay-go` on **any always-on machine on your home network** — a laptop,
-   a mini-PC, a NAS, a Raspberry Pi, even a spare phone via Termux.
-2. Start it with `MDNS_ENABLE=1` (and host networking, if using Docker) so it
-   advertises itself on the LAN.
-3. On each device: **Add Sync Server**, and it appears automatically under
-   "Found on your network" — one tap to add, no IP typing.
-
-All your devices then sync to each other through that box, fully offline, with
-the relay never seeing plaintext. Add Tailscale to the same box (Path 2) and it
-keeps working when you leave the house.
-
-> **Fully serverless, in-app peer sync (running the relay *inside* the app, with
-> no separate machine at all) is on the roadmap but not yet shipped.** It needs
-> an embedded HTTP server in the app and is constrained by iOS background
-> suspension (it could only sync while both apps are foregrounded). The
-> LAN-relay approach above is the supported peer-to-peer path today and is more
-> reliable. See the "True P2P" notes in the design plan for the embedded-relay
-> design if you want to pursue it.
-
-## Moving your data to your own server
-
-Your data, identity, and encryption keys all derive from your **recovery phrase**
-— they're not tied to any particular server. To migrate:
-
-1. Stand up your server (any path above) and add it in the app.
-2. The app pushes your existing encrypted history to the new server on the next
-   sync. Nothing is lost; the server just receives the same encrypted events.
-3. (Optional) Once you've confirmed it's syncing, you can **Replace** the default
-   server so the app talks only to yours.
-
-To move to a *new device* entirely — or as a disaster-recovery backup that
-doesn't depend on any server being alive — use **Settings → Encrypted Backup**,
-which writes a single passphrase-protected file containing your data *and* keys.
-Restoring it adopts your identity and re-imports everything.
-
----
-
-## Threat model (unchanged when self-hosting)
-
-The server stores only:
-
-- the **ciphertext** of each event (AES-GCM, encrypted with a key derived from
-  your recovery phrase — the server never has it),
-- your **owner id** (a random 16-byte id, not derivable back to the phrase),
-- a **hash** of your write token (for trust-on-first-use auth).
-
-A malicious or compromised server can refuse to sync or drop events, but it
-**cannot read or forge your data**. Running your own server simply means *you*
-are the one who can't read it either — it's just encrypted storage you control.
-See [Sync & the relay](./sync.md) for the full cryptographic design.
+A malicious or compromised relay can refuse to sync or delete stored events,
+but it cannot read or forge your financial data. Keep an encrypted backup for
+disaster recovery. See [Sync & the relay](./sync.md) and the
+[security model](../../SECURITY.md) for the protocol details.

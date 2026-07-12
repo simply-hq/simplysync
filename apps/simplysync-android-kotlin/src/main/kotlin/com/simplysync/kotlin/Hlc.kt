@@ -84,11 +84,12 @@ class HlcClock(private val deviceId: String, private val nowMillis: () -> Long =
 
     fun seed(millis: Long, counter: Int) = synchronized(lock) { raise(millis, counter) }
 
-    fun observe(hlc: String) {
-        val parsed = Hlc.parse(hlc) ?: return
+    fun observe(hlc: String): Boolean {
+        val parsed = Hlc.parse(hlc) ?: return false
         // Absurd future drift is treated like a malformed value (see above).
-        if (parsed.first > nowMillis() + MAX_DRIFT_MS) return
+        if (parsed.first > nowMillis() + MAX_DRIFT_MS) return false
         synchronized(lock) { raise(parsed.first, parsed.second) }
+        return true
     }
 
     fun highWater(): Pair<Long, Int> = synchronized(lock) { lastMillis to counter }

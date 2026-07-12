@@ -281,7 +281,19 @@ describe("purge drain (relay stream compaction)", () => {
     }
     expect(engine.getPendingOutboxCount()).toBe(0);
 
-    engine.purgeDeleted({ olderThanMs: 0 });
+    // Public engine API deliberately retains synced tombstones until the
+    // protocol has a durable cross-device deletion watermark.
+    expect(engine.purgeDeleted({ olderThanMs: 0 }).purged).toBe(0);
+    expect(rowCount(handle.db)).toBe(1);
+
+    // Still drain a queue created by an older app version, so upgrades do not
+    // strand already-requested compactions.
+    handle.db.prepare(`delete from todo where id = ?`).run(a.value.id);
+    handle.db
+      .prepare(
+        `insert into "${SYNC_PURGE_TABLE}" (table_name, row_id) values (?, ?)`,
+      )
+      .run("todo", a.value.id);
     // First sync after the purge: relay-a acks, relay-b's compact fails once —
     // the queue entry must survive with only relay-a recorded.
     for (let i = 0; i < 40 && compacted.a.length === 0; i++) {

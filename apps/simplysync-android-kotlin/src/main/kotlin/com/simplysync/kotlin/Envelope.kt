@@ -100,6 +100,11 @@ object Envelope {
         return parsePayload(plaintext)
     }
 
+    fun encodePayload(payload: SyncPayload): String = payloadObject(payload).canonical()
+
+    fun decodePayload(payloadJson: String): SyncPayload =
+        parsePayload(payloadJson.toByteArray(Charsets.UTF_8))
+
     private fun headerObject(
         version: Int, ownerId: String, eventId: String,
         deviceId: String, createdAt: String, streamId: String?,

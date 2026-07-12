@@ -334,6 +334,7 @@ export function createLifecycle(
       await loadIdentity();
       state.driver = sqlite;
       store.ensureSchema();
+      relay.replayDeferred();
       state.schemaReady = true;
       // Seed the HLC clock from its persisted high-water mark so it stays
       // monotonic across restarts (see createClock).

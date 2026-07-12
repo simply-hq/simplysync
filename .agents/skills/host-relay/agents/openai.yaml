@@ -1,0 +1,4 @@
+interface:
+  display_name: "Host SimplySync Relay"
+  short_description: "Deploy a personal encrypted relay on Cloudflare"
+  default_prompt: "Use $host-relay to host my own SimplySync relay."

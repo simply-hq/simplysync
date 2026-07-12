@@ -7,6 +7,7 @@ import Foundation
 final class Store {
     static let outboxTable = "_sync_outbox"
     static let seenTable = "_sync_seen"
+    static let deferredTable = "_sync_deferred"
     static let metaTable = "_sync_meta"
 
     private let schema: Schema
@@ -53,6 +54,7 @@ final class Store {
         }
         try driver.exec("create table if not exists \"\(Self.outboxTable)\" (event_id text primary key, envelope_json text not null, pushed_at text);")
         try driver.exec("create table if not exists \"\(Self.seenTable)\" (event_id text primary key);")
+        try driver.exec("create table if not exists \"\(Self.deferredTable)\" (event_id text primary key, payload_json text not null);")
         try driver.exec("create table if not exists \"\(Self.metaTable)\" (key text primary key, value text not null);")
     }
 
@@ -67,6 +69,27 @@ final class Store {
         try? driver?.exec(
             "insert into \"\(Self.metaTable)\" (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
             [.text(key), .text(value)])
+    }
+
+    func deferRemoteEvent(eventId: String, payloadJson: String) {
+        try? driver?.exec(
+            "insert or replace into \"\(Self.deferredTable)\" (event_id, payload_json) values (?, ?)",
+            [.text(eventId), .text(payloadJson)])
+    }
+
+    func deferredEvents() -> [(eventId: String, payloadJson: String)] {
+        guard let rows = try? driver?.select(
+            "select event_id, payload_json from \"\(Self.deferredTable)\" order by event_id asc") else { return [] }
+        return rows.compactMap { row in
+            guard case .text(let eventId)? = row["event_id"],
+                  case .text(let payloadJson)? = row["payload_json"] else { return nil }
+            return (eventId, payloadJson)
+        }
+    }
+
+    func dropDeferredEvent(_ eventId: String) {
+        try? driver?.exec(
+            "delete from \"\(Self.deferredTable)\" where event_id = ?", [.text(eventId)])
     }
 
     /// Bound the outbox (a send queue, not an archive; parity with the TS/Kotlin
@@ -127,6 +150,7 @@ final class Store {
         for table in schema.tableNames { try? driver.exec("delete from \"\(table)\"") }
         try? driver.exec("delete from \"\(Self.outboxTable)\"")
         try? driver.exec("delete from \"\(Self.seenTable)\"")
+        try? driver.exec("delete from \"\(Self.deferredTable)\"")
         try? driver.exec("delete from \"\(Self.metaTable)\"")
     }
 
@@ -235,18 +259,20 @@ final class Clock {
         return HLC.make(deviceId: deviceId, millis: nextTime, counter: nextCounter)
     }
 
-    func observe(_ remote: String) {
+    @discardableResult
+    func observe(_ remote: String) -> Bool {
         let parts = remote.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count >= 3, parts[0].count == 10,
-              let millis = Int64(parts[0], radix: 36) else { return }
+              let millis = Int64(parts[0], radix: 36) else { return false }
         // Absurd future drift is treated like a malformed value (see class doc).
         let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if millis > now + Self.maxDriftMillis { return }
+        if millis > now + Self.maxDriftMillis { return false }
         let c = Int(parts[1], radix: 36) ?? 0
         lock.lock(); defer { lock.unlock() }
         if millis > time { time = millis; counter = c }
         else if millis == time && c > counter { counter = c }
-        else { return }
+        else { return true }
         persist()
+        return true
     }
 }

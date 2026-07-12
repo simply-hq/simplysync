@@ -9,12 +9,24 @@
  *   - Events + owner metadata  -> D1   (small rows, keyset-paginated)
  *   - Encrypted blob chunks    -> R2   (cheap storage, *free* egress, cached)
  *
- * Because Workers / D1 / R2 are billed per use, this relay is built so a
- * stranger who knows the URL cannot run up the bill ("wallet DDoS"). See the
+ * Because Workers / D1 / R2 can be billed per use, this relay bounds public
+ * URL abuse with early rejection, rate limits, and storage caps. See the
  * defense ordering in `fetch()` and the layered design in README.md.
  */
 
-import type { SyncEnvelope } from "@simplysync/protocol";
+// Kept local so this Worker can be deployed directly from its repository
+// subdirectory without installing the rest of the SimplySync monorepo. The
+// conformance suite verifies this shape against @simplysync/protocol.
+interface SyncEnvelope {
+  readonly version: 1;
+  readonly ownerId: string;
+  readonly eventId: string;
+  readonly deviceId: string;
+  readonly nonce: string;
+  readonly ciphertext: string;
+  readonly createdAt: string;
+  readonly streamId?: string;
+}
 
 interface RateLimiter {
   limit(input: { key: string }): Promise<{ success: boolean }>;
@@ -68,8 +80,8 @@ export default {
     const cfg = readConfig(env);
 
     // --- Layer 2: per-IP edge-of-Worker rate limit (in-colo, ~free). ---------
-    // The zone-level WAF rate-limit rule (README) sheds floods *before* the
-    // Worker is billed at all; this is defense-in-depth for what slips past it.
+    // These in-Worker limits protect the default workers.dev deployment. A
+    // custom-domain WAF rule can shed larger floods before Worker execution.
     const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
     if (!(await env.API_LIMITER.limit({ key: ip })).success) {
       return json({ error: "Rate limited" }, 429);

@@ -100,6 +100,7 @@ final class SyncEngine: ObservableObject {
                 cache.schemaReady = true
                 schemaReady = true
                 clock?.seedFromMeta()
+                replayDeferred()
                 cache.refreshAll()
             }
             if !transports.isEmpty {
@@ -381,8 +382,9 @@ final class SyncEngine: ObservableObject {
     @discardableResult
     func purgeDeleted(olderThanMs: Int64 = 30 * 24 * 60 * 60 * 1000) -> Int {
         lock.withLock {
+            if !transports.isEmpty { return 0 }
             let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
-            return store.purgeDeleted(olderThanMs: olderThanMs, nowMs: nowMs, requirePushed: !transports.isEmpty)
+            return store.purgeDeleted(olderThanMs: olderThanMs, nowMs: nowMs, requirePushed: false)
         }
     }
 
@@ -580,16 +582,39 @@ final class SyncEngine: ObservableObject {
                     "select 1 from \"\(Store.seenTable)\" where event_id = ?", [.text(envelope.eventId)])) ?? []
                 if !seen.isEmpty { continue }
                 guard let payload = try? Envelope.decrypt(identity: identity, envelope: envelope) else { continue }
-                clock?.observe(payload.hlc)
-                if schema.has(payload.table) {
+                let acceptableHlc = clock?.observe(payload.hlc) ?? false
+                if !acceptableHlc {
+                    // Terminal quarantine: never let absurd future timestamps
+                    // participate in last-write-wins row application.
+                } else if schema.has(payload.table) {
                     applyRemoteRow(payload)
                     changed.insert(payload.table)
+                } else {
+                    store.deferRemoteEvent(
+                        eventId: envelope.eventId,
+                        payloadJson: Envelope.encodePayload(payload))
                 }
                 try? store.driver?.exec(
                     "insert or ignore into \"\(Store.seenTable)\" (event_id) values (?)", [.text(envelope.eventId)])
             }
             store.setMeta(cursorKey, result.nextCursor)
             return changed
+        }
+    }
+
+    private func replayDeferred() {
+        for item in store.deferredEvents() {
+            guard let payload = try? Envelope.decodePayload(item.payloadJson) else {
+                store.dropDeferredEvent(item.eventId)
+                continue
+            }
+            guard schema.has(payload.table) else { continue }
+            guard clock?.observe(payload.hlc) ?? false else {
+                store.dropDeferredEvent(item.eventId)
+                continue
+            }
+            applyRemoteRow(payload)
+            store.dropDeferredEvent(item.eventId)
         }
     }
 

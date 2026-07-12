@@ -6,17 +6,25 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy:worker": "wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply simplysync-relay --local",
     "migrate:remote": "wrangler d1 migrations apply simplysync-relay --remote",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@simplysync/protocol": "workspace:*"
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "Stores encrypted relay events and owner metadata. The relay never receives your finance encryption key."
+      },
+      "BLOBS": {
+        "description": "Stores encrypted attachment chunks. Contents are unreadable without the recovery phrase held on your devices."
+      }
+    }
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260605.1",
+    "@cloudflare/workers-types": "5.20260712.1",
     "typescript": "~5.9.2",
-    "wrangler": "4.98.0"
+    "wrangler": "4.110.0"
   }
 }

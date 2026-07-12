@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// One-shot setup for the Cloudflare relay. Run it after `wrangler login`:
+// One-shot setup for the Cloudflare relay:
 //
 //   npm run setup      (or: bun run setup)
 //
-// It creates the D1 database and R2 bucket, wires the database id into
-// wrangler.toml, applies the schema, and deploys the Worker. Safe to re-run:
-// existing resources are reused, not duplicated.
+// It signs in when needed, creates the D1 database and R2 bucket, wires the
+// database id into wrangler.toml, applies the schema, and deploys the Worker.
+// Safe to re-run: existing resources are reused, not duplicated.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -27,16 +27,21 @@ const wranglerOut = (args) =>
 const step = (msg) => console.log(`\n\x1b[1m▸ ${msg}\x1b[0m`);
 const ok = (msg) => console.log(`  \x1b[32m✓\x1b[0m ${msg}`);
 
-// 0. Must be logged in.
+// 0. Sign in when needed.
 step("Checking you are signed in to Cloudflare…");
 try {
   wranglerOut(["whoami"]);
   ok("Signed in.");
 } catch {
-  console.error(
-    "\nYou are not signed in yet. Run this first, then try again:\n\n  npx wrangler login\n",
-  );
-  process.exit(1);
+  step("Opening Cloudflare sign-in…");
+  try {
+    wrangler(["login"]);
+    wranglerOut(["whoami"]);
+    ok("Signed in.");
+  } catch {
+    console.error("\nCloudflare sign-in did not complete. No resources were created.\n");
+    process.exit(1);
+  }
 }
 
 // 1. Create the D1 database (idempotent).
@@ -49,7 +54,7 @@ try {
 }
 
 // 2. Wire its id into wrangler.toml.
-step("Connecting the database to your sync server…");
+step("Connecting the database to your sync relay…");
 const list = JSON.parse(wranglerOut(["d1", "list", "--json"]));
 const db = list.find((d) => d.name === DB);
 if (!db || !db.uuid) {
@@ -57,7 +62,14 @@ if (!db || !db.uuid) {
   process.exit(1);
 }
 let cfg = readFileSync(TOML, "utf8");
-cfg = cfg.replace(/database_id = ".*"/, `database_id = "${db.uuid}"`);
+if (/database_id = ".*"/.test(cfg)) {
+  cfg = cfg.replace(/database_id = ".*"/, `database_id = "${db.uuid}"`);
+} else {
+  cfg = cfg.replace(
+    /(database_name = ".*"\n)/,
+    `$1database_id = "${db.uuid}"\n`,
+  );
+}
 writeFileSync(TOML, cfg);
 ok(`Linked database id ${db.uuid}.`);
 
@@ -76,14 +88,13 @@ wrangler(["d1", "migrations", "apply", DB, "--remote"]);
 ok("Tables ready.");
 
 // 5. Deploy.
-step("Deploying your sync server…");
+step("Deploying your sync relay…");
 wrangler(["deploy"]);
 
 console.log(
-  "\n\x1b[1m✅ Your sync server is live.\x1b[0m\n\n" +
+  "\n\x1b[1m✅ Your sync relay is live.\x1b[0m\n\n" +
     "Copy the https://… URL printed just above, then in Simply Finance open\n" +
-    "Settings › Sync Servers and paste it in.\n\n" +
-    "One recommended follow-up: in the Cloudflare dashboard, turn on billing\n" +
-    "alerts and add a rate-limit rule so a stranger can never run up your bill.\n" +
-    "See the guide for the two-minute version.\n",
+    "Settings › Sync Relays and paste it in.\n\n" +
+    "The relay's safety limits are already enabled. Cloudflare usage\n" +
+    "notifications are an optional final step.\n",
 );

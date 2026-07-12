@@ -97,6 +97,7 @@ class SyncEngine(
                     store.getMeta("hlc:time")?.toLongOrNull() ?: 0,
                     store.getMeta("hlc:counter")?.toIntOrNull() ?: 0,
                 )
+                replayDeferred()
                 cache.refreshAll()
             }
             if (transports.isNotEmpty()) {
@@ -353,7 +354,10 @@ class SyncEngine(
      * and the relay retains tombstones so a re-sync re-applies them. Returns rows purged.
      */
     fun purgeDeleted(olderThanMs: Long = 30L * 24 * 60 * 60 * 1000): Int =
-        lock.withLock { store.purgeDeleted(olderThanMs, System.currentTimeMillis(), transports.isNotEmpty()) }
+        lock.withLock {
+            if (transports.isNotEmpty()) 0
+            else store.purgeDeleted(olderThanMs, System.currentTimeMillis(), false)
+        }
 
     /** Encrypt the change and append it to the outbox. Called under the lock. */
     private fun enqueue(table: String, rowId: String, hlc: String, value: Map<String, JsonValue>) {
@@ -517,10 +521,17 @@ class SyncEngine(
                 ) ?: emptyList()
                 if (seen.isNotEmpty()) continue
                 val payload = runCatching { Envelope.decrypt(identity, envelope) }.getOrNull() ?: continue
-                observeHlc(payload.hlc)
-                if (schema.has(payload.table)) {
+                val acceptableHlc = observeHlc(payload.hlc)
+                if (!acceptableHlc) {
+                    // Terminal quarantine: never apply absurd future HLCs.
+                } else if (schema.has(payload.table)) {
                     applyRemoteRow(payload)
                     changed += payload.table
+                } else {
+                    store.deferRemoteEvent(
+                        envelope.eventId,
+                        Envelope.encodePayload(payload),
+                    )
                 }
                 store.driver?.exec(
                     "insert or ignore into \"${Store.SEEN}\" (event_id) values (?)", listOf(SqliteValue.Text(envelope.eventId)),
@@ -528,6 +539,23 @@ class SyncEngine(
             }
             store.setMeta(cursorKey, result.nextCursor)
             changed
+        }
+    }
+
+    private fun replayDeferred() {
+        for ((eventId, payloadJson) in store.deferredEvents()) {
+            val payload = runCatching { Envelope.decodePayload(payloadJson) }.getOrNull()
+            if (payload == null) {
+                store.dropDeferredEvent(eventId)
+                continue
+            }
+            if (!schema.has(payload.table)) continue
+            if (!observeHlc(payload.hlc)) {
+                store.dropDeferredEvent(eventId)
+                continue
+            }
+            applyRemoteRow(payload)
+            store.dropDeferredEvent(eventId)
         }
     }
 
@@ -678,9 +706,10 @@ class SyncEngine(
         return hlc
     }
 
-    private fun observeHlc(remote: String) {
-        clock?.observe(remote)
+    private fun observeHlc(remote: String): Boolean {
+        val accepted = clock?.observe(remote) ?: false
         persistClock()
+        return accepted
     }
 
     private fun persistClock() {

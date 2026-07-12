@@ -214,6 +214,10 @@ export const createSync =
         return relay.getRelayStatuses();
       },
       purgeDeleted(options) {
+        // Retain synced tombstones until the protocol has a durable,
+        // cross-device delete watermark. Hard-deleting/compacting them today
+        // lets a long-offline device resurrect stale data.
+        if (state.transports.length > 0) return { purged: 0 };
         const olderThanMs = options?.olderThanMs ?? THIRTY_DAYS_MS;
         const purged = store.purgeDeleted(olderThanMs, Date.now());
         // Nudge the relay-side stream compaction along without waiting for the
@@ -222,6 +226,7 @@ export const createSync =
         return { purged };
       },
       purgeRows(rows) {
+        if (state.transports.length > 0) return { purged: 0 };
         const purged = store.purgeRows(rows);
         if (purged > 0) void relay.sync();
         return { purged };

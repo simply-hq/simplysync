@@ -1,10 +1,42 @@
 # SimplySync Cloudflare relay
 
 A serverless deployment of the local-first sync relay on **Cloudflare Workers +
-D1 + R2**. It is wire-compatible with the Bun reference relay
+D1 + R2**. It is wire-compatible with the canonical Go relay
 (`apps/relay-go`): same endpoints, same request/response shapes, same
 end-to-end-encrypted threat model. Point the app's relay URL at your Worker and
 nothing else changes.
+
+## Ask an AI agent (recommended)
+
+With this repository open in ChatGPT/Codex or Claude Code, say:
+
+```text
+Host my own SimplySync relay.
+```
+
+The repo-owned skill performs setup, Cloudflare authentication, provisioning,
+migrations, deployment, and health verification. It hands the browser to you
+only for credentials, MFA, CAPTCHA, payment details, or required acceptance.
+Use `Use $host-relay to host my own SimplySync relay.` if you want to invoke the
+skill explicitly.
+
+## Deploy in your browser (recommended)
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simply-hq/simplysync/tree/main/apps/relay-cloudflare)
+
+No terminal, domain, VPS, or networking setup is required:
+
+1. Select **Deploy to Cloudflare**.
+2. Sign in to Cloudflare and connect GitHub or GitLab when prompted.
+3. Keep the suggested names and select **Deploy**. Cloudflare creates the
+   Worker, D1 database, and R2 bucket and applies the database migrations.
+4. Copy the resulting `https://…workers.dev` URL.
+5. In Simply Finance, open **Settings → Sync Relays → Add Relay** and paste it.
+
+The `workers.dev` URL can stay public. Knowing it does not reveal your finances
+or let someone write to your owner: payloads are encrypted on-device and each
+owner is protected by a recovery-phrase-derived write capability. The relay
+also limits new owners, requests, writes, and stored bytes.
 
 | Concern | Where it lives | Why |
 | --- | --- | --- |
@@ -14,31 +46,24 @@ nothing else changes.
 
 ## Why this is designed against "wallet DDoS"
 
-Workers, D1, and R2 are billed per use, and Cloudflare has **no hard spend cap**
-on the Workers Paid plan. So the relay is built so a stranger who knows the URL
-can't run up the bill. Defenses are layered cheapest-first — each layer sheds
-load before the next, more expensive one runs:
+Workers, D1, and R2 can be billed per use, so the relay bounds what a stranger
+who knows its public URL can consume. Defenses are layered cheapest-first —
+each layer sheds load before the next, more expensive one runs:
 
 1. **Cloudflare managed DDoS protection** (free, automatic, unmetered). L3/4/7
    volumetric attacks are dropped at the edge and Cloudflare does **not** bill
    you for traffic its managed rules mitigate. Nothing to configure.
 
-2. **Zone WAF rate-limit rule** (you must add this — see below). Runs *before*
-   the Worker, so requests it blocks are **not billed as Worker invocations**.
-   This is the primary wallet guard. Requires the Worker on a **custom domain /
-   zone** (not just `*.workers.dev`).
-
-3. **In-Worker rate-limit bindings** (`API_LIMITER`, `CREATE_LIMITER`,
+2. **In-Worker rate-limit bindings** (`API_LIMITER`, `CREATE_LIMITER`,
    `WRITE_LIMITER`). Per-IP, per-owner, and per-IP-owner-creation budgets.
-   In-colo and ~free; catch what slips past the WAF and give finer per-owner
-   control.
+   These protect the default `workers.dev` deployment without extra setup.
 
-4. **Cheap-path rejection ordering** (in `src/index.ts`). `/health`, CORS
+3. **Cheap-path rejection ordering** (in `src/index.ts`). `/health`, CORS
    pre-flight, bad methods, missing tokens, and oversized `Content-Length` are
    all rejected on **pure Worker CPU — zero D1 reads, zero R2 ops**. Only
    well-formed, authenticated, in-budget requests ever touch a metered store.
 
-5. **Hard quotas + caps**, so even authenticated abuse is bounded:
+4. **Hard quotas + caps**, so even authenticated abuse is bounded:
    - `MAX_OWNER_BYTES` — per-owner storage ceiling (events + blobs), charged
      precisely (duplicates cost nothing).
    - `MAX_OWNERS` — global fleet cap via a single counter row (no `count(*)`
@@ -47,14 +72,18 @@ load before the next, more expensive one runs:
      `MAX_STREAMS_PER_COMPACT` — per-request bounds.
    - `RELAY_DISABLED=true` — kill switch: writes return 503, reads still work.
 
-6. **Blob caching.** Blobs are encrypted + content-addressed, so a cache rule on
+5. **Optional custom-domain controls.** Larger or shared deployments can add a
+   zone-level WAF rule and blob cache in front of the Worker. A personal relay
+   does not need a custom domain to function safely.
+
+6. **Blob caching.** On a custom domain, blobs are encrypted + content-addressed, so a cache rule on
    `/v1/blobs/*` lets repeat reads serve from cache — no R2 Class-B op, no
    Worker compute — and R2 egress is free regardless.
 
 > The relay is **trust-on-first-use** per owner: the first request for an owner
 > id binds the hash of its relay-auth token; later requests must match. That
 > means one stranger can't write to *your* owner — but anyone can still create
-> *new* owners. That vector is what layers 2/3/5 bound (per-IP creation limit +
+> *new* owners. That vector is what layers 2/4 bound (per-IP creation limit +
 > global owner cap). If you ever want creation to cost the client real work,
 > add a hashcash proof-of-work header on the create path; the layout leaves room
 > for it without breaking existing clients.
@@ -69,37 +98,38 @@ footprint. Running it from the Cron-triggered Worker (next to D1 via its
 binding) is the correct way to maintain D1, not an external box reaching in over
 the HTTP API. Adjust the schedule in `wrangler.toml`.
 
-## One-time setup
+## Terminal setup (advanced)
 
 ```bash
-cd apps/relay-cloudflare
-bun install                      # or npm/pnpm
-
-# 1. Create the stores
-bunx wrangler d1 create simplysync-relay        # paste database_id into wrangler.toml
-bunx wrangler r2 bucket create simplysync-relay-blobs
-
-# 2. Apply the schema
-bun run migrate:remote                   # wrangler d1 migrations apply simplysync-relay --remote
-
-# 3. Deploy
-bun run deploy
+# From the repository root:
+bun install
+bun run relay:cloudflare:setup
 ```
 
-Then in the **Cloudflare dashboard** (the parts a Worker can't configure itself):
+The guided command opens Cloudflare sign-in when needed, creates or reuses the
+`simplysync-relay` D1 database and `simplysync-relay-blobs` R2 bucket, writes the D1 id into
+the local Wrangler config, applies migrations, deploys the Worker, and prints
+the relay URL. It is safe to rerun after pulling relay updates.
+
+To run the steps separately, use the scripts in this package:
+
+```bash
+bun run --cwd apps/relay-cloudflare migrate:remote
+bun run --cwd apps/relay-cloudflare deploy
+```
+
+For a larger shared deployment, you can optionally add:
 
 - **Custom domain.** Add a route like `sync.example.com/*` to the Worker
   so zone-level WAF + cache rules apply.
-- **WAF → Rate limiting rule** (the load-bearing wallet guard):
+- **WAF → Rate limiting rule**:
   - Match: `http.request.uri.path contains "/v1/"`
   - Counting: by `IP`
   - Threshold: e.g. **100 requests / 10s**, action **Block** for 60s.
   - Add a second, stricter rule for `POST /v1/events` if you expect mostly pulls.
 - **Caching → Cache rule** on `http.request.uri.path contains "/v1/blobs/"` with
   *Eligible for cache* + *Respect origin* TTL.
-- **Notifications**: enable **Workers / D1 / R2 usage** and **billing** alerts so
-  any cost spike pages you. (Cloudflare has no hard spend cap; alerts are how you
-  catch an attack that defeats the rate limits.)
+- **Notifications**: enable **Workers / D1 / R2 usage** and **billing** alerts.
 
 ## Local development
 
