@@ -11,10 +11,10 @@ import {
   type SyncPayload,
 } from "../src/index.ts";
 
-// A BIP39 recovery phrase and the owner identity it derives to via SLIP-21.
-// These vectors lock the derivation in place: if it ever drifts, an existing
-// user's phrase would no longer map to the same owner and they would silently
-// lose access to their data. Regenerate deliberately, never casually.
+// The public BIP39 zero-entropy test vector and the owner identity it derives
+// via SLIP-21. Never use this mnemonic for real data. These vectors lock the
+// derivation in place: if it ever drifts, an existing user's phrase would no
+// longer map to the same owner and they would silently lose access to data.
 const TEST_MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
 const EXPECTED_OWNER_ID = "ZFy7R58uNrdvMywuTD5eWA";
@@ -42,7 +42,9 @@ describe("recovery mnemonic detection", () => {
     expect(isRecoveryMnemonic("not a real recovery phrase at all")).toBe(false);
     expect(isRecoveryMnemonic("")).toBe(false);
     // A truncated phrase fails the BIP39 checksum.
-    expect(isRecoveryMnemonic("abandon abandon abandon abandon abandon abandon")).toBe(
+    expect(
+      isRecoveryMnemonic("abandon abandon abandon abandon abandon abandon"),
+    ).toBe(
       false,
     );
   });

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-12T22:39:34.278Z",
+  "updatedAt": "2026-07-13T14:48:31.625Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -84,7 +84,7 @@
         "SyncEngine.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "261f4d909af023f55d4f00929f5232705a2834604e78a1ee87f1564f758025d7",
+      "sha256": "5617e064e7492c6e45e8cfe66a75c64f797ff186a73977aae28e8a1dc8aa833c",
       "fileCount": 8
     },
     {
@@ -104,6 +104,7 @@
       "path": "app/src/main/java/app/simplyfinance/core",
       "files": [
         "Backup.kt",
+        "DataPortability.kt",
         "Db.kt",
         "FinanceStore.kt",
         "Records.kt",
@@ -112,8 +113,8 @@
         "SyncEngine.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "a040cd3eb86bd763cdad24006b47e9a344f2028bf20b1e3dd2962962c9cee32c",
-      "fileCount": 7
+      "sha256": "8a8d0cee9c8b9d3fe4067a2c34bfa5d53fb26a88b1d0ef4cecdb46f8cc23fb13",
+      "fileCount": 8
     }
   ]
 }

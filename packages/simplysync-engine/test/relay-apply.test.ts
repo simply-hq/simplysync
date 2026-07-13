@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
+  createMnemonic,
   createHlc,
   deriveIdentity,
   encryptPayload,
@@ -29,11 +30,9 @@ import {
   type Transport,
 } from "../src/index";
 
-// A fixed, valid BIP39 mnemonic so every "device" in a test derives the same
-// identity (ownerId + encryption keys) without round-tripping through the
-// engine's own random mnemonic generation.
-const MNEMONIC =
-  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+// Generate one ephemeral identity per test process so every simulated device
+// shares the same owner without checking a usable recovery phrase into source.
+const MNEMONIC = createMnemonic();
 
 const RELAY_URL = "http://relay.test";
 

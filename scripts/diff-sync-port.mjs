@@ -12,7 +12,7 @@ const repoRoot = resolve(scriptDir, "..");
 
 const roots = {
   simplysync: repoRoot,
-  iosApp: resolve(process.env.SIMPLYFINANCE_IOS_ROOT ?? join(repoRoot, "..", "simplyfinance")),
+  iosApp: resolve(process.env.SIMPLYFINANCE_IOS_ROOT ?? join(repoRoot, "..", "ios-simplyfinance")),
   androidApp: resolve(process.env.SIMPLYFINANCE_ANDROID_ROOT ?? join(repoRoot, "..", "android-simplyfinance")),
 };
 

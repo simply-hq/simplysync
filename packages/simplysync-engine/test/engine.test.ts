@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 
-import { createHlc, compareHlc } from "@simplysync/protocol";
+import { createHlc, compareHlc, createMnemonic } from "@simplysync/protocol";
 
 import {
   createSync,
@@ -319,8 +319,7 @@ describe("engine", () => {
     await engine.ready;
     engine.insert("account", { name: "Keep me" });
 
-    const validMnemonic =
-      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+    const validMnemonic = createMnemonic();
     await expect(
       engine.restoreAppOwner(validMnemonic),
     ).rejects.toThrow(/No backup found/);
