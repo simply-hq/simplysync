@@ -1,5 +1,5 @@
 {
-  "name": "tombstones-and-purge",
+  "name": "tombstones-and-retention",
   "devices": {
     "A": { "platform": "$P1" },
     "B": { "platform": "$P2" },
@@ -17,15 +17,15 @@
     { "do": "sync", "device": "B", "relay": "r1" },
     { "assert": "row", "device": "B", "table": "account", "rowId": "acct-1", "expect": { "isDeleted": 1 } },
 
-    { "do": "purgeRows", "device": "B", "rows": [{ "table": "account", "rowId": "acct-1" }], "requirePushed": true },
-    { "do": "drainPurgeQueue", "device": "B", "relays": ["r1"] },
-    { "assert": "noRow", "device": "B", "table": "account", "rowId": "acct-1" },
+    { "do": "purgeRows", "device": "B", "rows": [{ "table": "account", "rowId": "acct-1" }], "requirePushed": true, "capture": "purge" },
+    { "assert": "equals", "actual": "$purge.purged", "expected": 0 },
+    { "assert": "row", "device": "B", "table": "account", "rowId": "acct-1", "expect": { "isDeleted": 1 } },
 
     { "do": "sync", "device": "B", "relay": "r1" },
-    { "assert": "noRow", "device": "B", "table": "account", "rowId": "acct-1" },
+    { "assert": "row", "device": "B", "table": "account", "rowId": "acct-1", "expect": { "isDeleted": 1 } },
 
     { "do": "sync", "device": "C", "relay": "r1" },
-    { "assert": "noRow", "device": "C", "table": "account", "rowId": "acct-1" },
+    { "assert": "row", "device": "C", "table": "account", "rowId": "acct-1", "expect": { "isDeleted": 1 } },
 
     { "assert": "row", "device": "A", "table": "account", "rowId": "acct-1", "expect": { "isDeleted": 1 } }
   ]
