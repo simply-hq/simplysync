@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-12T17:38:14.281Z",
+  "updatedAt": "2026-07-12T22:39:34.278Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -84,7 +84,7 @@
         "SyncEngine.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "613efc5f56d491b07930d36e0436da083d4873d739a9686f8c776ce9e12291d1",
+      "sha256": "261f4d909af023f55d4f00929f5232705a2834604e78a1ee87f1564f758025d7",
       "fileCount": 8
     },
     {
@@ -112,7 +112,7 @@
         "SyncEngine.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "c7e18cb61739060542e5a49042efae8c5953e61c1f04a185ef3f2525d942cd26",
+      "sha256": "a040cd3eb86bd763cdad24006b47e9a344f2028bf20b1e3dd2962962c9cee32c",
       "fileCount": 7
     }
   ]
