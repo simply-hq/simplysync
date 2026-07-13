@@ -59,10 +59,16 @@ export class KotlinRunner implements Runner {
       (error: unknown) => ({ kind: "error" as const, error }),
     );
     const exited = this.proc.exited.then((code) => ({ kind: "exit" as const, code }));
-    const outcome = await Promise.race([ready, exited]);
-    if (outcome.kind === "error") throw outcome.error;
-    if (outcome.kind === "exit") {
-      throw new Error(`Android e2e runner exited before becoming ready (exit ${outcome.code})`);
+    try {
+      const outcome = await Promise.race([ready, exited]);
+      if (outcome.kind === "error") throw outcome.error;
+      if (outcome.kind === "exit") {
+        throw new Error(`Android e2e runner exited before becoming ready (exit ${outcome.code})`);
+      }
+    } catch (error) {
+      this.proc.kill();
+      this.proc = null;
+      throw error;
     }
   }
 
