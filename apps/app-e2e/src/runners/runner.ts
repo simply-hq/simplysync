@@ -8,7 +8,7 @@ import type { Platform } from "../roots.ts";
 export interface Runner {
   readonly platform: Platform;
   readonly mailbox: Mailbox;
-  /** Build (if needed) and spawn the host; resolves once it's spawned. */
+  /** Build (if needed) and spawn the host; resolves once it can accept commands. */
   start(): Promise<void>;
   /** Send `shutdown` and wait for the process to exit. Idempotent. */
   stop(): Promise<void>;

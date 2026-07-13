@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Mailbox } from "../mailbox.ts";
 import { androidRoot } from "../roots.ts";
+import { TEST_MNEMONIC } from "../scenario.ts";
 import type { Runner } from "./runner.ts";
 
 /**
@@ -39,6 +40,30 @@ export class KotlinRunner implements Runner {
       ],
       { cwd: this.root, env: { ...process.env }, stdout: fd, stderr: fd },
     );
+
+    // Unlike SwiftRunner, Gradle compiles and launches the host in one long-
+    // lived command. On a cold CI runner that build can exceed the normal
+    // two-minute per-command timeout. Complete one harmless initialization
+    // here so start() does not return until the mailbox host is actually ready.
+    const ready = this.mailbox.request(
+      {
+        cmd: "init",
+        device: "__runner_ready__",
+        mnemonic: TEST_MNEMONIC,
+        deviceId: "__runner_ready__",
+        dbPath: join(this.mailbox.dir, "runner-ready.db"),
+      },
+      600_000,
+    ).then(
+      () => ({ kind: "ready" as const }),
+      (error: unknown) => ({ kind: "error" as const, error }),
+    );
+    const exited = this.proc.exited.then((code) => ({ kind: "exit" as const, code }));
+    const outcome = await Promise.race([ready, exited]);
+    if (outcome.kind === "error") throw outcome.error;
+    if (outcome.kind === "exit") {
+      throw new Error(`Android e2e runner exited before becoming ready (exit ${outcome.code})`);
+    }
   }
 
   async stop(): Promise<void> {
