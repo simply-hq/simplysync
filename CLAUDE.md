@@ -21,11 +21,8 @@ Kotlin, and Swift — and all four must stay wire-compatible.
 | Dev: native demo | `bun run expo` | Expo demo: expo-sqlite + expo-secure-store |
 | Dev: docs site | `bun run docs:dev` | static docs site + playground |
 
-CI lives in `.github/workflows/ci.yml`: Bun typecheck+tests, the Go relay, the
-Kotlin port, and the cross-platform app sync e2e (`app-e2e-android` per-PR on
-Linux; `app-e2e-cross` on macOS, main+nightly only). The e2e jobs check out the
-private `example-maintainer/{simplyfinance,android-simplyfinance}` app repos, which
-requires an `APP_REPOS_TOKEN` secret (a PAT with read access to both).
+CI lives in `.github/workflows/ci.yml` and validates Bun typechecking/tests, the
+Go relay, and the Kotlin port on pushes and pull requests.
 
 ## Map
 
@@ -46,7 +43,7 @@ requires an `APP_REPOS_TOKEN` secret (a PAT with read access to both).
 
 1. the fixed protocol-v1 `DERIVATION_SALT` byte sequence (`packages/simplysync-protocol/src/crypto.ts:7`) is a wire-protocol constant. Renaming or changing it remaps every existing user's recovery phrase to a different identity and key set — effectively a permanent lockout from their own data.
 2. The protocol core is **pinned** (`README.md`, "What's in the box": "Treat as pinned — update wholesale, don't fork."). Any change to the HLC format, envelope format, canonical JSON, or key derivation must be mirrored across the Kotlin port (`apps/simplysync-android-kotlin`), the Swift port (`apps/simplysync-ios-swift`), and relay implementations (`apps/relay-go`, `apps/relay-cloudflare`) — otherwise clients stop being able to sync with each other.
-3. The Simply Finance app ports are app-owned copies, not symlinks. After changing protocol/engine/native-port code, run `bun run app-port:check` from this repo. If it fails, review and port the change into `../simplyfinance` and `../android-simplyfinance`, then refresh the checked-in baseline with `bun run app-port:update`.
+3. Product app ports are app-owned copies, not symlinks. Maintainers with those sibling repositories available should run `bun run app-port:check` after changing protocol, engine, or native-port code and intentionally refresh the checked-in baseline only after reviewing the ported changes.
 4. Conflict resolution is **last-write-wins by HLC**, not CRDT merging — `compareHlc` is the sole tiebreaker (`packages/simplysync-engine/src/engine/relay.ts:160`).
 5. Deletes are **soft tombstones** that must replicate (`packages/simplysync-engine/src/engine/mutations-lifecycle.ts:114-118`); a hard delete resurrects rows from peers on the next pull.
 6. Relays must stay **ciphertext-only** — never add a field that exposes payload contents. See `SECURITY.md` for the threat model and the exact source files that enforce it.
@@ -57,10 +54,3 @@ requires an `APP_REPOS_TOKEN` secret (a PAT with read access to both).
 - Commits are conventional-commit style with a workspace scope, e.g. `feat(engine): …`, `perf(relay): …`, `feat(ios): …`, `docs: …`, `chore: …` (see `git log --oneline`).
 - No linter or formatter is configured yet — match the surrounding file's style by hand.
 - Comments explain constraints and intent, not mechanics — see the top-of-file doc comment in `packages/simplysync-engine/src/engine/query-cache.ts` for the model to follow.
-
-## Plans
-
-`plans/README.md` indexes every implementation plan (execution order,
-dependencies, status). If you were handed a plan from `plans/`: read it in
-full before starting, honor every STOP condition instead of improvising
-around it, and update your row in that index when you finish.

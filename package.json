@@ -22,7 +22,8 @@
     "app-e2e": "bun run --cwd apps/app-e2e e2e",
     "app-port:check": "node scripts/check-native-app-port-drift.mjs",
     "app-port:update": "node scripts/check-native-app-port-drift.mjs --update",
-    "sync:diff": "node scripts/diff-sync-port.mjs"
+    "sync:diff": "node scripts/diff-sync-port.mjs",
+    "security:bip39": "bun run --cwd packages/simplysync-protocol security:bip39"
   },
   "devDependencies": {
     "turbo": "2.9.16"

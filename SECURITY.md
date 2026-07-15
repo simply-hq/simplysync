@@ -138,8 +138,8 @@ enforcement.
 
 ## Reporting a vulnerability
 
-Found something? Please open a private security advisory (or email the
-maintainers) rather than a public issue, and give us a reasonable window to
+Found something? Please open a private security advisory or email
+[`support@jericop.dev`](mailto:support@jericop.dev) rather than a public issue, and give us a reasonable window to
 ship a fix before disclosure. Specific, reproducible reports against the files
 above are the most useful.
 

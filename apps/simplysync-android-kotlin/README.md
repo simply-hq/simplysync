@@ -15,7 +15,7 @@ guide.
 
 This module is **pure JVM** (no Android framework dependencies) so it unit-tests
 without an emulator and is reusable from any Android app — it is the core that
-powers the [Simply Finance Android](https://github.com/) build. The default
+powers the [Simply Finance Android](https://simplyfinance.app) build. The default
 `JdbcSqliteDriver` is JVM-only; on Android, inject an `android.database`-backed
 `SqliteDriver` and a Keystore-backed `SecureStorage`.
 

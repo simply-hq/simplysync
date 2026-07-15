@@ -85,7 +85,8 @@ The docs are split into clear sections (and render as a small static site —
 Also: **[Self-Hosting a Relay](docs/local-first/self-hosting.md)** (Docker /
 Tailscale / Caddy / Cloudflare Tunnel / LAN) and the
 **[Security & Threat Model](SECURITY.md)** (what a relay can and cannot see, with
-source citations).
+source citations), plus **[Project history](HISTORY.md)** (where the public
+timeline begins and what the reconstructed checkpoints represent).
 
 ## License
 

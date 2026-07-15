@@ -11,7 +11,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "gen:vectors": "bun run scripts/gen-vectors.ts"
+    "gen:vectors": "bun run scripts/gen-vectors.ts",
+    "security:bip39": "bun run scripts/check-bip39-fixtures.ts"
   },
   "dependencies": {
     "@scure/bip39": "2.2.0"
