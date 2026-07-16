@@ -13,8 +13,8 @@ import vectors from "./vectors.json";
 
 // The generated cross-language conformance corpus (see
 // scripts/gen-vectors.ts). This is the byte-compatibility contract shared
-// with the Swift (apps/simplysync-ios-swift/verify) and Kotlin
-// (apps/simplysync-android-kotlin) ports: same recovery credential in, same
+// with the Swift (ports/swift/verify) and Kotlin
+// (ports/kotlin) ports: same recovery credential in, same
 // ownerId/relayAuth/streamId/ciphertext out. If any of these assertions ever
 // fail, the protocol's wire format drifted — regenerate the corpus
 // deliberately and review the diff, don't just update this file.

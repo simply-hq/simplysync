@@ -37,7 +37,7 @@ relay.`
 
 ## Alternative: deploy in your browser
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simply-hq/simplysync/tree/main/apps/relay-cloudflare)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/simply-hq/simplysync/tree/main/relays/cloudflare)
 
 1. Select **Deploy to Cloudflare** above.
 2. Sign in to Cloudflare. Connect GitHub or GitLab if Cloudflare asks where to
@@ -88,7 +88,7 @@ requirements.
 - Removing a custom relay from the app does not delete your local finance data.
 
 For implementation details and advanced controls, see the
-[`relay-cloudflare` README](../../apps/relay-cloudflare/README.md).
+[`relay-cloudflare` README](../../relays/cloudflare/README.md).
 
 ## Advanced: host the Go relay on your own machine
 
@@ -112,7 +112,7 @@ relay.example.com {
 ```
 
 Then add `https://relay.example.com` under **Settings → Sync Relays**. See the
-[`relay-go` deployment guide](../../apps/relay-go/deploy/DEPLOY.md) for backups,
+[`relay-go` deployment guide](../../relays/go/deploy/DEPLOY.md) for backups,
 systemd, and production operations.
 
 ## Moving existing data to your relay

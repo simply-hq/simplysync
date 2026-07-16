@@ -5,7 +5,7 @@ The Kotlin client is a **full engine**, not just the protocol core. Like
 clock, the outbox, a reactive query cache, and the sync loop — so you call
 `insert` / `update` / `query` and collect reactive results into Compose, the same
 way the React version works. It lives in
-[`apps/simplysync-android-kotlin`](../../apps/simplysync-android-kotlin/README.md)
+[`ports/kotlin`](../../ports/kotlin/README.md)
 (`com.simplysync.kotlin`), built on the protocol port in the same package.
 
 > This page mirrors the [React/TypeScript guide](./guide.html) section-for-section.
@@ -39,7 +39,7 @@ kotlinx-serialization, kotlinx-coroutines, OkHttp, and `org.xerial:sqlite-jdbc`
 for the default driver). Build and run the suite with:
 
 ```sh
-cd apps/simplysync-android-kotlin
+cd ports/kotlin
 ./gradlew test                                    # local engine + protocol tests
 ./gradlew test -PrelayUrl=http://localhost:4100   # + live two-device interop
 ```

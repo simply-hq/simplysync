@@ -8,8 +8,8 @@ clean-room ports live in the repo and are byte-verified against the canonical
 
 | Port | Path | Shape |
 | --- | --- | --- |
-| **Swift** (`SimplySyncKit` + engine) | [`apps/simplysync-ios-swift`](../../apps/simplysync-ios-swift/README.md) | Foundation + CryptoKit + `SQLite3`. Ships a near-complete `@simplysync/engine` port (schema, SQLite, reactive queries) on top of the `Kit/` protocol core; also runs on macOS. |
-| **Kotlin / JVM** | [`apps/simplysync-android-kotlin`](../../apps/simplysync-android-kotlin/README.md) | Pure JVM (no Android framework deps). The protocol core that powers the Simply Finance Android build. |
+| **Swift** (`SimplySyncKit` + engine) | [`ports/swift`](../../ports/swift/README.md) | Foundation + CryptoKit + `SQLite3`. Ships a near-complete `@simplysync/engine` port (schema, SQLite, reactive queries) on top of the `Kit/` protocol core; also runs on macOS. |
+| **Kotlin / JVM** | [`ports/kotlin`](../../ports/kotlin/README.md) | Pure JVM (no Android framework deps). The protocol core that powers the Simply Finance Android build. |
 
 This page is the cross-language reference: why interop works, what each port
 covers, the exact API surface, and — importantly — the **one place identity
@@ -50,7 +50,7 @@ split.)
 | --- | --- | --- | --- |
 | **Protocol** (identity, envelope, HLC, canonical JSON, BIP39, base64url, relay client) | `@simplysync/protocol` | **Ported** — `Kit/` | **Ported** — `com.simplysync.kotlin` |
 | **Engine** (schema, SQLite store, outbox, sync loop, reactive queries) | `@simplysync/engine` | **Ported** — `Engine/` ([guide](./guide-swift.html)) | **Ported** — same package ([guide](./guide-kotlin.html)) |
-| **Relay** | `apps/relay-*` | Unchanged | Unchanged |
+| **Relay** | `relays/*` | Unchanged | Unchanged |
 
 So on the server you port nothing, and both native clients get the full engine
 DX. The reactive layer is idiomatic per platform — SwiftUI `LiveQuery`
@@ -110,7 +110,7 @@ the *low-level* path, and most app code uses the engine instead (see the
 local relay (`bun run relay:go`), then **⋯ → Show recovery key** and paste the
 same key into a second simulator, the web playground, or the Expo app to watch them
 converge. Full run/verify steps are in the
-[Swift README](../../apps/simplysync-ios-swift/README.md).
+[Swift README](../../ports/swift/README.md).
 
 **Not ported (by design):** binary blobs, the encrypted DB export/import (snapshot)
 format, and legacy import. Conflict resolution is row-level last-writer-wins by
@@ -226,7 +226,7 @@ protocol, so drift is caught, not hoped against.
 **Swift** — host-side, no simulator needed:
 
 ```sh
-cd apps/simplysync-ios-swift
+cd ports/swift
 # 1) crypto byte-compatibility vs @simplysync/protocol (verify/vectors.json)
 swiftc SimplySyncDemo/Kit/*.swift verify/main.swift -o /tmp/ssverify && /tmp/ssverify
 # 2) live end-to-end against a running relay (push → pull → decrypt)
@@ -239,7 +239,7 @@ swiftc SimplySyncDemo/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
 HLC ordering, canonical JSON, and PBKDF2:
 
 ```sh
-cd apps/simplysync-android-kotlin
+cd ports/kotlin
 ./gradlew test
 ```
 

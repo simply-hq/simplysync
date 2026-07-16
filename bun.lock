@@ -8,48 +8,7 @@
         "turbo": "2.9.16",
       },
     },
-    "apps/app-e2e": {
-      "name": "@simplysync/app-e2e",
-      "version": "0.0.1",
-      "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "~5.9.2",
-      },
-    },
-    "apps/relay-cloudflare": {
-      "name": "@simplysync/relay-cloudflare",
-      "version": "0.0.1",
-      "devDependencies": {
-        "@cloudflare/workers-types": "5.20260712.1",
-        "typescript": "~5.9.2",
-        "wrangler": "4.110.0",
-      },
-    },
-    "apps/relay-conformance": {
-      "name": "@simplysync/relay-conformance",
-      "version": "0.0.1",
-      "dependencies": {
-        "@simplysync/protocol": "workspace:*",
-      },
-      "devDependencies": {
-        "@types/bun": "latest",
-        "@types/node": "*",
-        "typescript": "~5.9.2",
-      },
-    },
-    "apps/simplysync-ai-chat": {
-      "name": "@simplysync/ai-chat",
-      "version": "0.0.1",
-      "dependencies": {
-        "@anthropic-ai/sdk": "^0.70.0",
-        "@simplysync/engine": "workspace:*",
-      },
-      "devDependencies": {
-        "@types/bun": "latest",
-        "typescript": "~5.9.2",
-      },
-    },
-    "apps/simplysync-docs": {
+    "docs/site": {
       "name": "@simplysync/docs",
       "version": "0.0.1",
       "dependencies": {
@@ -69,7 +28,19 @@
         "typescript": "~5.9.2",
       },
     },
-    "apps/simplysync-example": {
+    "examples/ai-chat": {
+      "name": "@simplysync/ai-chat",
+      "version": "0.0.1",
+      "dependencies": {
+        "@anthropic-ai/sdk": "^0.70.0",
+        "@simplysync/engine": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "~5.9.2",
+      },
+    },
+    "examples/cli": {
       "name": "@simplysync/example",
       "version": "0.0.1",
       "dependencies": {
@@ -80,7 +51,7 @@
         "typescript": "~5.9.2",
       },
     },
-    "apps/simplysync-expo": {
+    "examples/expo": {
       "name": "@simplysync/expo",
       "version": "0.0.0",
       "dependencies": {
@@ -143,6 +114,35 @@
       },
       "peerDependencies": {
         "react": "*",
+      },
+    },
+    "relays/cloudflare": {
+      "name": "@simplysync/relay-cloudflare",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@cloudflare/workers-types": "5.20260712.1",
+        "typescript": "~5.9.2",
+        "wrangler": "4.110.0",
+      },
+    },
+    "tests/app-e2e": {
+      "name": "@simplysync/app-e2e",
+      "version": "0.0.1",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "~5.9.2",
+      },
+    },
+    "tests/relay-conformance": {
+      "name": "@simplysync/relay-conformance",
+      "version": "0.0.1",
+      "dependencies": {
+        "@simplysync/protocol": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "@types/node": "*",
+        "typescript": "~5.9.2",
       },
     },
   },
@@ -635,29 +635,29 @@
 
     "@react-navigation/routers": ["@react-navigation/routers@7.5.5", "", { "dependencies": { "nanoid": "^3.3.11" } }, "sha512-9/hhMte12Kgu+pMnLfA4EWJ0OQmIEAMVMX06FPH2yGkEQSQ3JhhCN/GkcRikzQhtEi97VYYQA15umptBUShcOQ=="],
 
-    "@simplysync/relay-cloudflare": ["@simplysync/relay-cloudflare@workspace:apps/relay-cloudflare"],
-
     "@scure/base": ["@scure/base@2.2.0", "", {}, "sha512-b8XEupJibegiXV+tDUseI8oLQc8ei3d/4Jkb2RpbHh3MfE054ov3uIz2dhFkB3FI8iwYkEh0gGCApkrYggkPNg=="],
 
     "@scure/bip39": ["@scure/bip39@2.2.0", "", { "dependencies": { "@noble/hashes": "2.2.0", "@scure/base": "2.2.0" } }, "sha512-T/Bj/YvYMNkIPq6EENO6/rcs2e7qTNuyoUXf0KBFDmp0ZDu0H2X4Lq6yC3i0c8PcWkov5EbW+yQZZbdMmk154A=="],
 
-    "@simplysync/ai-chat": ["@simplysync/ai-chat@workspace:apps/simplysync-ai-chat"],
+    "@simplysync/ai-chat": ["@simplysync/ai-chat@workspace:examples/ai-chat"],
 
-    "@simplysync/app-e2e": ["@simplysync/app-e2e@workspace:apps/app-e2e"],
+    "@simplysync/app-e2e": ["@simplysync/app-e2e@workspace:tests/app-e2e"],
 
-    "@simplysync/docs": ["@simplysync/docs@workspace:apps/simplysync-docs"],
+    "@simplysync/docs": ["@simplysync/docs@workspace:docs/site"],
 
     "@simplysync/engine": ["@simplysync/engine@workspace:packages/simplysync-engine"],
 
-    "@simplysync/example": ["@simplysync/example@workspace:apps/simplysync-example"],
+    "@simplysync/example": ["@simplysync/example@workspace:examples/cli"],
 
-    "@simplysync/expo": ["@simplysync/expo@workspace:apps/simplysync-expo"],
+    "@simplysync/expo": ["@simplysync/expo@workspace:examples/expo"],
 
     "@simplysync/protocol": ["@simplysync/protocol@workspace:packages/simplysync-protocol"],
 
     "@simplysync/react": ["@simplysync/react@workspace:packages/simplysync-react"],
 
-    "@simplysync/relay-conformance": ["@simplysync/relay-conformance@workspace:apps/relay-conformance"],
+    "@simplysync/relay-cloudflare": ["@simplysync/relay-cloudflare@workspace:relays/cloudflare"],
+
+    "@simplysync/relay-conformance": ["@simplysync/relay-conformance@workspace:tests/relay-conformance"],
 
     "@sinclair/typebox": ["@sinclair/typebox@0.27.10", "", {}, "sha512-MTBk/3jGLNB2tVxv6uLlFh1iu64iYOQ2PbdOSK3NW8JZsmlaOh2q6sdtKowBhfw8QFLmYNzTW4/oK4uATIi6ZA=="],
 

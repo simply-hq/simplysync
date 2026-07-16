@@ -5,7 +5,7 @@ The Swift client is a **full engine**, not just the protocol core. Like
 clock, the outbox, a reactive query cache, and the sync loop — so you call
 `insert` / `update` / `query` and bind reactive results into SwiftUI, the same way
 the React version works. It lives in
-[`apps/simplysync-ios-swift`](../../apps/simplysync-ios-swift/README.md)
+[`ports/swift`](../../ports/swift/README.md)
 (`SimplySyncDemo/Engine/`, built on the `Kit/` protocol port).
 
 > This page mirrors the [React/TypeScript guide](./guide.html) section-for-section.

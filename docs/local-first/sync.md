@@ -309,7 +309,7 @@ reflects *current* footprint, not lifetime writes.
 
 ## Serverless deployment (Cloudflare)
 
-`apps/relay-cloudflare` is a wire-compatible deployment that swaps the substrate
+`relays/cloudflare` is a wire-compatible deployment that swaps the substrate
 without touching the protocol: **events + owner metadata → D1**, **blob chunks →
 R2** (cheap storage, free egress, safe to serve from cache because chunks are
 encrypted and content-addressed). Because Workers/D1/R2 bill per use with no hard
@@ -317,7 +317,7 @@ spend cap, it's hardened against **wallet-DDoS** with a cheapest-first defense
 stack: Cloudflare managed DDoS → zone WAF rate-limit → in-Worker rate-limit
 bindings → cheap-path rejection → hard quotas (`MAX_OWNER_BYTES`, a global
 `MAX_OWNERS` counter) and a `RELAY_DISABLED` kill switch. Full config is in
-[`apps/relay-cloudflare/README.md`](../../apps/relay-cloudflare/README.md).
+[`relays/cloudflare/README.md`](../../relays/cloudflare/README.md).
 
 ## Threat model
 

@@ -44,17 +44,17 @@ yarn-error.*
 app-example
 
 # generated native folders (only top-level prebuild output, not local Expo modules)
-apps/*/ios
-apps/*/android
+examples/*/ios
+examples/*/android
 
 # Local Expo module build outputs (Kotlin/Gradle)
-apps/*/modules/*/android/build/
-apps/*/modules/*/android/.gradle/
-apps/*/modules/*/android/.cxx/
-apps/*/modules/*/ios/build/
-apps/*/modules/*/ios/Pods/
-apps/*/modules/*/ios/*.xcodeproj/xcuserdata/
-apps/*/modules/*/ios/*.xcworkspace/xcuserdata/
+examples/*/modules/*/android/build/
+examples/*/modules/*/android/.gradle/
+examples/*/modules/*/android/.cxx/
+examples/*/modules/*/ios/build/
+examples/*/modules/*/ios/Pods/
+examples/*/modules/*/ios/*.xcodeproj/xcuserdata/
+examples/*/modules/*/ios/*.xcworkspace/xcuserdata/
 
 # Maestro E2E test results
 test-results/
@@ -65,8 +65,8 @@ test-results/
 
 *.aab
 
-# Compiled relay-go binary (build artifact)
-apps/relay-go/simplysync-relay-go
+# Default `go build ./...` output for the main package (build artifact)
+relays/go/go
 
 # Installed agent skills (reproducible from skills-lock.json). Keep the
 # repo-owned relay-hosting skill available in fresh clones.

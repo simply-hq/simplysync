@@ -11,7 +11,7 @@
         ".ts"
       ],
       "note": "Protocol constants, crypto, envelopes, snapshots, and HLC behavior changed; review native kits and app ports.",
-      "sha256": "57a3dd806a84b88cb93820efac65a61e963be98138f54eb2ecd6952152c62177",
+      "sha256": "b56e7154e6cc41e66884f887acdceaf2576c57bda7a048318b652e59a516515b",
       "fileCount": 4
     },
     {
@@ -28,18 +28,18 @@
     {
       "name": "upstream Swift native kit",
       "root": "simplysync",
-      "path": "apps/simplysync-ios-swift/SimplySyncDemo/Kit",
+      "path": "ports/swift/SimplySyncDemo/Kit",
       "extensions": [
         ".swift"
       ],
       "note": "The Swift protocol kit changed; review SimplyFinance SimplySyncKit.",
-      "sha256": "1d096fbd3ddf9abfed91b36d0a3be272b58e301891105cd358bd223ec903058b",
+      "sha256": "9081be245e80890a46777cb6ee1da3d9a6e21a9ec7359ab52dceea83c75120ad",
       "fileCount": 9
     },
     {
       "name": "upstream Swift native engine",
       "root": "simplysync",
-      "path": "apps/simplysync-ios-swift/SimplySyncDemo/Engine",
+      "path": "ports/swift/SimplySyncDemo/Engine",
       "extensions": [
         ".swift"
       ],
@@ -50,12 +50,12 @@
     {
       "name": "upstream Kotlin native engine",
       "root": "simplysync",
-      "path": "apps/simplysync-android-kotlin/src/main/kotlin/com/simplysync/kotlin",
+      "path": "ports/kotlin/src/main/kotlin/com/simplysync/kotlin",
       "extensions": [
         ".kt"
       ],
       "note": "The Kotlin native port changed; review Android synckit and app SyncEngine.",
-      "sha256": "990e9ca67528ec95395939e52e0c0bda9000949797ef33a2b481ceac80e8de3f",
+      "sha256": "dc568c7cb6fc1cad0749a4b794bbb2fb2d432018671f9bc895b361219a7796bd",
       "fileCount": 20
     },
     {

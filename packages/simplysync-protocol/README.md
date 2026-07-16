@@ -31,9 +31,9 @@ data, with no vendor lock-in and no data hostage situations.
 | Path | What it is |
 | --- | --- |
 | `packages/simplysync-protocol` | The framework-agnostic core: recovery keys, key derivation (HKDF + SLIP-21), AES-GCM encrypt/decrypt, HLC ordering, sync envelopes. Depends only on WebCrypto and `@scure/bip39` (for BIP39 mnemonics). |
-| `apps/relay-go` | The canonical self-hostable relay that stores opaque encrypted envelopes. |
-| `apps/simplysync-example` | A Node/Bun CLI proof-of-concept that runs two local clients and syncs them through the relay. |
-| `apps/simplysync-expo` | A native Expo demo using `expo-sqlite` for local data and `expo-secure-store` for the recovery key. |
+| `relays/go` | The canonical self-hostable relay that stores opaque encrypted envelopes. |
+| `examples/cli` | A Node/Bun CLI proof-of-concept that runs two local clients and syncs them through the relay. |
+| `examples/expo` | A native Expo demo using `expo-sqlite` for local data and `expo-secure-store` for the recovery key. |
 
 ## Recovery credentials
 
@@ -70,5 +70,5 @@ bun run simplysync:client-demo  # terminal 2
 bun run simplysync:expo:ios
 ```
 
-See the per-app READMEs in `apps/simplysync-example` and `apps/simplysync-expo`
+See the per-app READMEs in `examples/cli` and `examples/expo`
 for the full command surface.

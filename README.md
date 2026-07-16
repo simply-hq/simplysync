@@ -46,18 +46,41 @@ bun run expo                # Expo demo: expo-sqlite + expo-secure-store
 
 ## What's in the box
 
-| Path | What it is |
+The reusable engine is deliberately separate from runnable examples. Nothing
+under `examples/` is imported by the engine packages.
+
+### Core engine
+
+| Package | Purpose |
 | --- | --- |
-| [`packages/simplysync-protocol`](packages/simplysync-protocol) | The protocol core: identity, key derivation, AES-GCM envelopes, HLC, encoding. Treat as **pinned** — update wholesale, don't fork. |
-| [`packages/simplysync-engine`](packages/simplysync-engine) | Schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted). |
-| [`packages/simplysync-react`](packages/simplysync-react) | React hooks for binding the engine into a UI. |
-| [`apps/relay-go`](apps/relay-go) | **Canonical** self-hostable relay: Go + SQLite, stores only ciphertext. |
-| [`apps/relay-conformance`](apps/relay-conformance) | Black-box contract tests for the canonical Go relay. |
-| [`apps/relay-cloudflare`](apps/relay-cloudflare) | Serverless relay on Cloudflare Workers + D1 + R2. |
-| [`apps/simplysync-example`](apps/simplysync-example) | CLI reference client + one-shot two-client sync demo. |
-| [`apps/simplysync-expo`](apps/simplysync-expo) | Native Expo demo. |
-| [`apps/simplysync-ios-swift`](apps/simplysync-ios-swift) | Native Swift port of the protocol core. |
-| [`apps/simplysync-android-kotlin`](apps/simplysync-android-kotlin) | Native Kotlin/Android port of the protocol core — wire-compatible, pure-JVM, unit-tested. |
+| [`@simplysync/protocol`](packages/simplysync-protocol) | Identity, key derivation, AES-GCM envelopes, HLC, and wire encoding. Treat as **pinned** — update wholesale, don't fork. |
+| [`@simplysync/engine`](packages/simplysync-engine) | Typed schema, local SQLite store, Kysely queries, mutations, and encrypted replication. |
+| [`@simplysync/react`](packages/simplysync-react) | React bindings for the engine. |
+
+### Native engine ports
+
+| Port | Purpose |
+| --- | --- |
+| [`ports/swift`](ports/swift) | Native Swift protocol and engine implementation. |
+| [`ports/kotlin`](ports/kotlin) | Pure-JVM Kotlin protocol and engine implementation. |
+
+### Optional relays
+
+| Implementation | Purpose |
+| --- | --- |
+| [`relays/go`](relays/go) | **Canonical** self-hosted Go + SQLite relay; stores only ciphertext. |
+| [`relays/cloudflare`](relays/cloudflare) | Serverless Cloudflare Workers + D1 + R2 relay. |
+
+### Examples
+
+| Example | Purpose |
+| --- | --- |
+| [`examples/cli`](examples/cli) | Low-level protocol client and one-shot two-client sync demo. |
+| [`examples/expo`](examples/expo) | Expo integration using SQLite and secure device storage. |
+| [`examples/ai-chat`](examples/ai-chat) | Full local-first application built on `@simplysync/engine`. |
+
+Compatibility suites live under [`tests/`](tests/), while the documentation
+source and its browser playground live under [`docs/`](docs/).
 
 ## Using it in your own app
 
@@ -68,8 +91,9 @@ clients can't sync with anyone else's.
 
 The **glue** — the React hooks, your schema, your sync context, your relay
 config — is yours to hack on freely. Start from
-[`apps/simplysync-example/src/client.ts`](apps/simplysync-example), the canonical
-reference client, and the [User Guide](docs/local-first/guide.md).
+[`examples/ai-chat`](examples/ai-chat) for an engine-level application or
+[`examples/cli/src/client.ts`](examples/cli/src/client.ts) for the lower-level
+protocol, then continue with the [User Guide](docs/local-first/guide.md).
 
 ## Docs
 

@@ -1,8 +1,8 @@
 // Generates the cross-language crypto conformance corpus: the single source
 // of truth for packages/simplysync-protocol/test/conformance.test.ts. Copies
 // of this file are checked in for the Swift harness
-// (apps/simplysync-ios-swift/verify/vectors.json) and the Kotlin test
-// (apps/simplysync-android-kotlin/src/test/resources/vectors.json) — keep
+// (ports/swift/verify/vectors.json) and the Kotlin test
+// (ports/kotlin/src/test/resources/vectors.json) — keep
 // them content-identical to this output after regenerating.
 //
 // The corpus locks two fixed recovery credentials (an `sf1_` key and a BIP39
@@ -30,7 +30,7 @@ import {
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
 // Fixed generator inputs. Must stay byte-identical across regenerations, and
-// must match apps/simplysync-ios-swift/verify/main.swift.
+// must match ports/swift/verify/main.swift.
 const EVENT_ID = "00000abcde-0000-dev1";
 const DEVICE_ID = "dev1";
 const CREATED_AT = "2026-01-01T00:00:00.000Z";

@@ -32,12 +32,12 @@ Before provider work, read
 
 ## Prepare the deployment source
 
-1. Find `apps/relay-cloudflare` in the current workspace.
+1. Find `relays/cloudflare` in the current workspace.
 2. Resolve this skill's real directory if it was opened through a symlink.
 3. Create an isolated copy:
 
    ```bash
-   node <skill-directory>/scripts/prepare-relay.mjs <apps/relay-cloudflare>
+   node <skill-directory>/scripts/prepare-relay.mjs <relays/cloudflare>
    ```
 
 4. Use the printed `RELAY_WORKDIR=...` directory for every provider command.

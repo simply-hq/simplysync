@@ -4,7 +4,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT_DIR=$(dirname "$SCRIPT_DIR")
-COMPOSE_FILE="$ROOT_DIR/apps/relay-go/docker-compose.yml"
+COMPOSE_FILE="$ROOT_DIR/relays/go/docker-compose.yml"
 RELAY_PORT=${RELAY_PORT:-4100}
 HEALTH_URL="http://127.0.0.1:${RELAY_PORT}/health"
 
@@ -27,7 +27,7 @@ if command -v curl >/dev/null 2>&1; then
         attempts=$((attempts + 1))
         if [ "$attempts" -ge 20 ]; then
             printf '%s\n' "The relay started, but its health check is not ready yet."
-            printf '%s\n' "Inspect it with: docker compose -f apps/relay-go/docker-compose.yml logs"
+            printf '%s\n' "Inspect it with: docker compose -f relays/go/docker-compose.yml logs"
             exit 1
         fi
         sleep 1

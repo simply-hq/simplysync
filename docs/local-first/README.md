@@ -85,19 +85,18 @@ bun run docs:dev             # terminal 2 — docs + demo on :4200
 
 **The relay — optional.** Without one, the app is purely local-first and every
 edit stays on-device. Add one to sync across devices. It's a dumb, opaque event
-store (ciphertext only), and all three implementations are wire-identical — pick
+store (ciphertext only), and both implementations are wire-identical — pick
 one or [self-host](./self-hosting.md):
 
 | Relay | Stack |
 | --- | --- |
-| `apps/relay-go` | Go + SQLite — the canonical implementation. |
-| `apps/relay-go` | Go + SQLite — canonical self-hosted relay. |
-| `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
+| `relays/go` | Go + SQLite — canonical self-hosted relay. |
+| `relays/cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
 
-**Reference clients:** `apps/simplysync-example` (CLI) and `apps/simplysync-expo`
+**Reference clients:** `examples/cli` (CLI) and `examples/expo`
 (native Expo) — read and copy them. For fully native, JavaScript-free clients
-there are clean-room **Swift** (`apps/simplysync-ios-swift`) and **Kotlin/JVM**
-(`apps/simplysync-android-kotlin`) ports of the protocol — see
+there are clean-room **Swift** (`ports/swift`) and **Kotlin/JVM**
+(`ports/kotlin`) ports of the protocol — see
 [Native clients](./native.md).
 
 ## Credits & prior art

@@ -52,7 +52,7 @@ bun install
 and `btoa`/`atob`. These exist in modern browsers, Node 20+, and Bun. In React
 Native they do not exist by default — install `react-native-quick-crypto` and a
 base64 polyfill and load them *before* the engine (see
-`apps/simplysync-expo/crypto-setup.js` for a working setup).
+`examples/expo/crypto-setup.js` for a working setup).
 
 ## 1. Define a schema
 
@@ -344,9 +344,9 @@ interface SqliteDriver {
 }
 ```
 
-- **Web:** `sql.js` (WASM) is what the browser [Demo](../../apps/simplysync-docs)
-  uses — see `apps/simplysync-docs/playground/sql-driver.ts`.
-- **React Native:** `expo-sqlite` — see `apps/simplysync-expo`.
+- **Web:** `sql.js` (WASM) is what the browser [Demo](../../docs/site)
+  uses — see `docs/site/playground/sql-driver.ts`.
+- **React Native:** `expo-sqlite` — see `examples/expo`.
 
 **`SecureStorage`** — stores the recovery phrase in the OS secret store:
 

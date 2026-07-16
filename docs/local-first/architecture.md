@@ -14,7 +14,7 @@ SimplySync is three layers, each doing one job:
 | --- | --- | --- |
 | **Engine** | `@simplysync/engine` | Local SQLite store, the HLC clock, the outbox, the sync loop, reactive queries. The client API. |
 | **Protocol** | `@simplysync/protocol` | The crypto and wire primitives: identity derivation, the AES-GCM envelope, blob chunking, HLC encoding. |
-| **Relay** | `apps/relay-*` | A dumb, opaque event store. Holds ciphertext + routing metadata. Optional and self-hostable. |
+| **Relay** | `relays/*` | A dumb, opaque event store. Holds ciphertext + routing metadata. Optional and self-hostable. |
 
 ```
 ┌─ Engine (on device) ─────────────────────────────────┐     ┌─ Relay (optional) ─┐
@@ -129,7 +129,7 @@ bun run typecheck                  # turbo: all typechecks
 bun run demo                       # relay + two clients + sync, one shot
 bun run relay:go                   # canonical Go relay (needs Go 1.25+)
 bun run docs:dev                   # these docs + the browser Demo on :4200
-bun run --cwd apps/simplysync-example blob-demo   # encrypted image round-trip
+bun run --cwd examples/cli blob-demo   # encrypted image round-trip
 ```
 
 ---

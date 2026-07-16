@@ -52,13 +52,13 @@ The payload — table name, column values, amounts, notes, everything that is
 column without ever parsing it.
 
 **Verify (storage):**
-[`apps/relay-go/store.go`](apps/relay-go/store.go) — the `events` table
+[`relays/go/store.go`](relays/go/store.go) — the `events` table
 stores `envelope_json` as opaque text; the relay only ever reads the routing
 columns (`owner_id`, `event_id`, `device_id`, `stream_id`, `seq`). There is no
 code path that decrypts, inspects, or transforms `ciphertext`.
 
 **Verify (envelope shape & encryption):**
-[`apps/relay-go/handlers.go`](apps/relay-go/handlers.go) — `SyncEnvelope`
+[`relays/go/handlers.go`](relays/go/handlers.go) — `SyncEnvelope`
 is documented as *"the opaque, end-to-end-encrypted event the relay stores"*;
 the encrypt/decrypt happens client-side in
 [`packages/simplysync-engine/src/engine.ts`](packages/simplysync-engine/src/engine.ts)
@@ -82,9 +82,9 @@ data** — see `encryptPayload` in
   independent derivation outputs; one does not reveal the other. The relay only
   ever stores the **SHA-256 hash** of `relayAuth`, never the value itself.
 
-**Verify (auth):** [`apps/relay-go/store.go`](apps/relay-go/store.go) —
+**Verify (auth):** [`relays/go/store.go`](relays/go/store.go) —
 `ensureOwnerAuth` hashes the presented token with SHA-256 (`sha256B64`, defined
-in [`apps/relay-go/main.go`](apps/relay-go/main.go)) and compares against the
+in [`relays/go/main.go`](relays/go/main.go)) and compares against the
 stored hash (trust-on-first-use). The raw bearer token is never persisted.
 
 ---
@@ -113,7 +113,7 @@ omniscient, but it is not blind either:
 (replays are harmless), use soft deletes (a withheld delete self-heals on the
 next sync), and the relay enforces per-owner quotas (one owner can't exhaust
 another's storage). See
-[`apps/relay-go/store.go`](apps/relay-go/store.go) `pushEvents` for quota
+[`relays/go/store.go`](relays/go/store.go) `pushEvents` for quota
 enforcement.
 
 ---
@@ -124,7 +124,7 @@ enforcement.
    `packages/simplysync-protocol/src/index.ts`, find `dataKey`, and trace it — it's
    only ever used in local `crypto.subtle.encrypt/decrypt`. It is never put on
    the wire.
-2. **Confirm the relay can't read payloads.** Open `apps/relay-go/store.go` and
+2. **Confirm the relay can't read payloads.** Open `relays/go/store.go` and
    search for `ciphertext` — it never appears, because the relay only handles
    `envelope_json` as an opaque string.
 3. **Confirm what the relay *does* see.** Read the `events`/`owners` table DDL in
