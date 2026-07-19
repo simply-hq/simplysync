@@ -1,116 +1,194 @@
 # SimplySync
 
-**An app-owned, end-to-end-encrypted local-first sync engine.** Apps write to a
-local SQLite database first and sync opportunistically through a relay that only
-ever sees ciphertext. No vendor lock-in, no data hostage situation, no account
-system to phish.
+**Private, offline-friendly sync for apps.**
 
-> **MIT-licensed — clone it and use it as you see fit.** This repo is meant to be
-> lifted into your own local-first apps. It's open source so you don't have to
-> trust the "local-first, end-to-end encrypted" claim on faith: read the code,
-> and [run your own relay](docs/local-first/self-hosting.md) so you depend on no
-> one.
+SimplySync lets an app save data on the user's device first, so it stays fast
+and keeps working without an internet connection. When the device comes back
+online, SimplySync sends encrypted changes through a relay to the user's other
+devices. The relay helps deliver those changes, but cannot read them.
 
-## Why you can trust the local-first claim
+> Think of it as iCloud or Google Drive for an app's data, except the app owns
+> the system and the sync service cannot see the contents.
 
-The relay is a dumb, opaque event store. It holds nonce-and-ciphertext plus a
-little routing metadata — never your data, your encryption key, or your recovery
-phrase. **[SECURITY.md](SECURITY.md)** walks the exact source files that enforce
-this and shows you how to audit it yourself in ten minutes.
+SimplySync is open-source infrastructure for people building apps. It is not a
+standalone cloud-drive app for end users.
 
-- Payloads are **AES-256-GCM**, encrypted on-device with a key derived from the
-  user's secret that **never leaves the device**.
-- The relay stores only `nonce + ciphertext + routing metadata`, and only the
-  **SHA-256 hash** of the auth token.
-- The protocol is identical whether you use a relay you run or someone else's —
-  so self-hosting is a one-command escape hatch, not a downgrade.
+## How it works
 
-## Quick start
+1. **The app saves locally.** Reads and writes happen in a SQLite database on
+   the phone, tablet, or computer.
+2. **SimplySync encrypts each change.** Readable data never leaves the device.
+3. **A relay passes on the encrypted change.** Think of the relay as a mailbox
+   that cannot open the letters inside it.
+4. **The user's other devices decrypt and save it.** If a device is offline, it
+   catches up the next time it connects.
+
+```text
+ Phone or laptop                 Optional relay                 Other device
+┌───────────────┐            ┌──────────────────┐            ┌───────────────┐
+│ Local database│ ─encrypted▶│ Stores and sends│ ─encrypted▶│ Local database│
+│ Readable data │ ◀──────────│ unreadable data │ ◀──────────│ Readable data │
+└───────────────┘            └──────────────────┘            └───────────────┘
+```
+
+In short:
+
+- **Local-first** means the app works from the copy on the device, even offline.
+- **End-to-end encrypted** means data is locked before it leaves the device and
+  unlocked only on another device with the user's recovery secret.
+- A **relay** is the small server that moves encrypted changes between devices.
+  It is optional if the app never needs to sync.
+
+## Is SimplySync a good fit?
+
+Use it for private, single-user apps such as notes, journals, personal finance,
+health trackers, or other tools that should work offline and sync across a
+person's own devices.
+
+Choose a different approach if the app needs:
+
+- live collaboration between several people;
+- teams, sharing, roles, or server-managed permissions;
+- a server that can search, validate, or act on the user's data; or
+- strong, immediate consistency across devices.
+
+SimplySync resolves simultaneous edits at the row level: the latest edit wins.
+It is designed for one owner using several devices, not a shared team database.
+
+## Try the demo
+
+You need [Bun](https://bun.sh/) and Go 1.25 or newer.
 
 ```sh
 bun install
-
-# Run the canonical (Go) relay — stores only ciphertext
-bun run relay:go            # needs Go 1.25+
-
-# In another terminal: spin up a relay + sync two clients, printing the
-# decrypted state on each plus a sample opaque envelope
 bun run demo
 ```
 
-Then try the native client:
+The demo starts a local relay, syncs two example clients, shows their decrypted
+local state and an unreadable relay message, then shuts everything down.
+
+For a visual, two-device browser demo:
 
 ```sh
-bun run expo                # Expo demo: expo-sqlite + expo-secure-store
+# Terminal 1
+bun run relay:go
+
+# Terminal 2
+bun run docs:dev
 ```
 
-## What's in the box
+Then open <http://localhost:4200> and choose **Demo**.
 
-The reusable engine is deliberately separate from runnable examples. Nothing
-under `examples/` is imported by the engine packages.
+For the Expo example, keep the relay running and use `bun run expo`.
+
+## Choose your next step
+
+| I want to… | Start here |
+| --- | --- |
+| Understand the idea and its limits | [What is SimplySync?](docs/local-first/README.md) |
+| Add SimplySync to a TypeScript or React app | [Client API guide](docs/local-first/guide.md) |
+| See the smallest working client | [CLI example](examples/cli) |
+| See a complete app | [AI chat example](examples/ai-chat) |
+| Build for Expo | [Expo example](examples/expo) |
+| Build a native Swift or Kotlin client | [Native client guide](docs/local-first/native.md) |
+| Run my own sync service | [Self-hosting guide](docs/local-first/self-hosting.md) |
+| Check the privacy and security claims | [Security and threat model](SECURITY.md) |
+
+## What's in this repository
+
+The code is separated by responsibility so an app can use only the pieces it
+needs.
 
 ### Core engine
 
+These packages define SimplySync's shared data, encryption, and sync behavior:
+
 | Package | Purpose |
 | --- | --- |
-| [`@simplysync/protocol`](packages/simplysync-protocol) | Identity, key derivation, AES-GCM envelopes, HLC, and wire encoding. Treat as **pinned** — update wholesale, don't fork. |
-| [`@simplysync/engine`](packages/simplysync-engine) | Typed schema, local SQLite store, Kysely queries, mutations, and encrypted replication. |
-| [`@simplysync/react`](packages/simplysync-react) | React bindings for the engine. |
+| [`@simplysync/protocol`](packages/simplysync-protocol) | Shared identity, recovery, encryption, ordering, and wire-format rules. |
+| [`@simplysync/engine`](packages/simplysync-engine) | The TypeScript local database, typed queries, mutations, and encrypted sync engine. |
 
-### Native engine ports
+Changes to the protocol must remain compatible across every client. Update or
+port it as a whole rather than creating a different wire format for one app.
 
-| Port | Purpose |
+### Client engines
+
+These packages and ports connect the core engine to a particular app platform.
+`@simplysync/react` belongs here; it is a client integration, not part of the
+core engine.
+
+| Client | Purpose |
 | --- | --- |
-| [`ports/swift`](ports/swift) | Native Swift protocol and engine implementation. |
-| [`ports/kotlin`](ports/kotlin) | Pure-JVM Kotlin protocol and engine implementation. |
+| [`@simplysync/react`](packages/simplysync-react) | React context and hooks for queries, sync status, and errors. |
+| [Swift client](ports/swift) | Native, JavaScript-free Swift protocol and engine implementation. |
+| [Kotlin client](ports/kotlin) | Native, JavaScript-free Kotlin/JVM protocol and engine implementation. |
 
-### Optional relays
+Your schema, interface, React components, and relay configuration remain
+app-specific and can evolve independently.
 
-| Implementation | Purpose |
+### Relays
+
+A relay is needed only for syncing between devices. Both implementations store
+encrypted data rather than readable app content.
+
+| Relay | Purpose |
 | --- | --- |
-| [`relays/go`](relays/go) | **Canonical** self-hosted Go + SQLite relay; stores only ciphertext. |
-| [`relays/cloudflare`](relays/cloudflare) | Serverless Cloudflare Workers + D1 + R2 relay. |
+| [Go relay](relays/go) | Canonical self-hosted relay using Go and SQLite. |
+| [Cloudflare relay](relays/cloudflare) | Serverless relay using Cloudflare Workers, D1, and R2. |
 
-### Examples
+### Examples and tests
 
-| Example | Purpose |
+| Project | Purpose |
 | --- | --- |
-| [`examples/cli`](examples/cli) | Low-level protocol client and one-shot two-client sync demo. |
-| [`examples/expo`](examples/expo) | Expo integration using SQLite and secure device storage. |
-| [`examples/ai-chat`](examples/ai-chat) | Full local-first application built on `@simplysync/engine`. |
+| [CLI example](examples/cli) | Small reference client and one-shot two-client demo. |
+| [Expo example](examples/expo) | Mobile example using Expo SQLite and secure device storage. |
+| [AI chat example](examples/ai-chat) | Complete local-first application built on the engine. |
+| [Compatibility tests](tests) | Confirms that relays and clients follow the same protocol. |
 
-Compatibility suites live under [`tests/`](tests/), while the documentation
-source and its browser playground live under [`docs/`](docs/).
+## Privacy and security
 
-## Using it in your own app
+SimplySync is designed so the relay does not receive the user's readable data,
+encryption key, or recovery phrase.
 
-The protocol **core** (`@simplysync/protocol`, `@simplysync/engine`) is the part where
-correctness depends on everyone running the same code — the HLC clock, the
-envelope format, the wire protocol. Update it wholesale; don't fork it, or your
-clients can't sync with anyone else's.
+- Data is encrypted on the device with AES-256-GCM.
+- The relay stores encrypted payloads plus the small amount of routing metadata
+  required to sync them.
+- The relay stores a SHA-256 hash of its authentication token, not the token
+  itself.
+- Self-hosted and hosted relays use the same protocol, so changing providers
+  does not weaken encryption.
 
-The **glue** — the React hooks, your schema, your sync context, your relay
-config — is yours to hack on freely. Start from
-[`examples/ai-chat`](examples/ai-chat) for an engine-level application or
-[`examples/cli/src/client.ts`](examples/cli/src/client.ts) for the lower-level
-protocol, then continue with the [User Guide](docs/local-first/guide.md).
+A relay can delay or delete encrypted updates, and it can see routing metadata.
+It cannot read valid payloads or silently alter them without clients rejecting
+the change. The user's recovery secret is the only way to recover encrypted
+data: if it is lost, the data cannot be recovered.
 
-## Docs
+See [Security and Threat Model](SECURITY.md) for the exact guarantees,
+limitations, and source files to audit.
 
-The docs are split into clear sections (and render as a small static site —
-`bun run docs:dev`):
+## Documentation
 
-1. **[What & why](docs/local-first/README.md)** — what this is, why use it, and its limitations
-2. **[Client API](docs/local-first/guide.md)** — schema, mutations, reactive queries, React hooks, identity & relays
-3. **[How it works](docs/local-first/architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths
-4. **[Sync & the relay](docs/local-first/sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model
-5. **Demo** — a two-device browser sync demo (`bun run docs:dev`, then open the Demo page)
+1. [What SimplySync is and when to use it](docs/local-first/README.md)
+2. [Client API and React guide](docs/local-first/guide.md)
+3. [Architecture and local data flow](docs/local-first/architecture.md)
+4. [Sync protocol and relay behavior](docs/local-first/sync.md)
+5. [Native Swift and Kotlin clients](docs/local-first/native.md)
+6. [Self-hosting a relay](docs/local-first/self-hosting.md)
 
-Also: **[Self-Hosting a Relay](docs/local-first/self-hosting.md)** (Docker /
-Tailscale / Caddy / Cloudflare Tunnel / LAN) and the
-**[Security & Threat Model](SECURITY.md)** (what a relay can and cannot see, with
-source citations), plus **[Project history](HISTORY.md)** (where the public
-timeline begins and what the reconstructed checkpoints represent).
+Run `bun run docs:dev` to view the documentation site and browser demo locally.
+The repository's reconstructed public timeline is explained in
+[Project history](HISTORY.md).
+
+## Credits
+
+SimplySync is heavily inspired by [Evolu](https://evolu.dev), an established
+MIT-licensed local-first platform. SimplySync is an independent, clean-room
+implementation with different design trade-offs, including row-level rather
+than cell-level conflict resolution. If you are choosing a local-first stack,
+evaluate Evolu too.
+
+Read [Credits and prior art](docs/local-first/README.md#credits--prior-art) for
+the full acknowledgement and comparison.
 
 ## License
 
