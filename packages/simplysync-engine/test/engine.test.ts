@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 
-import { createHlc, compareHlc, createMnemonic } from "@simplysync/protocol";
+import {
+  createHlc,
+  compareHlc,
+  createMnemonic,
+  createRecoveryKey,
+  deriveIdentity,
+} from "@simplysync/protocol";
 
 import {
   createSync,
@@ -54,8 +60,8 @@ function makeDriver(): SqliteDriver {
   };
 }
 
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
+function memoryStorage(initial: Record<string, string> = {}): SecureStorage {
+  const map = new Map<string, string>(Object.entries(initial));
   return {
     getItem: (k) => map.get(k) ?? null,
     setItem: (k, v) => {
@@ -170,6 +176,27 @@ describe("engine", () => {
     expect(Number(rows[0].balance)).toBe(550);
   });
 
+  test("an import can preserve a valid historical updatedAt HLC", async () => {
+    const engine = makeEngine();
+    await engine.ready;
+    const importedHlc = createHlc("legacy-row", Date.parse("2024-02-01T00:00:00Z"), 0);
+
+    const result = engine.upsert("account", {
+      id: "account-imported",
+      name: "Imported",
+      updatedAt: importedHlc,
+    });
+    expect(result.ok).toBe(true);
+
+    const rows = await engine.loadQuery(
+      engine.createQuery(
+        (db) => db.selectFrom("account").select(["id", "updatedAt"]),
+        { includeDeleted: true },
+      ),
+    );
+    expect(rows[0]?.updatedAt).toBe(importedHlc);
+  });
+
   test("subscriptions fire on mutation", async () => {
     const engine = makeEngine();
     await engine.ready;
@@ -211,8 +238,29 @@ describe("engine", () => {
     const engine = makeEngine();
     const owner = await engine.appOwner;
     expect(owner).not.toBeNull();
-    expect(owner?.mnemonic.split(" ").length).toBe(24);
+    expect(owner?.mnemonic?.split(" ").length).toBe(24);
+    expect(owner?.recoveryKey).toBe(owner?.mnemonic);
     expect(owner?.id).toBeTruthy();
+  });
+
+  test("boots an existing native sf1_ recovery key without replacing it", async () => {
+    const recoveryKey = await createRecoveryKey();
+    const name = "native-key-boot";
+    const storage = memoryStorage({
+      [`${name}:mnemonic`]: `  ${recoveryKey}  `,
+    });
+    const engine = createSync({
+      createSqliteDriver: () => makeDriver(),
+      secureStorage: storage,
+    })(schema, { name });
+
+    const owner = await engine.appOwner;
+    const expected = await deriveIdentity(recoveryKey);
+    expect(owner?.recoveryKey).toBe(recoveryKey);
+    expect(owner?.mnemonic).toBeUndefined();
+    expect(owner?.id).toBe(expected.ownerId);
+    // Boot also heals whitespace in the persisted legacy-named storage slot.
+    expect(await storage.getItem(`${name}:mnemonic`)).toBe(recoveryKey);
   });
 
   // Regression: a legacy schema allowed NULL where ours requires a
@@ -298,8 +346,9 @@ describe("engine", () => {
       // updatedAt is the HLC, written synchronously. Monotonic => Second's HLC
       // sorts after First's despite the clock going backwards.
       const rows = (await e2.loadQuery(
-        e2.createQuery((db) =>
-          db.selectFrom("account").select(["name", "updatedAt"]),
+        e2.createQuery(
+          (db) => db.selectFrom("account").select(["name", "updatedAt"]),
+          { includeDeleted: true },
         ),
       )) as { name: string; updatedAt: string }[];
       const first = rows.find((r) => r.name === "First");
@@ -319,10 +368,12 @@ describe("engine", () => {
     await engine.ready;
     engine.insert("account", { name: "Keep me" });
 
-    const validMnemonic = createMnemonic();
-    await expect(
-      engine.restoreAppOwner(validMnemonic),
-    ).rejects.toThrow(/No backup found/);
+    const validCredentials = [createMnemonic(), await createRecoveryKey()];
+    for (const credential of validCredentials) {
+      await expect(engine.restoreAppOwner(credential)).rejects.toThrow(
+        /No sync relay is configured/,
+      );
+    }
 
     const rows = await engine.loadQuery(
       engine.createQuery((db) =>
@@ -330,6 +381,111 @@ describe("engine", () => {
       ),
     );
     expect(rows).toHaveLength(1); // data preserved
+  });
+
+  test("restoreAppOwner distinguishes an empty backup from an unavailable relay", async () => {
+    const emptyRelayFetch = (async () =>
+      new Response(JSON.stringify({ events: [], nextCursor: "" }), {
+        status: 200,
+      })) as typeof fetch;
+    const emptyRelayEngine = createSync({
+      createSqliteDriver: () => makeDriver(),
+      secureStorage: memoryStorage(),
+      fetch: emptyRelayFetch,
+    })(schema, {
+      name: "restore-empty-relay",
+      transports: [{ type: "Http", url: "https://empty-relay.test" }],
+    });
+    await emptyRelayEngine.ready;
+    emptyRelayEngine.insert("account", { name: "Keep empty" });
+
+    await expect(
+      emptyRelayEngine.restoreAppOwner(createMnemonic()),
+    ).rejects.toThrow(/No backup found for this recovery key or phrase/);
+
+    const unavailableFetch = (async () => {
+      throw new TypeError("Network unavailable");
+    }) as typeof fetch;
+    const unavailableEngine = createSync({
+      createSqliteDriver: () => makeDriver(),
+      secureStorage: memoryStorage(),
+      fetch: unavailableFetch,
+    })(schema, {
+      name: "restore-unavailable-relay",
+      transports: [{ type: "Http", url: "https://offline-relay.test" }],
+    });
+    await unavailableEngine.ready;
+    unavailableEngine.insert("account", { name: "Keep offline" });
+
+    await expect(
+      unavailableEngine.restoreAppOwner(createMnemonic()),
+    ).rejects.toThrow(/sync service could not be reached/);
+
+    const rows = await unavailableEngine.loadQuery(
+      unavailableEngine.createQuery((db) =>
+        db.selectFrom("account").select(["id"]).where("isDeleted", "is not", 1),
+      ),
+    );
+    expect(rows).toHaveLength(1);
+  });
+
+  test("restoreAppOwner safely verifies and adopts a native sf1_ recovery key", async () => {
+    const recoveryKey = await createRecoveryKey();
+    const restoredIdentity = await deriveIdentity(recoveryKey);
+    let verified = false;
+    const relayFetch = (async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? "GET";
+      if (method === "GET" && url.pathname === "/v1/events") {
+        const isRestorePreflight = url.searchParams.get("limit") === "1";
+        if (
+          isRestorePreflight &&
+          url.searchParams.get("ownerId") === restoredIdentity.ownerId
+        ) {
+          verified = true;
+          expect(new Headers(init?.headers).get("Authorization")).toBe(
+            `Bearer ${restoredIdentity.relayAuth}`,
+          );
+          // Preflight only checks that at least one retained event exists.
+          return new Response(JSON.stringify({ events: [{}], nextCursor: "1" }), {
+            status: 200,
+          });
+        }
+        return new Response(JSON.stringify({ events: [], nextCursor: "" }), {
+          status: 200,
+        });
+      }
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    const engine = createSync({
+      createSqliteDriver: () => makeDriver(),
+      secureStorage: memoryStorage(),
+      fetch: relayFetch,
+      reloadApp: () => {},
+    })(schema, {
+      name: "restore-native-key",
+      transports: [{ type: "Http", url: "https://relay.test" }],
+      syncIntervalMs: 600_000,
+    });
+    await engine.ready;
+    const ownerBefore = await engine.appOwner;
+    engine.insert("account", { name: "Replace me" });
+
+    await engine.restoreAppOwner(`  ${recoveryKey}  `);
+
+    const ownerAfter = await engine.appOwner;
+    expect(verified).toBe(true);
+    expect(ownerAfter?.id).toBe(restoredIdentity.ownerId);
+    expect(ownerAfter?.id).not.toBe(ownerBefore?.id);
+    expect(ownerAfter?.recoveryKey).toBe(recoveryKey);
+    expect(ownerAfter?.mnemonic).toBeUndefined();
+    const rows = await engine.loadQuery(
+      engine.createQuery((db) => db.selectFrom("account").select(["id"]), {
+        includeDeleted: true,
+      }),
+    );
+    expect(rows).toHaveLength(0);
+    engine.setTransports([]);
   });
 
   // "Erase all data" (resetAppOwner) wipes _sync_meta — which also clears the

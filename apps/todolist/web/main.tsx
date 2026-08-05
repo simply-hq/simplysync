@@ -1,0 +1,678 @@
+// The canonical SimplySync todo demo in a browser.
+//
+// Two engines ("Alice" and "Bob") share one owner and sync through a relay you
+// run locally (`bun run relay:go`). The schema is the same `todo(id, title,
+// done)` contract used by the CLI, Swift, Kotlin, and React Native clients.
+// Local SQLite (sql.js) remains the source of truth, writes are encrypted before
+// they leave the device, and conflicts resolve last-write-wins by HLC.
+
+import { StrictMode, useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  createSync,
+  type AppOwner,
+  type Query,
+  type SyncEngine,
+  type SyncState,
+} from "@simplysync/engine";
+import { SyncProvider, useQuery, useSync, useSyncState } from "@simplysync/react";
+import {
+  closeSqlJsDatabases,
+  createBrowserOwnerStore,
+  createEncryptedSecureStorage,
+  createIndexedDbSnapshotStore,
+  createSqlJsDriverFactory,
+  deriveBrowserAppOwner,
+  getActiveDb,
+  persistNow,
+  type BrowserOwnerStore,
+  type IndexedDbSnapshotStore,
+} from "@simplysync/browser";
+import { DB_NAME, schema, type TodoSchema } from "./schema";
+import { httpTransport, loadRelayUrl, saveRelayUrl } from "./relay";
+
+type Engine = SyncEngine<TodoSchema>;
+const RECOVERY_CONFIRMED_KEY = `${DB_NAME}:recoveryConfirmed`;
+
+const DEVICES = [
+  { name: `${DB_NAME}-alice`, label: "Alice" },
+  { name: `${DB_NAME}-bob`, label: "Bob" },
+] as const;
+
+async function reloadApp(): Promise<void> {
+  await persistNow();
+  location.reload();
+}
+
+type TodoRow = {
+  id: string;
+  title: string;
+  done: number;
+  updatedAt: string;
+};
+
+function buildQueries(engine: Engine) {
+  const todos: Query<TodoRow> = engine.createQuery((db) =>
+    db
+      .selectFrom("todo")
+      .select(["id", "title", "done", "updatedAt"])
+      .where("isDeleted", "=", 0)
+      .orderBy("updatedAt", "desc")
+      .orderBy("id", "desc"),
+  );
+  return { todos };
+}
+
+function rawSelect(dbName: string, sql: string): Record<string, unknown>[] {
+  const db = getActiveDb(dbName);
+  if (!db) return [];
+  try {
+    const stmt = db.prepare(sql);
+    try {
+      const rows: Record<string, unknown>[] = [];
+      while (stmt.step()) rows.push(stmt.getAsObject());
+      return rows;
+    } finally {
+      stmt.free();
+    }
+  } catch {
+    return [];
+  }
+}
+
+function SyncBadge({ state }: { state: SyncState }) {
+  const map: Record<SyncState["type"], { text: string; cls: string }> = {
+    SyncStateInitial: { text: "idle", cls: "pg-badge-idle" },
+    SyncStateIsSyncing: { text: "syncing…", cls: "pg-badge-sync" },
+    SyncStateIsSynced: { text: "synced", cls: "pg-badge-ok" },
+    SyncStateIsNotSynced: { text: "not synced", cls: "pg-badge-err" },
+  };
+  const info = map[state.type];
+  return (
+    <span
+      className={`pg-badge ${info.cls}`}
+      title={state.type === "SyncStateIsNotSynced" ? state.error : undefined}
+    >
+      {info.text}
+    </span>
+  );
+}
+
+function AddTodoForm({ engine }: { engine: Engine }) {
+  const [title, setTitle] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    const trimmed = title.trim();
+    if (!trimmed) {
+      setError("Enter a todo.");
+      return;
+    }
+    const result = engine.insert("todo", { title: trimmed, done: 0 });
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+    setTitle("");
+    setError(null);
+  }
+
+  return (
+    <form className="pg-form" onSubmit={handleSubmit}>
+      <input
+        aria-label="Todo title"
+        placeholder="What needs doing?"
+        value={title}
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <button type="submit">Add</button>
+      {error ? <p className="pg-error">{error}</p> : null}
+    </form>
+  );
+}
+
+function TodoItem({ engine, row }: { engine: Engine; row: TodoRow }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(row.title);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editing) setTitle(row.title);
+  }, [editing, row.title]);
+
+  function toggle() {
+    const result = engine.update("todo", {
+      id: row.id,
+      done: row.done ? 0 : 1,
+    });
+    if (!result.ok) setError(result.error.message);
+  }
+
+  function save() {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      setError("A todo needs a title.");
+      return;
+    }
+    const result = engine.update("todo", { id: row.id, title: trimmed });
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+    setEditing(false);
+    setError(null);
+  }
+
+  function remove() {
+    const result = engine.delete("todo", row.id);
+    if (!result.ok) setError(result.error.message);
+  }
+
+  if (editing) {
+    return (
+      <li className="pg-list-edit">
+        <input
+          aria-label={`Edit ${row.title}`}
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") save();
+            if (event.key === "Escape") setEditing(false);
+          }}
+          autoFocus
+        />
+        <button onClick={save}>Save</button>
+        <button className="pg-ghost" onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+        {error ? <p className="pg-error">{error}</p> : null}
+      </li>
+    );
+  }
+
+  return (
+    <li className="pg-todo">
+      <input
+        className="pg-check"
+        type="checkbox"
+        aria-label={`Mark ${row.title} ${row.done ? "incomplete" : "complete"}`}
+        checked={row.done !== 0}
+        onChange={toggle}
+      />
+      <span className={row.done ? "pg-todo-title pg-todo-done" : "pg-todo-title"}>
+        {row.title}
+      </span>
+      <button className="pg-ghost" aria-label={`Edit ${row.title}`} onClick={() => setEditing(true)}>
+        Edit
+      </button>
+      <button className="pg-del" aria-label={`Delete ${row.title}`} onClick={remove}>
+        ×
+      </button>
+      {error ? <p className="pg-error">{error}</p> : null}
+    </li>
+  );
+}
+
+function Internals({ name }: { name: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => tick((value) => value + 1), 750);
+    return () => clearInterval(timer);
+  }, []);
+
+  const meta = Object.fromEntries(
+    rawSelect(name, `select key, value from "_sync_meta"`).map((row) => [
+      row.key as string,
+      row.value as string,
+    ]),
+  );
+  const outbox = rawSelect(
+    name,
+    `select event_id, envelope_json, pushed_at from "_sync_outbox" order by event_id desc limit 8`,
+  );
+  const pending = outbox.filter((row) => row.pushed_at === null).length;
+  const seen =
+    (rawSelect(name, `select count(*) as c from "_sync_seen"`)[0]?.c as number) ?? 0;
+  const cursors = Object.entries(meta).filter(([key]) => key.startsWith("cursor:"));
+  const latest = outbox[0]?.envelope_json as string | undefined;
+
+  let cipher = "Ciphertext appears after the first write.";
+  if (latest) {
+    try {
+      cipher = JSON.stringify(JSON.parse(latest), null, 2);
+    } catch {
+      cipher = latest;
+    }
+  }
+
+  return (
+    <details className="pg-internals">
+      <summary>Sync internals</summary>
+      <dl className="pg-stats">
+        <div><dt>HLC time</dt><dd>{meta["hlc:time"] ?? "—"}</dd></div>
+        <div><dt>HLC counter</dt><dd>{meta["hlc:counter"] ?? "—"}</dd></div>
+        <div><dt>outbox pending</dt><dd>{pending}</dd></div>
+        <div><dt>outbox total</dt><dd>{outbox.length}</dd></div>
+        <div><dt>seen events</dt><dd>{seen}</dd></div>
+        <div><dt>cursor</dt><dd>{cursors.map(([, value]) => value).join(", ") || "—"}</dd></div>
+      </dl>
+      <p className="pg-label">recent events (what the relay receives)</p>
+      <table className="pg-events">
+        <thead>
+          <tr><th>eventId (HLC)</th><th>device</th><th>pushed</th></tr>
+        </thead>
+        <tbody>
+          {outbox.map((row) => {
+            let device = "";
+            try {
+              device = (JSON.parse(row.envelope_json as string).deviceId as string) ?? "";
+            } catch {
+              device = "";
+            }
+            return (
+              <tr key={row.event_id as string}>
+                <td className="pg-mono">{(row.event_id as string).slice(0, 18)}…</td>
+                <td className="pg-mono">{device}</td>
+                <td>{row.pushed_at ? "✓" : "·"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="pg-label">latest envelope — opaque to the relay</p>
+      <pre className="pg-cipher">{cipher}</pre>
+    </details>
+  );
+}
+
+function DeviceBody({
+  name,
+  label,
+  queries,
+}: {
+  name: string;
+  label: string;
+  queries: { todos: Query<TodoRow> };
+}) {
+  const engine = useSync<TodoSchema>();
+  const todos = useQuery(queries.todos);
+  const syncState = useSyncState();
+  const completed = todos.filter((todo) => todo.done !== 0).length;
+
+  return (
+    <>
+      <header className="pg-card-head">
+        <h2>
+          {label} <span className="pg-sub">device</span> <SyncBadge state={syncState} />
+        </h2>
+        <div className="pg-head-right">
+          <span className="pg-count">{completed}/{todos.length} done</span>
+          <button className="pg-ghost" onClick={() => void engine.sync()}>
+            Sync now
+          </button>
+        </div>
+      </header>
+      <AddTodoForm engine={engine} />
+      {todos.length === 0 ? (
+        <p className="pg-empty">No todos. Add one here, or seed examples above.</p>
+      ) : (
+        <ul className="pg-list">
+          {todos.map((todo) => (
+            <TodoItem key={todo.id} engine={engine} row={todo} />
+          ))}
+        </ul>
+      )}
+      <Internals name={name} />
+    </>
+  );
+}
+
+function DeviceColumn({
+  engine,
+  name,
+  label,
+  queries,
+}: {
+  engine: Engine;
+  name: string;
+  label: string;
+  queries: { todos: Query<TodoRow> };
+}) {
+  return (
+    <section className="pg-card pg-device">
+      <SyncProvider value={engine}>
+        <DeviceBody name={name} label={label} queries={queries} />
+      </SyncProvider>
+    </section>
+  );
+}
+
+function TopBar({
+  engines,
+  owner,
+  initialRelayUrl,
+  ownerStore,
+  snapshots,
+}: {
+  engines: readonly Engine[];
+  owner: AppOwner;
+  initialRelayUrl: string;
+  ownerStore: BrowserOwnerStore;
+  snapshots: IndexedDbSnapshotStore;
+}) {
+  const [relayUrl, setRelayUrl] = useState(initialRelayUrl);
+  const [credential, setCredential] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function applyRelay() {
+    saveRelayUrl(relayUrl);
+    for (const engine of engines) engine.setTransports(httpTransport(relayUrl));
+    setMessage(relayUrl.trim() ? "Relay updated." : "Offline-only mode enabled.");
+    setError(null);
+  }
+
+  function seed() {
+    const result = engines[0].batch(
+      ["Buy milk", "Walk the dog", "Write the report"].map((title) => ({
+        table: "todo" as const,
+        values: { title, done: 0 },
+      })),
+    );
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+    setMessage("Three todos added on Alice. Sync to send them to Bob.");
+    setError(null);
+  }
+
+  async function copyRecoveryKey() {
+    try {
+      await navigator.clipboard.writeText(owner.recoveryKey);
+      setMessage("Recovery key copied.");
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function reset() {
+    if (!confirm("Reset to a brand-new owner? This wipes both local devices.")) return;
+    await closeSqlJsDatabases();
+    await snapshots.clear();
+    await ownerStore.rotateRecoveryKey();
+    location.reload();
+  }
+
+  async function restore() {
+    try {
+      await ownerStore.setRecoveryKey(credential);
+      await closeSqlJsDatabases();
+      await snapshots.clear();
+      location.reload();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  return (
+    <section className="pg-card pg-topbar">
+      <div className="pg-owner-block">
+        <p className="pg-owner-id"><strong>ownerId:</strong> <code>{owner.id}</code></p>
+        <details className="pg-restore pg-add-device">
+          <summary>Add another device</summary>
+          <p className="pg-hint">
+            On the new device, choose Restore and paste this recovery key.
+          </p>
+          <p className="pg-mnemonic">{owner.recoveryKey}</p>
+          <p className="pg-warning">
+            If you lose this key, no one can recover your synced data.
+          </p>
+          <button className="pg-ghost" onClick={() => void copyRecoveryKey()}>
+            Copy add-device key
+          </button>
+        </details>
+        <div className="pg-actions">
+          <button className="pg-danger" onClick={() => void reset()}>
+            Reset owner
+          </button>
+        </div>
+      </div>
+
+      <div className="pg-controls">
+        <label className="pg-field">
+          <span>Relay URL</span>
+          <span className="pg-inline">
+            <input value={relayUrl} onChange={(event) => setRelayUrl(event.target.value)} />
+            <button onClick={applyRelay}>Connect</button>
+          </span>
+        </label>
+        <p className="pg-hint">
+          Run <code>bun run relay:go</code>, then Connect. Clear the URL for
+          offline-only use; local edits keep working.
+        </p>
+
+        <div className="pg-actions">
+          <button onClick={seed}>Seed example todos</button>
+        </div>
+
+        <details className="pg-restore">
+          <summary>Restore another owner</summary>
+          <p className="pg-hint">
+            Restoring replaces both local demo devices with the selected owner.
+          </p>
+          <textarea
+            aria-label="Recovery key or phrase"
+            placeholder="paste an sf1_ key or legacy recovery phrase"
+            value={credential}
+            onChange={(event) => setCredential(event.target.value)}
+            rows={3}
+          />
+          <button disabled={!credential.trim()} onClick={() => void restore()}>
+            Restore (switch owner)
+          </button>
+        </details>
+        {message ? <p className="pg-hint">{message}</p> : null}
+        {error ? <p className="pg-error">{error}</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function RecoverySetup({
+  owner,
+  ownerStore,
+  snapshots,
+  onComplete,
+}: {
+  owner: AppOwner;
+  ownerStore: BrowserOwnerStore;
+  snapshots: IndexedDbSnapshotStore;
+  onComplete: () => void;
+}) {
+  const [credential, setCredential] = useState("");
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function copyRecoveryKey() {
+    try {
+      await navigator.clipboard.writeText(owner.recoveryKey);
+      setMessage("Recovery key copied.");
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function restore() {
+    try {
+      await ownerStore.setRecoveryKey(credential);
+      await closeSqlJsDatabases();
+      await snapshots.clear();
+      location.reload();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  return (
+    <main className="pg-onboarding">
+      <p className="pg-onboarding-kicker">Your private todo list is ready</p>
+      <h1>Save your recovery key</h1>
+      <p className="pg-onboarding-copy">
+        This is the only key to your encrypted data and the shortest way to add
+        another device.
+      </p>
+      <p className="pg-mnemonic">{owner.recoveryKey}</p>
+      <p className="pg-warning">
+        If you lose this key, no one can recover your synced data.
+      </p>
+      <div className="pg-actions">
+        <button className="pg-ghost" onClick={() => void copyRecoveryKey()}>
+          Copy recovery key
+        </button>
+        <button
+          onClick={() => {
+            localStorage.setItem(RECOVERY_CONFIRMED_KEY, owner.id);
+            onComplete();
+          }}
+        >
+          I saved this key
+        </button>
+      </div>
+      {message ? <p className="pg-hint">{message}</p> : null}
+
+      <details className="pg-restore pg-onboarding-restore">
+        <summary>Already have a recovery key?</summary>
+        <textarea
+          aria-label="Existing recovery key or phrase"
+          placeholder="paste an sf1_ key or 24-word recovery phrase"
+          value={credential}
+          onChange={(event) => setCredential(event.target.value)}
+          rows={3}
+        />
+        <button disabled={!credential.trim()} onClick={() => void restore()}>
+          Restore this owner
+        </button>
+      </details>
+      {error ? <p className="pg-error">{error}</p> : null}
+    </main>
+  );
+}
+
+function App({
+  engines,
+  owner,
+  queries,
+  initialRelayUrl,
+  ownerStore,
+  snapshots,
+}: {
+  engines: readonly Engine[];
+  owner: AppOwner;
+  queries: { todos: Query<TodoRow> };
+  initialRelayUrl: string;
+  ownerStore: BrowserOwnerStore;
+  snapshots: IndexedDbSnapshotStore;
+}) {
+  const [recoveryConfirmed, setRecoveryConfirmed] = useState(
+    () => localStorage.getItem(RECOVERY_CONFIRMED_KEY) === owner.id,
+  );
+
+  if (!recoveryConfirmed) {
+    return (
+      <RecoverySetup
+        onComplete={() => setRecoveryConfirmed(true)}
+        owner={owner}
+        ownerStore={ownerStore}
+        snapshots={snapshots}
+      />
+    );
+  }
+
+  return (
+    <>
+      <header className="pg-header">
+        <h1>SimplySync Todo</h1>
+        <p>
+          One private todo list, shown as two browser devices. Edit either side,
+          sync through the ciphertext-only relay, and watch both converge. The
+          same owner and schema work in the CLI, Swift, Kotlin, and React Native.
+        </p>
+      </header>
+      <TopBar
+        engines={engines}
+        owner={owner}
+        initialRelayUrl={initialRelayUrl}
+        ownerStore={ownerStore}
+        snapshots={snapshots}
+      />
+      <main className="pg-grid">
+        {DEVICES.map((device, index) => (
+          <DeviceColumn
+            key={device.name}
+            engine={engines[index]}
+            name={device.name}
+            label={device.label}
+            queries={queries}
+          />
+        ))}
+      </main>
+    </>
+  );
+}
+
+async function bootstrap(): Promise<void> {
+  const secureStorage = createEncryptedSecureStorage({
+    databaseName: DB_NAME,
+  });
+  const ownerStore = createBrowserOwnerStore(secureStorage, {
+    key: `${DB_NAME}:recoveryKey`,
+  });
+  const owner = await deriveBrowserAppOwner(
+    await ownerStore.loadOrCreateRecoveryKey(),
+  );
+  const relayUrl = loadRelayUrl();
+  const snapshots = createIndexedDbSnapshotStore({
+    databaseName: DB_NAME,
+  });
+  const createSqliteDriver = createSqlJsDriverFactory({
+    store: snapshots,
+    locateFile: () => "sql-wasm.wasm",
+  });
+
+  const make = (name: string): Engine =>
+    createSync({ createSqliteDriver, secureStorage, reloadApp })(
+      schema,
+      {
+        name,
+        externalAppOwner: owner,
+        transports: httpTransport(relayUrl),
+        syncIntervalMs: 2000,
+      },
+    );
+  const engines: Engine[] = DEVICES.map((device) => make(device.name));
+  const queries = buildQueries(engines[0]);
+
+  window.addEventListener("pagehide", () => void persistNow());
+
+  const root = document.getElementById("app");
+  if (root) {
+    createRoot(root).render(
+      <StrictMode>
+        <App
+          engines={engines}
+          owner={owner}
+          queries={queries}
+          initialRelayUrl={relayUrl}
+          ownerStore={ownerStore}
+          snapshots={snapshots}
+        />
+      </StrictMode>,
+    );
+  }
+}
+
+void bootstrap();

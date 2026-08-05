@@ -84,8 +84,10 @@ describe("streaming / local-only writes", () => {
     expect(engine.getPendingOutboxCount()).toBe(1); // unchanged by streaming
 
     // The local DB already reflects the latest streamed text (UI is live).
-    const liveQuery = engine.createQuery((db) =>
-      db.selectFrom("message").select(["body"]).where("id", "=", messageId),
+    const liveQuery = engine.createQuery(
+      (db) =>
+        db.selectFrom("message").select(["body"]).where("id", "=", messageId),
+      { includeDeleted: true },
     );
     const live = await engine.loadQuery(liveQuery);
     expect(live[0]?.body).toBe(body);
@@ -109,12 +111,13 @@ describe("streaming / local-only writes", () => {
     engine.update("message", { id: messageId, body: "ab" } as never, {
       local: true,
     });
-    const q = engine.createQuery((db) =>
-      db.selectFrom("message").select(["body", "updatedAt"]).where(
-        "id",
-        "=",
-        messageId,
-      ),
+    const q = engine.createQuery(
+      (db) =>
+        db
+          .selectFrom("message")
+          .select(["body", "updatedAt"])
+          .where("id", "=", messageId),
+      { includeDeleted: true },
     );
     const afterLocal = await engine.loadQuery(q);
     const localHlc = (afterLocal[0] as { updatedAt: string }).updatedAt;

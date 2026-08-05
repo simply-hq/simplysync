@@ -16,7 +16,7 @@ const required = [
 
 if (!process.argv[2] || required.some((entry) => !existsSync(join(source, entry)))) {
   console.error(
-    "Usage: prepare-relay.mjs <relays/cloudflare>\n" +
+    "Usage: prepare-relay.mjs <apps/relay-cloudflare>\n" +
       "The source must contain package.json, wrangler.toml, src, migrations, and scripts.",
   );
   process.exit(1);

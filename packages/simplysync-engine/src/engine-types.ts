@@ -5,7 +5,7 @@
 
 import { type Kysely, type Compilable } from "kysely";
 import { type EncryptedEnvelopeV1 } from "@simplysync/protocol";
-import { type Id, type SqliteBoolean, type Type } from "./type";
+import { type Id, type SqliteBoolean, type Type } from "./type.js";
 
 // ---------------------------------------------------------------------------
 // Schema typing — derive the Kysely Database type (and insert/update shapes)
@@ -67,6 +67,14 @@ export interface Query<Row = unknown> {
 /** Extracts the row type from a query (the `typeof query.Row` idiom). */
 export type QueryRow<Q> = Q extends Query<infer R> ? R : never;
 
+export interface CreateQueryOptions {
+  /**
+   * Acknowledges that this query intentionally reads soft-deleted rows, which
+   * silences the missing-`isDeleted`-filter warning. Does not change the SQL.
+   */
+  readonly includeDeleted?: boolean;
+}
+
 export type MutationResult =
   | { readonly ok: true; readonly value: { readonly id: Id } }
   | { readonly ok: false; readonly error: { readonly message: string } };
@@ -79,14 +87,18 @@ export type MutationResult =
 export type BatchOp<S extends SchemaDefinition> = {
   [T in keyof S & string]:
     | {
-        readonly table: T;
-        readonly values: InsertValues<S[T]> & Partial<UpdateValues<S[T]>>;
-        readonly mode?: "insert" | "update" | "upsert";
-      }
+      readonly table: T;
+      readonly values: InsertValues<S[T]> & Partial<UpdateValues<S[T]>>;
+      readonly mode?: "insert" | "update" | "upsert";
+      /** Commit only if the live row still has this sync version. */
+      readonly expectedUpdatedAt?: string;
+    }
     | {
         readonly table: T;
         readonly mode: "delete";
         readonly values: { readonly id: Id };
+        /** Tombstone only if the live row still has this sync version. */
+        readonly expectedUpdatedAt?: string;
       };
 }[keyof S & string];
 
@@ -115,12 +127,61 @@ export interface SecureStorage {
   removeItem(key: string): Promise<void> | void;
 }
 
+/**
+ * One committed event crossing the tab channel: the outbox row's identity plus
+ * its plaintext payload (same trust level as the local database — the channel
+ * is same-origin only and never leaves the machine). `outbox` distinguishes
+ * local-origin writes (receivers stage the same outbox row so ANY tab promoted
+ * to leader can push it) from relay-pulled or `local: true` events (already on
+ * the relay / deliberately unsynced — applied to the receiver's rows only).
+ */
+export interface TabSyncEvent {
+  readonly eventId: string;
+  readonly payloadJson: string;
+  readonly outbox: boolean;
+}
+
+/**
+ * Cross-instance coordination for platforms where several engine instances
+ * share one persisted database (browser tabs). Every instance applies every
+ * other instance's events through the normal LWW path; exactly one instance —
+ * the "leader" — persists snapshots and talks to relays. Absent (native, CLI,
+ * tests) the engine behaves exactly as before.
+ */
+export interface TabSync {
+  isLeader(): boolean;
+  /** Fires when THIS instance becomes the leader (the previous one closed). */
+  onPromoted(listener: () => void): () => void;
+  publishEvents(events: readonly TabSyncEvent[]): void;
+  subscribeEvents(
+    listener: (events: readonly TabSyncEvent[]) => void,
+  ): () => void;
+  /** Leader → followers mirror, so sync UI works in every tab. */
+  publishSyncState(state: SyncState): void;
+  subscribeSyncState(listener: (state: SyncState) => void): () => void;
+  /** Cross-tab critical section (e.g. first-boot identity creation). */
+  withLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Destructive-op barrier (owner restore/reset, database import): every other
+   * tab stops writing/persisting and reboots; resolves once this tab is the
+   * sole writer. Rebooting tabs block in their boot barrier until the
+   * initiating tab has persisted the post-op snapshot and reloaded.
+   */
+  acquireExclusive(): Promise<void>;
+}
+
 export interface SyncEngineDeps {
   readonly createSqliteDriver: (
     name: string,
   ) => SqliteDriver | Promise<SqliteDriver>;
   readonly secureStorage: SecureStorage;
   readonly fetch?: typeof fetch;
+  /**
+   * Multi-instance coordination (browser tabs sharing one database). When
+   * present the engine also stamps a per-instance suffix onto the HLC device
+   * id so two tabs can never mint the same event id in the same millisecond.
+   */
+  readonly tabSync?: TabSync;
   /**
    * Platform reload used after restore/reset to re-evaluate app state. On web
    * the engine falls back to `location.reload()`; React Native must provide one
@@ -144,17 +205,26 @@ export interface SyncEngineDeps {
 
 /**
  * A portable, driver-agnostic snapshot of the whole local database: the
- * recovery phrase (so the data decrypts on a new device), every row of every
- * table (including soft-deleted rows and the system columns), and the sync
- * metadata (HLC high-water mark + per-relay pull cursors). Produced by
+ * recovery key or phrase (so the data decrypts on a new device), every row of
+ * every table (including soft-deleted rows and the system columns), and the
+ * sync metadata (HLC high-water mark + per-relay pull cursors). Produced by
  * `exportDatabase` and consumed by `importDatabase`.
  */
 export interface DbSnapshot {
   readonly format: "simplysync-db-snapshot";
   readonly version: 1;
   readonly exportedAt: string;
-  /** Recovery phrase — the identity root needed to decrypt the data. */
-  readonly mnemonic: string;
+  /**
+   * Canonical identity root needed to decrypt the data: either a native
+   * `sf1_` recovery key or a normalized BIP39 phrase.
+   */
+  readonly recoveryKey?: string;
+  /**
+   * Legacy snapshot field, retained so backups written by older engines still
+   * import. New phrase-backed snapshots include it for backward compatibility;
+   * native-key snapshots use {@link recoveryKey} only.
+   */
+  readonly mnemonic?: string;
   readonly tables: Record<string, Record<string, unknown>[]>;
   /** Selected `_sync_meta` keys: `hlc:time`, `hlc:counter`, `cursor:*`. */
   readonly meta: Record<string, string>;
@@ -177,13 +247,40 @@ export type IndexBuilder = (
 
 export interface AppOwner {
   readonly id: string;
-  readonly mnemonic: string;
+  /** Secret to back up: a native `sf1_` key or a normalized BIP39 phrase. */
+  readonly recoveryKey: string;
+  /** Present only when {@link recoveryKey} is a BIP39 recovery phrase. */
+  readonly mnemonic?: string;
   /** Bearer token presented to relays (the write key). */
   readonly writeKey: string;
 }
 
+/**
+ * Owner supplied by a host integration. The mnemonic-only branch keeps source
+ * compatibility with integrations built before {@link AppOwner.recoveryKey}
+ * became the canonical credential field.
+ */
+export type ExternalAppOwner =
+  | AppOwner
+  | (Omit<AppOwner, "recoveryKey" | "mnemonic"> & {
+      readonly recoveryKey?: never;
+      readonly mnemonic: string;
+    });
+
 export interface MutationOptions {
   readonly onComplete?: () => void;
+  /**
+   * Compare-and-set guard for an editor snapshot. The mutation succeeds only
+   * when the current row has its `updatedAt` HLC and expected deletion state
+   * (live by default). A missing or newer row returns a write conflict.
+   */
+  readonly expectedUpdatedAt?: string;
+  /**
+   * Internal companion to `expectedUpdatedAt`: require the matching row to be
+   * a tombstone. App code should use `restore`, which sets this safely and also
+   * forces the committed row live again.
+   */
+  readonly expectedDeleted?: boolean;
   /**
    * Write to the local database and refresh queries, but DON'T enqueue a sync
    * event or trigger a push. The row still gets a fresh HLC, so the local UI
@@ -205,18 +302,31 @@ export interface MutationOptions {
 
 export interface SyncEngineConfig {
   readonly name: string;
+  /**
+   * Highest sync-payload schema this app can interpret. Defaults to `1`.
+   *
+   * Keep this unchanged for additive table/column changes: older engines
+   * already project known columns and defer unknown tables. Bump it only when
+   * payload field meaning changes. Older clients then retain those events in
+   * `_sync_deferred` and replay them after an app upgrade declares support.
+   */
+  readonly schemaVersion?: number;
   readonly indexes?: IndexBuilder;
   readonly transports?: readonly Transport[];
-  readonly externalAppOwner?: AppOwner | null;
+  readonly externalAppOwner?: ExternalAppOwner | null;
   readonly encryptionKey?: unknown;
-  /** Poll interval (ms) for pulling remote changes. Default 5000. */
+  /** Poll interval (ms) for pulling remote changes. Default 60000. */
   readonly syncIntervalMs?: number;
   /**
-   * Retention window for the automatic tombstone sweep that runs (at most once
-   * a day) during sync: soft-deleted rows older than this are hard-deleted
-   * locally and their relay streams compacted away (`POST /v1/streams/compact`)
-   * on every configured relay. Default 30 days. Pass `false` to disable the
-   * automatic sweep (manual `purgeDeleted` / `purgeRows` still work).
+   * Reserved retention setting kept for source compatibility.
+   *
+   * Automatic hard deletion is disabled until the protocol has a durable
+   * cross-device delete watermark. Without one, a long-offline device could
+   * resurrect a row after its tombstone and relay stream were erased. Manual
+   * purge methods remain available only for databases that have never used a
+   * relay.
+   *
+   * @deprecated Currently has no effect.
    */
   readonly tombstoneRetentionMs?: number | false;
 }
@@ -321,7 +431,10 @@ export interface SyncError {
 }
 
 export interface SyncEngine<S extends SchemaDefinition> {
-  createQuery<O>(fn: (db: Kysely<Database<S>>) => Compilable<O>): Query<O>;
+  createQuery<O>(
+    fn: (db: Kysely<Database<S>>) => Compilable<O>,
+    options?: CreateQueryOptions,
+  ): Query<O>;
   loadQuery<R>(query: Query<R>): Promise<readonly R[]>;
   getQueryRows<R>(query: Query<R>): readonly R[];
   subscribeQuery(query: Query): (listener: () => void) => () => void;
@@ -348,6 +461,16 @@ export interface SyncEngine<S extends SchemaDefinition> {
    */
   batch(ops: ReadonlyArray<BatchOp<S>>, options?: MutationOptions): BatchResult;
   /**
+   * Restore exactly the tombstone identified by `expectedUpdatedAt`. A missing,
+   * live, or newer row returns a write-conflict failure.
+   */
+  restore<T extends keyof S & string>(
+    table: T,
+    id: Id,
+    expectedUpdatedAt: string,
+    options?: Omit<MutationOptions, "expectedUpdatedAt" | "expectedDeleted">,
+  ): MutationResult;
+  /**
    * Soft-delete a row by id: marks it deleted so the deletion replicates as a
    * tombstone (a hard local delete would resurrect from a peer on next sync) and
    * queries that filter `isDeleted` stop returning it. Idempotent.
@@ -365,22 +488,18 @@ export interface SyncEngine<S extends SchemaDefinition> {
   ): BatchResult;
   /**
    * Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older
-   * than `olderThanMs` (default 30 days). Safe: the grace window lets the
-   * deletion replicate first, pending-but-unpushed deletes are kept while
-   * relays are configured, and the relay retains tombstones so a re-sync
-   * re-applies them — synced peers are never resurrected. Returns the count
-   * purged.
+   * than `olderThanMs` (default 30 days) in a database that has never used a
+   * relay. Once relay history exists this returns `{ purged: 0 }`, even after
+   * transports are detached, because no durable cross-device deletion
+   * watermark exists yet. Returns the count purged.
    */
   purgeDeleted(options?: { olderThanMs?: number }): { purged: number };
   /**
    * Immediately hard-delete specific tombstoned rows ("Delete Permanently" /
-   * "Empty Trash"), skipping the age window. Rows that aren't tombstones, or
-   * whose delete event hasn't reached a relay yet (while relays are
-   * configured), are skipped and stay in the trash — retry after a sync.
-   * Purged rows' relay streams are queued for compaction and dropped from
-   * every configured relay on the next sync. Note: a device that stays offline
-   * past the purge never learns of the delete — permanent delete is
-   * best-effort on multi-device, not a guaranteed global erase.
+   * "Empty Trash"), skipping the age window, for databases that have never
+   * used a relay. Rows that aren't tombstones are skipped. Once relay history
+   * exists this returns `{ purged: 0 }`; retaining the tombstone prevents a
+   * long-offline peer from resurrecting the row.
    */
   purgeRows(
     rows: ReadonlyArray<{ table: keyof S & string; id: Id }>,
@@ -397,26 +516,28 @@ export interface SyncEngine<S extends SchemaDefinition> {
     legacyDbName: string,
   ): Promise<{ imported: number; skipped: number }>;
   /**
-   * Restore an owner from its recovery phrase. By default this refuses to wipe
-   * local data unless the relay confirms the owner has data (so a wrong phrase
-   * or an unreachable relay can't destroy the current data). Pass
+   * Restore an owner from a native `sf1_` recovery key or BIP39 phrase. By
+   * default this refuses to wipe local data unless the relay confirms the owner
+   * has data (so a wrong credential or unreachable relay can't destroy the
+   * current data). Pass
    * `{ force: true }` to switch to an empty/new owner intentionally.
    */
   restoreAppOwner(
-    mnemonic: string,
+    recoveryKey: string,
     options?: { force?: boolean },
   ): Promise<void>;
   resetAppOwner(): Promise<void>;
   /**
    * Build an encrypted, portable full-database snapshot (every table + the
-   * recovery phrase + sync cursors) — the file a user carries to a new main
+   * recovery key/phrase + sync cursors) — the file a user carries to a new main
    * device without relying on a relay. Pair with {@link importDatabase}.
    *
    * By default the file is encrypted with a key derived from the owner's
-   * recovery phrase: no extra secret to manage, and restoring just requires the
-   * phrase (which the user already safeguards). Pass `{ passphrase }` for the
-   * optional mode where a separate passphrase protects the file instead — a
-   * second, independent secret that survives loss of the recovery phrase.
+   * recovery credential: no extra secret to manage, and restoring just
+   * requires that key or phrase (which the user already safeguards). Pass
+   * `{ passphrase }` for the optional mode where a separate passphrase protects
+   * the file instead — a second, independent secret that survives loss of the
+   * recovery credential.
    */
   exportDatabase(options?: {
     passphrase?: string;
@@ -427,13 +548,18 @@ export interface SyncEngine<S extends SchemaDefinition> {
    * ownership, so no relay is consulted. Throws on the wrong secret or an
    * unrecognized file.
    *
-   * For a recovery-phrase-keyed file, pass `{ recoveryPhrase }` (defaults to the
-   * current device's phrase if it matches). For a passphrase-keyed file, pass
-   * `{ passphrase }`.
+   * For a recovery-keyed file, pass `{ recoveryKey }` (defaults to the current
+   * device's key/phrase if it matches). The legacy `{ recoveryPhrase }` alias is
+   * also accepted. For a passphrase-keyed file, pass `{ passphrase }`.
    */
   importDatabase(
     envelope: EncryptedEnvelopeV1 | string,
-    options?: { passphrase?: string; recoveryPhrase?: string },
+    options?: {
+      passphrase?: string;
+      recoveryKey?: string;
+      /** @deprecated Use `recoveryKey`; this alias remains wire/API compatible. */
+      recoveryPhrase?: string;
+    },
   ): Promise<void>;
   subscribeError(listener: () => void): () => void;
   getError(): SyncError | null;

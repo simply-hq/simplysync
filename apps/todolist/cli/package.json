@@ -1,0 +1,22 @@
+{
+  "name": "@simplysync/todolist-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "dev": "bun run src/dev.ts",
+    "interop": "bun run src/interop.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf data"
+  },
+  "dependencies": {
+    "@simplysync/engine": "workspace:*",
+    "@simplysync/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "~5.9.2"
+  }
+}

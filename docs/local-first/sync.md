@@ -9,39 +9,59 @@ All encryption and decryption happen in the engine, on the device.
 
 ## The sync loop
 
-`engine.sync()` (and the background poller) runs two phases per relay, both
-idempotent and safe to repeat:
+`engine.sync()` (and the background poller) first repairs local state, then runs
+push and pull for every configured relay. Every stage is idempotent and safe to
+repeat:
 
-**Push.** Select up to 1000 outbox rows where `pushed_at IS NULL`, `POST` them to
-`/v1/events`, and on success stamp `pushed_at`. Re-pushing is harmless — the
-relay ignores duplicates.
+**Seal.** A normal mutation has already committed its row and a plaintext-pending
+outbox intent in one SQLite transaction. Before any network request,
+`sealPendingOutbox()` encrypts each intent and fills its `envelope_json`. Push
+explicitly ignores unsealed rows, so `payload_json` never crosses the device
+boundary. Re-running the seal is harmless; already sealed rows are skipped.
+With browser tab coordination, only the elected leader seals. A follower's own
+pending local copy can remain unsealed until promotion, while the leader stages
+and seals its separate copy for relay delivery.
 
-**Pull & apply.** Read the per-relay cursor from `_sync_meta` (`cursor:<url>`),
-`GET /v1/events?after=<cursor>`, then for each returned envelope:
+**Push.** For each relay, select up to 1000 sealed outbox events that do not yet
+have an exact `(eventId, relay)` acknowledgement, `POST /v1/events`, record the
+acknowledgements in one transaction, and drain until no full batch remains.
+`pushed_at` means "reached at least one relay"; the engine keeps an event until
+every currently configured relay has acknowledged it. A newly added relay gets a
+current-row backfill even if the original bounded outbox was already pruned.
+Re-pushing is harmless because relays deduplicate `(ownerId, eventId)`.
 
-- skip it if its `eventId` is already in `_sync_seen` (dedupe);
-- `decryptEnvelope` it (which also verifies it belongs to this owner);
-- apply **last-writer-wins** — only overwrite the local row if the incoming `hlc`
-  is `>=` the existing row's `updatedAt`;
-- record the `eventId` in `_sync_seen`.
+**Pull & apply.** Read the opaque per-relay cursor from `_sync_meta`
+(`cursor:<url>`), `GET /v1/events?after=<cursor>`, then:
 
-Finally persist `nextCursor`. The cursor is keyset-based (`eventId`), so pulls are
-bounded and resumable even across hundreds of thousands of events. The seen-set
-is capped (50k) and pruned oldest-first — safe, because the cursor only advances
-and applies are idempotent.
+- skip envelopes whose `eventId` is already in `_sync_seen`;
+- decrypt and authenticate the envelope on-device;
+- classify schema version, table, and HLC before interpreting the row;
+- defer authenticated future-version, unknown-table, or temporarily future-HLC
+  events in `_sync_deferred`;
+- apply a supported row only when its HLC is **strictly newer** than the local
+  row's `updatedAt`, then record the event in `_sync_seen`.
+
+The page's applies/deferred writes and seen markers commit together. Only after
+that commit does the engine persist the relay's `nextCursor`, so a crash re-pulls
+and safely replays the page. Current relays issue a monotonic server `seq` cursor;
+the engine deliberately treats it as opaque. The seen-set is capped at 50k by
+retaining the lexicographically greatest event IDs; LWW application remains
+idempotent if an event is ever replayed.
 
 **Poll cadence & backoff.** The relay is plain HTTP with no server push, so the
 engine polls (`syncIntervalMs`, default 5s) and also syncs on local writes and on
 web focus/online. After a *terminal* failure (400/401/403/413) it backs the
 poller off to 5 minutes so it doesn't hammer a relay that's rejecting the batch —
-while still retrying immediately on focus/online/write. Network and 5xx/429
-errors retry at the normal cadence.
+while still retrying immediately on focus/online/write. A `429` also uses the
+five-minute backoff but remains nonterminal; network and 5xx failures retry at
+the normal cadence.
 
 ## Restore on a new device
 
 Restore is just "boot with the user's recovery phrase, then sync from an empty
 cursor": derive the identity, pull everything, apply. Because events are
-content-addressed by `(ownerId, eventId)` and applies are idempotent under LWW,
+uniquely keyed and deduplicated by `(ownerId, eventId)` and applies are
+idempotent under LWW,
 the device rebuilds identical state regardless of pull order.
 
 ## The encrypted envelope (crypto)
@@ -52,22 +72,24 @@ mnemonic ↔ entropy conversion.
 
 ### Secret → identity
 
-A "recovery secret" is **32 bytes of entropy** with two interchangeable encodings:
+A recovery credential has two supported forms:
 
 - **Native `sf1_` key:** `sf1_` + base64url(32 random bytes).
-- **BIP39 mnemonic:** 24 words ⇄ the same 32 bytes via `@scure/bip39`. 12-word
-  (16-byte) phrases are also accepted.
+- **BIP39 mnemonic:** normally 24 words / 32 bytes of entropy via
+  `@scure/bip39`; valid 12-word phrases are also accepted.
 
-From the secret the core derives three values — and the two encodings use two
-different derivation schemes:
+The two forms use different frozen derivation schemes. They are interchangeable
+as accepted API inputs, but an `sf1_` key and a mnemonic made from the same raw
+entropy do **not** identify the same owner.
 
 **Native key → HKDF-SHA256** (RFC 5869):
 
 ```
-PRK     = HMAC-SHA256(salt = protocol-v1 fixed bytes, IKM = secret)
+PRK     = HMAC-SHA256(salt = "sbt-local-first-v1", IKM = secret)
 ownerId   = base64url(HKDF-Expand(PRK, "owner-id",   16))
 dataKey   =            HKDF-Expand(PRK, "data-key",   32)   → AES-GCM key
 relayAuth = base64url(HKDF-Expand(PRK, "relay-auth",  32))
+streamKey =           HKDF-Expand(PRK, "stream-key",  32)
 ```
 
 **Mnemonic → SLIP-21** with SimplySync's fixed labels:
@@ -81,6 +103,7 @@ slip21(p) = node(...p)[32:64]
 ownerId   = base64url( slip21(["SimplySync","OwnerIdBytes"])[0:16] )
 dataKey   =            slip21(["SimplySync","OwnerEncryptionKey"])  → AES-GCM key
 relayAuth = base64url( slip21(["SimplySync","OwnerWriteKey"])[0:16] )
+streamKey = deriveBytes(encryptionKeyBytes, "stream-key", 32)
 ```
 
 > **Stability invariant.** The labels are part of the derivation: a given phrase
@@ -100,6 +123,7 @@ relayAuth = base64url( slip21(["SimplySync","OwnerWriteKey"])[0:16] )
   "eventId": "…",      // unique per owner (the engine uses the HLC)
   "deviceId": "…",     // which device produced it
   "createdAt": "ISO",  // wall clock, advisory only
+  "streamId": "…",     // optional pseudonymous row grouping key
   "nonce": "base64url(12 bytes)",
   "ciphertext": "base64url(AES-256-GCM output)"
 }
@@ -109,8 +133,9 @@ relayAuth = base64url( slip21(["SimplySync","OwnerWriteKey"])[0:16] )
 - Plaintext: the `SyncPayload` serialized as **canonical JSON** (keys sorted
   recursively) so encryption is deterministic w.r.t. object shape.
 - **AAD:** the canonical JSON of the envelope header `{version, ownerId, eventId,
-  deviceId, createdAt}`. So a relay can't move a ciphertext to a different
-  `eventId`/owner without GCM verification failing on decrypt.
+  deviceId, createdAt, streamId?}`. So a relay can't change routing metadata or
+  rebind ciphertext to a different event/stream without GCM verification
+  failing on decrypt.
 - `decryptEnvelope` rejects envelopes whose `ownerId` ≠ the identity's before
   attempting decryption.
 
@@ -169,9 +194,10 @@ Body: { "ownerId": string, "events": SyncEnvelope[] }
 → 200 { "events": SyncEnvelope[], "nextCursor": string }
 ```
 
-- Keyset pagination: `WHERE owner_id = ? AND event_id > ? ORDER BY event_id ASC
-  LIMIT ?`. `after=""` starts from the beginning. `nextCursor` is the last
-  `eventId` returned — store it and pass it back next time.
+- Keyset pagination: parse `after` as the relay-issued sequence, then
+  `WHERE owner_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`. An empty or legacy
+  nonnumeric cursor starts from zero. `nextCursor` is the last server `seq`
+  returned — store it opaquely and pass it back next time.
 - `limit` is clamped to `[1, MAX_EVENTS_PER_PULL]`, defaulting to
   `DEFAULT_EVENTS_PER_PULL`.
 - Pull requires an *existing* owner (`404` if unknown) and a matching auth hash.
@@ -222,12 +248,17 @@ A `404` means the relay is up but has never seen this owner (nothing pushed
 yet) — clients should read that as "healthy, empty account" and may confirm
 liveness via `/health`.
 
-### Ordering note
+### Two different orders
 
-`eventId` is the pagination key and the engine sets `eventId = hlc`. HLCs are
-monotonic per device, so the relay's `event_id` ordering approximates causal order
-well enough — but the relay makes **no** global-ordering guarantee. Correctness
-comes from clients applying `compareHlc` on the payload, not from pull order.
+The relay's monotonic server `seq` is only a skip-proof pagination order. The
+engine still sets `eventId = payload.hlc`, and that HLC is the conflict order.
+Correctness comes from authenticated clients applying row-level LWW, not from
+the order in which the relay returns events.
+
+The monotonic cursor is a relay contract. The engine stores it opaquely and
+checks only whether `nextCursor` differs from the previous string; it does not
+prove numeric forward progress. A custom relay that regresses or oscillates its
+cursor can cause replay or an indefinitely draining sync call.
 
 ## Relay configuration
 
@@ -273,8 +304,9 @@ SQLite (`data/relay.db`, WAL mode):
 ```sql
 owners(owner_id PK, relay_auth_hash, stored_bytes, created_at)
 events(owner_id, event_id, device_id, envelope_json, stored_bytes, created_at,
-       stream_id, PRIMARY KEY (owner_id, event_id))
+       stream_id, seq, PRIMARY KEY (owner_id, event_id))
 blobs(owner_id, hash, bytes BLOB, size, created_at, PRIMARY KEY (owner_id, hash))
+relay_meta(key PK, value)  -- monotonic event_seq + global owner_count
 ```
 
 The relay stores `envelope_json` verbatim (ciphertext + header) and blob chunks
@@ -296,9 +328,11 @@ The rule: for each `(owner_id, stream_id)`, keep the row with the **maximum
 loop would converge to, so a device pulling only survivors reconstructs identical
 state regardless of where its cursor sits.
 
-`stream_id` comes from the envelope header: `HMAC(streamKey, table‖rowId)`
-truncated to 16 bytes, base64url. The relay groups by it but can't reverse it to a
-table/row. The Go relay runs compaction on a timer (`COMPACTION_INTERVAL_MS`,
+`stream_id` comes from the envelope header:
+`base64url(HMAC-SHA256(streamKey, table + " " + rowId)).slice(0, 22)`. The
+literal single ASCII space and 22-character output are part of the wire
+contract. The relay groups by it but can't reverse it to a table/row. The Go
+relay runs compaction on a timer (`COMPACTION_INTERVAL_MS`,
 default 6h) or on demand; the Cloudflare relay runs it from a Cron-triggered
 Worker. After compaction, per-owner `stored_bytes` is decremented so the quota
 reflects *current* footprint, not lifetime writes.
@@ -309,7 +343,7 @@ reflects *current* footprint, not lifetime writes.
 
 ## Serverless deployment (Cloudflare)
 
-`relays/cloudflare` is a wire-compatible deployment that swaps the substrate
+`apps/relay-cloudflare` is a wire-compatible deployment that swaps the substrate
 without touching the protocol: **events + owner metadata → D1**, **blob chunks →
 R2** (cheap storage, free egress, safe to serve from cache because chunks are
 encrypted and content-addressed). Because Workers/D1/R2 bill per use with no hard
@@ -317,7 +351,7 @@ spend cap, it's hardened against **wallet-DDoS** with a cheapest-first defense
 stack: Cloudflare managed DDoS → zone WAF rate-limit → in-Worker rate-limit
 bindings → cheap-path rejection → hard quotas (`MAX_OWNER_BYTES`, a global
 `MAX_OWNERS` counter) and a `RELAY_DISABLED` kill switch. Full config is in
-[`relays/cloudflare/README.md`](../../relays/cloudflare/README.md).
+[`apps/relay-cloudflare/README.md`](../../apps/relay-cloudflare/README.md).
 
 ## Threat model
 
@@ -352,8 +386,11 @@ in [SECURITY.md](../../SECURITY.md).
 
 ## Extending the protocol — guidelines
 
-- **Versioning:** `SyncEnvelope.version` and `SyncPayload.schemaVersion` are both
-  `1`. Bump and branch rather than mutating field meaning — old envelopes live
+- **Versioning:** `SyncEnvelope.version` and `SyncPayload.schemaVersion` default
+  to `1`. Additive tables/columns stay on version 1. If payload meaning changes,
+  bump the engine config's `schemaVersion`; older clients durably defer the
+  opaque payload, and an upgraded client replays it after declaring support.
+  Bump and branch rather than mutating meaning in place — old envelopes live
   forever in the log.
 - **Backwards-compat tests are load-bearing.** Any change near key derivation must
   keep `identity.test.ts` green. Add a new vector rather than editing the existing

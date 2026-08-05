@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly + on-demand for the expensive cross-platform (macOS) e2e job.
+  schedule:
+    - cron: "0 6 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -20,50 +23,77 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          # The BIP39 guard scans every reachable commit, not only the tip.
-          fetch-depth: 0
+          node-version: "24"
+          package-manager-cache: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.9" # keep in sync with "packageManager" in package.json
       - uses: actions/setup-go@v6
         with:
-          go-version-file: relays/go/go.mod
-          cache-dependency-path: relays/go/go.sum
+          go-version-file: apps/relay-go/go.mod
+          cache-dependency-path: apps/relay-go/go.sum
       - run: bun install --frozen-lockfile
-      - run: bun run security:bip39
       - run: bun run typecheck
+      - run: bun run docs:check-links
+      - run: bun run docs:check-entrypoints
+      - run: bun run docs:build
       # The conformance suite builds the real Go relay inside a timed hook.
       # Warm the toolchain, module, and compiler caches outside that hook so a
       # clean runner does not spend the whole deadline downloading Go/sqlite.
       - run: go build ./...
-        working-directory: relays/go
+        working-directory: apps/relay-go
       - run: bun run test
 
+  selective-clones:
+    name: Selective clones + app cold starts (TypeScript)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/relay-go/go.mod
+          cache-dependency-path: apps/relay-go/go.sum
+      - name: Cold-clone and verify every TypeScript preset
+        shell: bash
+        run: |
+          set -euo pipefail
+          for preset in react-native web cli node core relay-cloudflare; do
+            bun run clone:check "$preset"
+          done
+      - name: Scaffold and verify every TypeScript app preset
+        shell: bash
+        run: |
+          set -euo pipefail
+          for preset in react-native web cli; do
+            bun run scaffold:check "$preset"
+          done
+
   go-relay:
-    name: Go relay (build + vet + test)
+    name: Go relay selective clone (build + vet + test)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: relays/go
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          go-version-file: relays/go/go.mod
-          cache-dependency-path: relays/go/go.sum
-      - run: go build ./...
-      - run: go vet ./...
-      - run: go test ./...
+          go-version-file: apps/relay-go/go.mod
+          cache-dependency-path: apps/relay-go/go.sum
+      - run: sh scripts/check-selective-clone.sh relay-go
 
   kotlin:
-    name: Kotlin port (JVM tests)
+    name: Kotlin source module (tests)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: ports/kotlin
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
@@ -71,4 +101,61 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v6
-      - run: ./gradlew test
+      - run: sh scripts/check-selective-clone.sh kotlin
+
+  swift-package:
+    name: Swift package + app cold start
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - run: sh scripts/check-selective-clone.sh swift
+      - run: sh scripts/check-scaffold.sh swift
+
+  # Cross-platform TodoList sync E2E. Every client and runner is local to this
+  # repository, so the Linux matrix can run on pull requests without secrets.
+  todo-e2e-linux:
+    name: TodoList e2e (web ↔ Kotlin)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/relay-go/go.mod
+          cache-dependency-path: apps/relay-go/go.sum
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+      - run: bun install --frozen-lockfile
+      - name: Web and Kotlin TodoList scenarios
+        run: bun run todo:e2e -- --matrix web-kotlin,kotlin-kotlin
+
+  todo-e2e-cross:
+    name: TodoList e2e (Swift cross-platform)
+    # macOS minutes bill ~10× Linux; run on main, nightly, and manually.
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.9"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/relay-go/go.mod
+          cache-dependency-path: apps/relay-go/go.sum
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v6
+      - run: bun install --frozen-lockfile
+      - name: Swift cross-platform TodoList scenarios
+        run: bun run todo:e2e -- --matrix swift-kotlin,swift-swift,web-swift

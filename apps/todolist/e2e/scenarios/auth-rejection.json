@@ -1,0 +1,25 @@
+{
+  "name": "auth-rejection",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "denied", "rejectStatus": 401 }, { "id": "r1" }],
+  "steps": [
+    { "do": "mutateRange", "device": "A", "table": "todo", "rowIdPrefix": "denied-",
+      "count": 2, "values": { "title": "Queued behind a rejection", "done": 0 } },
+
+    { "do": "syncExpectError", "device": "A", "relay": "denied", "capture": "denied" },
+    { "assert": "equals", "actual": "$denied.threw", "expected": true },
+    { "assert": "equals", "actual": "$denied.kind", "expected": "authRejected" },
+    { "assert": "outboxCount", "device": "A", "expect": 2 },
+
+    { "do": "sync", "device": "A", "relay": "r1", "capture": "recovered" },
+    { "assert": "atLeast", "actual": "$recovered.pushed", "expected": 2 },
+    { "assert": "outboxCount", "device": "A", "expect": 0 },
+
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "rowCount", "device": "B", "table": "todo", "expect": 2 }
+  ]
+}

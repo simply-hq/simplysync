@@ -6,7 +6,7 @@ import type {
   SyncError,
   SyncState,
   Transport,
-} from "../engine-types";
+} from "../engine-types.js";
 
 /**
  * The mutable state shared across the engine's concern modules (store, query

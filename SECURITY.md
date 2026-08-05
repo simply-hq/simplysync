@@ -52,13 +52,13 @@ The payload — table name, column values, amounts, notes, everything that is
 column without ever parsing it.
 
 **Verify (storage):**
-[`relays/go/store.go`](relays/go/store.go) — the `events` table
+[`apps/relay-go/store.go`](apps/relay-go/store.go) — the `events` table
 stores `envelope_json` as opaque text; the relay only ever reads the routing
 columns (`owner_id`, `event_id`, `device_id`, `stream_id`, `seq`). There is no
 code path that decrypts, inspects, or transforms `ciphertext`.
 
 **Verify (envelope shape & encryption):**
-[`relays/go/handlers.go`](relays/go/handlers.go) — `SyncEnvelope`
+[`apps/relay-go/handlers.go`](apps/relay-go/handlers.go) — `SyncEnvelope`
 is documented as *"the opaque, end-to-end-encrypted event the relay stores"*;
 the encrypt/decrypt happens client-side in
 [`packages/simplysync-engine/src/engine.ts`](packages/simplysync-engine/src/engine.ts)
@@ -82,9 +82,9 @@ data** — see `encryptPayload` in
   independent derivation outputs; one does not reveal the other. The relay only
   ever stores the **SHA-256 hash** of `relayAuth`, never the value itself.
 
-**Verify (auth):** [`relays/go/store.go`](relays/go/store.go) —
+**Verify (auth):** [`apps/relay-go/store.go`](apps/relay-go/store.go) —
 `ensureOwnerAuth` hashes the presented token with SHA-256 (`sha256B64`, defined
-in [`relays/go/main.go`](relays/go/main.go)) and compares against the
+in [`apps/relay-go/main.go`](apps/relay-go/main.go)) and compares against the
 stored hash (trust-on-first-use). The raw bearer token is never persisted.
 
 ---
@@ -101,8 +101,9 @@ omniscient, but it is not blind either:
   **timestamps** (`createdAt`/HLC). Owner ids are pseudonymous but stable. With
   compaction enabled it also sees `streamId` — a stable pseudonymous key per
   logical row — so it can count an owner's distinct rows and how often each
-  changes. It **cannot** reverse a `streamId` to a table/row: it's
-  `HMAC(streamKey, table‖rowId)` under a key the relay never holds.
+  changes. It **cannot** reverse a `streamId` to a table/row: it is the first 22
+  base64url characters of `HMAC-SHA256(streamKey, table + " " + rowId)` under
+  a key the relay never holds. The literal space is part of the wire contract.
 - **Network-level.** Like any server, it sees connecting IP addresses and timing
   unless you front it with Tor/VPN. This is outside the protocol's scope.
 - **Capability, not identity.** Anyone holding an owner's `relayAuth` can
@@ -113,7 +114,7 @@ omniscient, but it is not blind either:
 (replays are harmless), use soft deletes (a withheld delete self-heals on the
 next sync), and the relay enforces per-owner quotas (one owner can't exhaust
 another's storage). See
-[`relays/go/store.go`](relays/go/store.go) `pushEvents` for quota
+[`apps/relay-go/store.go`](apps/relay-go/store.go) `pushEvents` for quota
 enforcement.
 
 ---
@@ -124,7 +125,7 @@ enforcement.
    `packages/simplysync-protocol/src/index.ts`, find `dataKey`, and trace it — it's
    only ever used in local `crypto.subtle.encrypt/decrypt`. It is never put on
    the wire.
-2. **Confirm the relay can't read payloads.** Open `relays/go/store.go` and
+2. **Confirm the relay can't read payloads.** Open `apps/relay-go/store.go` and
    search for `ciphertext` — it never appears, because the relay only handles
    `envelope_json` as an opaque string.
 3. **Confirm what the relay *does* see.** Read the `events`/`owners` table DDL in
@@ -138,8 +139,8 @@ enforcement.
 
 ## Reporting a vulnerability
 
-Found something? Please open a private security advisory or email
-[`support@jericop.dev`](mailto:support@jericop.dev) rather than a public issue, and give us a reasonable window to
+Found something? Please open a private security advisory (or email the
+maintainers) rather than a public issue, and give us a reasonable window to
 ship a fix before disclosure. Specific, reproducible reports against the files
 above are the most useful.
 

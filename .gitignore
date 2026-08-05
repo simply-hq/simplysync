@@ -14,6 +14,7 @@ expo-env.d.ts
 
 # Native
 .kotlin/
+.build/
 *.orig.*
 *.jks
 *.p8
@@ -33,10 +34,8 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local environment and secret files (example templates remain trackable)
-**/.env
-**/.env.*
-!**/.env.example
+# local env files
+.env*.local
 
 # typescript
 *.tsbuildinfo
@@ -44,17 +43,27 @@ yarn-error.*
 app-example
 
 # generated native folders (only top-level prebuild output, not local Expo modules)
-examples/*/ios
-examples/*/android
+apps/*/ios
+apps/*/android
+apps/*/*/ios
+apps/*/*/android
 
-# Local Expo module build outputs (Kotlin/Gradle)
-examples/*/modules/*/android/build/
-examples/*/modules/*/android/.gradle/
-examples/*/modules/*/android/.cxx/
-examples/*/modules/*/ios/build/
-examples/*/modules/*/ios/Pods/
-examples/*/modules/*/ios/*.xcodeproj/xcuserdata/
-examples/*/modules/*/ios/*.xcworkspace/xcuserdata/
+# Local Expo module build outputs (Kotlin/Gradle). The clients live one level
+# deeper than the app group (apps/todolist/expo), so both depths are listed.
+apps/*/modules/*/android/build/
+apps/*/modules/*/android/.gradle/
+apps/*/modules/*/android/.cxx/
+apps/*/modules/*/ios/build/
+apps/*/modules/*/ios/Pods/
+apps/*/modules/*/ios/*.xcodeproj/xcuserdata/
+apps/*/modules/*/ios/*.xcworkspace/xcuserdata/
+apps/*/*/modules/*/android/build/
+apps/*/*/modules/*/android/.gradle/
+apps/*/*/modules/*/android/.cxx/
+apps/*/*/modules/*/ios/build/
+apps/*/*/modules/*/ios/Pods/
+apps/*/*/modules/*/ios/*.xcodeproj/xcuserdata/
+apps/*/*/modules/*/ios/*.xcworkspace/xcuserdata/
 
 # Maestro E2E test results
 test-results/
@@ -65,11 +74,13 @@ test-results/
 
 *.aab
 
-# Default `go build ./...` output for the main package (build artifact)
-relays/go/go
+# Compiled relay-go binary (build artifact)
+apps/relay-go/sbt-relay-go
 
 # Installed agent skills (reproducible from skills-lock.json). Keep the
 # repo-owned relay-hosting skill available in fresh clones.
 .agents/skills/*
 !.agents/skills/host-relay/
 !.agents/skills/host-relay/**
+!.agents/skills/clone-simplysync/
+!.agents/skills/clone-simplysync/**

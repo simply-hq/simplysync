@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-07-13T14:48:31.625Z",
+  "updatedAt": "2026-08-02T19:45:19.824Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -11,7 +11,7 @@
         ".ts"
       ],
       "note": "Protocol constants, crypto, envelopes, snapshots, and HLC behavior changed; review native kits and app ports.",
-      "sha256": "b56e7154e6cc41e66884f887acdceaf2576c57bda7a048318b652e59a516515b",
+      "sha256": "050b05a7a448eaac0f388ee9b11dd91192933ad1c6f9e2b5d3f1ff209f20fec1",
       "fileCount": 4
     },
     {
@@ -22,40 +22,40 @@
         ".ts"
       ],
       "note": "The reference engine changed; review native engine ports and app SyncEngine implementations.",
-      "sha256": "f3fd75b35046738e122f92c7ed007c4fae29f446be0c66dee00b67220d3a5ce3",
-      "fileCount": 17
+      "sha256": "09e830b2c6a28147c42341803265198b22e20a5b116f6d943a77b1d78752fa2d",
+      "fileCount": 19
     },
     {
       "name": "upstream Swift native kit",
       "root": "simplysync",
-      "path": "ports/swift/SimplySyncDemo/Kit",
+      "path": "Sources/SimplySync/Kit",
       "extensions": [
         ".swift"
       ],
       "note": "The Swift protocol kit changed; review SimplyFinance SimplySyncKit.",
-      "sha256": "9081be245e80890a46777cb6ee1da3d9a6e21a9ec7359ab52dceea83c75120ad",
+      "sha256": "51612ece593bd9fb3d7ae7fbc08782a0c59daaba990c676247001435390552d4",
       "fileCount": 9
     },
     {
       "name": "upstream Swift native engine",
       "root": "simplysync",
-      "path": "ports/swift/SimplySyncDemo/Engine",
+      "path": "Sources/SimplySync/Engine",
       "extensions": [
         ".swift"
       ],
       "note": "The Swift engine port changed; review SimplyFinanceCore sync/database/backup code.",
-      "sha256": "a68209f788311beee76aa2f99ea1de8904463edad85c7597fb360d4d9f8289a0",
+      "sha256": "831e68d3e7b1a4b351c5aba9b9b2ddf423926da9995140f9df4f3b3c054e5bb6",
       "fileCount": 12
     },
     {
       "name": "upstream Kotlin native engine",
       "root": "simplysync",
-      "path": "ports/kotlin/src/main/kotlin/com/simplysync/kotlin",
+      "path": "apps/todolist/kotlin/src/main/kotlin/com/simplysync/kotlin",
       "extensions": [
         ".kt"
       ],
       "note": "The Kotlin native port changed; review Android synckit and app SyncEngine.",
-      "sha256": "dc568c7cb6fc1cad0749a4b794bbb2fb2d432018671f9bc895b361219a7796bd",
+      "sha256": "dd0f158a577b2b6759a009182e23914f5c5480a2298325cb7293b206cb9ef85b",
       "fileCount": 20
     },
     {
@@ -66,7 +66,7 @@
         ".swift"
       ],
       "note": "The iOS app protocol kit changed; confirm the upstream native Swift port is still represented.",
-      "sha256": "ba098d29c7b12fcc8257a35d429a59a4f4ce162817ba4303c8e09b5e2cb54cbe",
+      "sha256": "c07175c0dbfd5fda4fa566d7342d1c2e1767be7554a02ecef0be1b1cd9d3036e",
       "fileCount": 11
     },
     {
@@ -84,7 +84,7 @@
         "SyncEngine.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "5617e064e7492c6e45e8cfe66a75c64f797ff186a73977aae28e8a1dc8aa833c",
+      "sha256": "7e02fe61800534653a6ae3c946912ab9e346b531745fd7967e867f3b9d7593ec",
       "fileCount": 8
     },
     {
@@ -95,7 +95,7 @@
         ".kt"
       ],
       "note": "The Android app protocol kit changed; confirm the upstream native Kotlin port is still represented.",
-      "sha256": "b9613b534cd1a4fc5dffe0aa440d5269db21e981f62d4a46fb1d231e7591aba2",
+      "sha256": "96670361d06ebd14fdbe0c4577dd787769cfe8dea510f88d94b24699ab9f117e",
       "fileCount": 11
     },
     {
@@ -113,7 +113,7 @@
         "SyncEngine.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "8a8d0cee9c8b9d3fe4067a2c34bfa5d53fb26a88b1d0ef4cecdb46f8cc23fb13",
+      "sha256": "b6b3c21bb895ee963742276486b7f1a097133290a27d45215bd6fa7f90eb2d69",
       "fileCount": 8
     }
   ]

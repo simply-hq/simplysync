@@ -5,12 +5,12 @@ The Kotlin client is a **full engine**, not just the protocol core. Like
 clock, the outbox, a reactive query cache, and the sync loop — so you call
 `insert` / `update` / `query` and collect reactive results into Compose, the same
 way the React version works. It lives in
-[`ports/kotlin`](../../ports/kotlin/README.md)
+[`apps/todolist/kotlin`](../../apps/todolist/kotlin/README.md)
 (`com.simplysync.kotlin`), built on the protocol port in the same package.
 
-> This page mirrors the [React/TypeScript guide](./guide.html) section-for-section.
-> For the on-the-wire protocol and — importantly — the **identity interop
-> boundary** (Kotlin pins different BIP39 paths), see [Native clients](./native.md).
+> This page mirrors the [React/TypeScript guide](./guide.md) section-for-section.
+> For the on-the-wire protocol and the versioned mnemonic identity migration, see
+> [Native clients](./native.md).
 > Pure JVM (no Android framework deps), so it unit-tests without an emulator.
 
 ## Mental model
@@ -32,17 +32,34 @@ way the React version works. It lives in
  relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ liveQuery StateFlow re-emits
 ```
 
-## Add the dependency
+## Clone the source module
 
-The engine ships in the same pure-JVM module as the protocol core (depends only on
-kotlinx-serialization, kotlinx-coroutines, OkHttp, and `org.xerial:sqlite-jdbc`
-for the default driver). Build and run the suite with:
+Use the `kotlin` selective clone preset, then include its directory as a local
+Gradle project:
 
 ```sh
-cd ports/kotlin
-./gradlew test                                    # local engine + protocol tests
-./gradlew test -PrelayUrl=http://localhost:4100   # + live two-device interop
+bun run clone kotlin ../my-kotlin-sync
 ```
+
+```kotlin
+// settings.gradle.kts
+include(":simplysync-kotlin")
+project(":simplysync-kotlin").projectDir =
+    file("../my-kotlin-sync/apps/todolist/kotlin")
+
+// app/build.gradle.kts
+dependencies {
+    implementation(project(":simplysync-kotlin"))
+}
+```
+
+It exposes kotlinx-serialization, coroutines, and OkHttp as API dependencies.
+Android injects an `android.database` driver. A JVM app using the optional
+`JdbcSqliteDriver` also adds
+`runtimeOnly("org.xerial:sqlite-jdbc:3.45.3.0")`; desktop SQLite binaries are
+deliberately not pulled into Android apps. The
+[Kotlin source README](../../apps/todolist/kotlin/README.md#clone-and-use-the-source)
+includes the standalone test command.
 
 Treat the protocol core as **pinned** — update it wholesale, don't fork it, or
 clients stop being able to sync with each other.
@@ -93,10 +110,16 @@ val engine = createSync(deps)(appSchema, SyncEngineConfig(
     name = "my-app",
     transports = listOf(Transport("http://10.0.2.2:4100")), // optional relay
     syncIntervalMs = 3000,                                    // poll cadence
+    schemaVersion = 1,                                        // optional; default 1
 ))
 
 engine.ready() // suspend: resolves once the DB is open and the owner is loaded
 ```
+
+Keep `schemaVersion` at `1` for additive table and column changes. Only bump it
+when payload meaning changes incompatibly. Older clients durably retain a newer
+payload without partially applying it, then replay it after an upgraded app
+declares support.
 
 On first run the engine mints a new owner (a fresh `sf1_` recovery key, stored via
 `secureStorage`). On later runs it loads the existing one.
@@ -215,6 +238,19 @@ engine.restoreAppOwner(recoveryKey)               // refuses to wipe unless the 
 engine.restoreAppOwner(recoveryKey, force = true) // intentional switch to a new/empty owner
 ```
 
+For a BIP39 phrase, restore probes both the current cross-platform profile and
+the older Evolu-derived Android profile, then selects the owner that actually has
+relay data. If you already know the profile (including an offline forced
+restore), pass it explicitly:
+
+```kotlin
+engine.restoreAppOwner(
+    phrase,
+    MnemonicIdentityProfile.EVOLU_LEGACY_V1,
+    force = true,
+)
+```
+
 **Reset** mints a brand-new owner and wipes local data:
 
 ```kotlin
@@ -223,11 +259,10 @@ engine.resetAppOwner()
 
 Both call your `reloadApp` afterward so the UI re-evaluates against the new owner.
 
-> **Interop — read this.** Kotlin pins its BIP39 SLIP-21 paths to `"Evolu"`, not
-> `"SimplySync"` (a locked regression test enforces it), so a 24-word phrase
-> derives a **different owner** here than on TS/Swift. To sync a Kotlin client with
-> a web/Expo/Swift client, share an **`sf1_` recovery key** (identical on all
-> three). Full detail in the
+> **Interop and upgrades.** New Kotlin mnemonic identities use the same
+> `"SimplySync"` SLIP-21 profile as TS/Swift. Existing Evolu-derived Android
+> databases remain on their legacy profile; the engine detects and records that
+> choice instead of silently changing owners. Full detail is in the
 > [interop boundary](./native.md#identity-derivation-the-interop-boundary).
 
 ## 7. Connecting a relay & sync state
@@ -308,7 +343,7 @@ Android, back it with the Keystore / `EncryptedSharedPreferences`.
 | `engine.getQueryRows` | `(Query<T>) -> List<T>` | Cached snapshot. |
 | `engine.liveQuery` | `(Query<T>) -> StateFlow<List<T>>` | Reactive result (`useQuery` analog). |
 | `engine.appOwner` | `suspend () -> AppOwner?` | `{ id, recoveryKey, writeKey, mnemonic? }`. |
-| `engine.restoreAppOwner` | `suspend (String, force: Boolean)` | Restore from a key/phrase. |
+| `engine.restoreAppOwner` | `suspend (String, force: Boolean)` or `(String, MnemonicIdentityProfile, force: Boolean)` | Restore from a key/phrase; mnemonic restore can auto-detect or explicitly select a profile. |
 | `engine.resetAppOwner` | `suspend ()` | New owner, wipes local data. |
 | `engine.setTransports` | `(List<Transport>)` | Set relays; triggers sync + polling. |
 | `engine.sync` | `suspend ()` | Push outbox, pull + apply. |
@@ -323,8 +358,8 @@ Android, back it with the Keystore / `EncryptedSharedPreferences`.
   and `syncState.collectAsState()` instead of `useQuery` / `useSyncState`.
 - **Not ported:** binary blobs, legacy import, and the fluent index builder. The
   encrypted DB snapshot format *is* ported separately as `SnapshotCrypto`.
-- **Phrases don't interop with TS/Swift** — Kotlin pins `"Evolu"` BIP39 paths;
-  share an `sf1_` key to sync across languages (§6).
+- **A legacy mnemonic profile.** New phrases interoperate with TS/Swift; Kotlin
+  additionally retains Evolu-derived owners for safe Android upgrades (§6).
 
 ## Common pitfalls
 

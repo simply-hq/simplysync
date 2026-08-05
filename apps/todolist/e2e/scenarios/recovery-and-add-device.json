@@ -1,0 +1,63 @@
+{
+  "name": "recovery-and-add-device",
+  "devices": {
+    "source": { "platform": "$P1" },
+    "newDevice": {
+      "platform": "$P2",
+      "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow"
+    }
+  },
+  "relays": [{ "id": "primary" }],
+  "steps": [
+    {
+      "do": "mutate",
+      "device": "source",
+      "table": "todo",
+      "rowId": "saved-before-restore",
+      "op": "upsert",
+      "values": { "title": "Recovered on a new device", "done": 0 }
+    },
+    { "do": "sync", "device": "source", "relay": "primary" },
+    {
+      "do": "mutate",
+      "device": "newDevice",
+      "table": "todo",
+      "rowId": "different-owner-local-row",
+      "op": "upsert",
+      "values": { "title": "This owner is replaced", "done": 0 }
+    },
+    { "do": "owner", "device": "source", "capture": "sourceOwner" },
+    { "do": "owner", "device": "newDevice", "capture": "originalNewDeviceOwner" },
+    {
+      "assert": "notEquals",
+      "actual": "$sourceOwner.id",
+      "expected": "$originalNewDeviceOwner.id"
+    },
+    {
+      "do": "restoreOwner",
+      "device": "newDevice",
+      "relay": "primary",
+      "recoveryKey": "$sourceOwner.recoveryKey",
+      "capture": "restoredOwner"
+    },
+    {
+      "assert": "equals",
+      "actual": "$restoredOwner.id",
+      "expected": "$sourceOwner.id"
+    },
+    { "do": "sync", "device": "newDevice", "relay": "primary" },
+    {
+      "assert": "row",
+      "device": "newDevice",
+      "table": "todo",
+      "rowId": "saved-before-restore",
+      "expect": { "title": "Recovered on a new device", "done": 0 }
+    },
+    {
+      "assert": "noRow",
+      "device": "newDevice",
+      "table": "todo",
+      "rowId": "different-owner-local-row"
+    }
+  ]
+}

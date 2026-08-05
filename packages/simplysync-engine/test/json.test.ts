@@ -107,9 +107,9 @@ describe("JsonText column type", () => {
     expect(created.ok).toBe(true);
 
     const rows = await engine.loadQuery(
-      engine.createQuery((db) =>
-        db.selectFrom("todo").select(["tags", "subtasks"]),
-      ),
+      engine.createQuery((db) => db.selectFrom("todo").select(["tags", "subtasks"]), {
+        includeDeleted: true,
+      }),
     );
     expect(decodeJsonOr<string[]>(rows[0]?.tags, [])).toEqual([
       "work",

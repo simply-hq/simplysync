@@ -18,6 +18,17 @@ through a relay that only ever sees ciphertext.
 - **Schema-driven & typed.** Declare tables with a small type DSL; queries are
   typed via Kysely.
 
+## Use from source
+
+Run `bun run clone core ../my-sync-core` from a full checkout, or choose a
+client preset such as `react-native`, `web`, `cli`, or `node`; each includes the
+engine and protocol source automatically. In the selected clone, run
+`bun install --no-save && bun run build`.
+
+The engine is platform-neutral: inject a SQLite driver and secure storage.
+Browser apps use the `@simplysync/browser` workspace; native apps use their
+platform adapter source.
+
 ## Quick start
 
 ```ts
@@ -33,7 +44,7 @@ const schema = {
   todo: { id: id("Todo"), title: NonEmptyString, done: SqliteBoolean },
 };
 
-// Inject a platform SQLite driver + secure storage for the recovery phrase.
+// Inject a platform SQLite driver + secure storage for the recovery key/phrase.
 const engine = createSync({ createSqliteDriver, secureStorage })(schema, {
   name: "my-app",
   transports: [{ type: "Http", url: "https://relay.example" }], // optional
@@ -49,7 +60,10 @@ const rows = await engine.loadQuery(activeTodos); // or subscribe for reactivity
 ```
 
 Every row automatically gets `createdAt`, `updatedAt` (the HLC), and `isDeleted`
-(soft-delete flag) system columns. Queries should filter `where isDeleted = 0`.
+(soft-delete flag) system columns. Queries should filter `where isDeleted = 0` —
+`createQuery` warns once per query when they don't, since a missing filter
+silently returns deleted rows. Pass `{ includeDeleted: true }` as the second
+argument for a query that means to read tombstones.
 
 ## Writing data
 
@@ -168,22 +182,26 @@ rows read `NULL` for new columns until a write backfills them. Migrations are
 additive only (no rename/drop) so older and newer app versions stay
 wire-compatible against the same relay.
 
+Leave `SyncEngineConfig.schemaVersion` at its default `1` for those additive
+changes. If payload field meaning changes incompatibly, bump the version in the
+new app. Older clients retain higher-version events in `_sync_deferred` instead
+of partially applying them; startup replays them once an upgraded client
+declares support.
+
 ## Storage hygiene (long-lived apps)
 
-- **Automatic tombstone retention** — during sync (at most once a day) the
-  engine hard-deletes tombstones older than `tombstoneRetentionMs` (default
-  30 days; `false` disables) and asks every configured relay to drop those
-  rows' streams (`POST /v1/streams/compact`), so relay storage tracks the
-  device instead of holding every ever-deleted row forever. Purged streams are
-  queued durably (`_sync_purge`) and retried until every relay acks.
-- **`engine.purgeDeleted({ olderThanMs? })`** — the same sweep, on demand.
-  Safe: a grace window (default 30 days) lets deletes replicate, un-pushed
-  deletes are kept, and the relay retains tombstones inside the window so a
-  re-sync re-applies them (synced peers are never resurrected).
+- **Synced tombstones are retained.** Until the protocol has a durable
+  cross-device delete watermark, automatically hard-deleting an old tombstone
+  could let a device that was offline past the retention window resurrect its
+  stale row. The legacy `tombstoneRetentionMs` option is therefore retained for
+  source compatibility but currently has no effect.
+- **`engine.purgeDeleted({ olderThanMs? })`** — hard-delete old tombstones for a
+  database that has never used a relay. It deliberately returns
+  `{ purged: 0 }` after any relay history exists, even if transports are later
+  detached.
 - **`engine.purgeRows(rows)`** — immediate "Delete Permanently"/"Empty Trash":
-  hard-delete specific tombstones now, skipping the age window (the pushed-to-
-  a-relay guard still applies). Best-effort on multi-device — a device offline
-  past the purge never learns of the delete.
+  hard-delete specific tombstones in a never-synced database, skipping the age
+  window. It has the same durable relay-history guard.
 - **Outbox pruning is automatic** — after a successful sync, events confirmed
   delivered to every configured relay are dropped from the send queue, so the
   outbox doesn't grow without bound.
@@ -195,7 +213,7 @@ wire-compatible against the same relay.
 - **`sync()`**, **`setTransports()`**, **`subscribeSyncState()`**,
   **`getSyncState()`**, **`getPendingOutboxCount()`**, **`getSyncLog()`** for
   control and diagnostics.
-- **Identity**: a BIP39 recovery phrase derives the owner deterministically;
+- **Identity**: a native `sf1_` key or BIP39 recovery phrase derives the owner deterministically;
   `restoreAppOwner`, `resetAppOwner`, and encrypted `exportDatabase` /
   `importDatabase` move data between devices.
 

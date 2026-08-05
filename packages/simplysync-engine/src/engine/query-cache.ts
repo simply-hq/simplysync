@@ -1,5 +1,5 @@
-import type { Query, SchemaDefinition } from "../engine-types";
-import type { EngineState } from "./state";
+import type { Query, SchemaDefinition } from "../engine-types.js";
+import type { EngineState } from "./state.js";
 
 interface QueryEntry {
   sql: string;

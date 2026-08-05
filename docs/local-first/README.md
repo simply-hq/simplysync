@@ -35,11 +35,72 @@ and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
 - The **server must validate or act on data** (payments, authoritative game state).
 - You need **strong consistency or cross-device transactions** → sync is eventually consistent.
 
+## Quickstart: a source-owned React Native app
+
+<!-- quickstart:react-native:start -->
+SimplySync is clone-only: the app owns the exact source it ships. This path
+needs Git, Bun, Go 1.25+, and either Xcode or Android Studio.
+
+```sh
+# Only Expo/React Native, its source dependencies, and the local Go relay.
+curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
+  sh -s -- --with-relay react-native simplysync-mobile
+cd simplysync-mobile
+
+# Derive your app from the checked-in TodoList client; no template registry.
+sh scaffold-simplysync.sh react-native my-notes
+bun install --no-save
+bun run build
+```
+
+Start the included ciphertext-only relay in one terminal:
+
+```sh
+bun run relay:go
+```
+
+Build and launch the native development client in another terminal:
+
+```sh
+# iOS Simulator
+EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://127.0.0.1:4100 \
+  bun run --cwd apps/my-notes ios
+
+# Android Emulator (use this instead of the iOS command)
+EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://10.0.2.2:4100 \
+  bun run --cwd apps/my-notes android
+```
+
+If Expo reports that Metro port 8081 is already in use, rerun the same platform
+command with `--port 8082`.
+
+On the first device, save the recovery key and choose **I saved this key**.
+Launch the same development build on a second simulator or device, choose
+**Already have a key?**, and paste it. A todo added on either device then syncs
+through the relay. For a physical phone, replace the loopback URL with the
+development machine's reachable HTTPS or LAN address.
+
+If you only want the canonical React Native example, skip the scaffold command
+and use `apps/todolist/expo` in the launch command. Omit `--with-relay` when you
+want an exact local-only client clone.
+
+For a fast two-device proof without a native SDK:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
+  sh -s -- --with-relay cli simplysync-proof
+cd simplysync-proof
+bun install --no-save
+bun run todo:dev -- --once
+```
+<!-- quickstart:react-native:end -->
+
 ## Why use this
 
 - **Local-first & fast** — writes hit local SQLite; the network is never on the critical path.
 - **End-to-end encrypted** — AES-256-GCM on-device; the relay only ever holds ciphertext + routing metadata.
-- **No lock-in** — the relay is a few hundred lines that run anywhere (Go / Bun / Cloudflare) over plain SQLite.
+- **No lock-in** — choose the small Go + SQLite relay or the wire-compatible
+  Cloudflare Workers + D1/R2 deployment.
 - **No accounts to phish** — identity derives from one secret (a recovery key or a BIP39 phrase).
 - **A real database** — typed schema, [Kysely](https://kysely.dev) queries (joins, filters, ordering), and a reactive `useQuery` for React.
 - **Scales past memory** — keyset-paginated, resumable sync; images sync as tiny manifests with lazily fetched encrypted chunks.
@@ -55,23 +116,14 @@ and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
 ## Read next
 
 1. **[Client API](./guide.md)** — schema, mutations, reactive queries, React hooks, identity & relays.
-2. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
-3. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
-4. **[Native clients](./native.md)** — the Swift & Kotlin ports: what's shared, the API surface, and the identity interop boundary.
-5. **[Demo](./demo.html)** — a two-device sync demo in your browser.
+2. **[Inputs → transformations → outputs](../simplysync-system/README.md)** — four views of the complete SimplySync pipeline.
+3. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
+4. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
+5. **[Native clients](./native.md)** — the Swift & Kotlin ports: what's shared, the API surface, and the identity interop boundary.
+6. **[For agents](./agents.md)** — the dense contract for coding agents: invariants first, then a complete app and the whole API surface.
+7. **[Demo](./demo.html)** — a two-device sync demo in your browser.
 
 Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat model](../../SECURITY.md)**.
-
-## Try it in 30 seconds
-
-```sh
-bun install
-bun run demo                 # CLI: relay + two clients sync, one shot
-
-# Or the browser demo, two devices side by side:
-bun run relay:go             # terminal 1 — relay on :4100
-bun run docs:dev             # terminal 2 — docs + demo on :4200
-```
 
 ## Components
 
@@ -81,6 +133,8 @@ bun run docs:dev             # terminal 2 — docs + demo on :4200
 | --- | --- |
 | `@simplysync/engine` | **The client API** — typed schema, local SQLite store, Kysely queries, mutations, and the sync loop. |
 | `@simplysync/react` | React bindings: `SyncProvider`, `useQuery`, `useSyncState`. |
+| `@simplysync/react-native` | React Native bindings and Expo SQLite, SecureStore, SQLCipher, crypto, and lifecycle adapters. |
+| `@simplysync/node` | Built-in `node:sqlite` driver and lifecycle adapters for Node 22.13+, Raycast, and CLI apps. |
 | `@simplysync/protocol` | The crypto/wire primitives the engine builds on: identity, key derivation, AES-GCM envelopes, HLC, blobs. |
 
 **The relay — optional.** Without one, the app is purely local-first and every
@@ -90,14 +144,14 @@ one or [self-host](./self-hosting.md):
 
 | Relay | Stack |
 | --- | --- |
-| `relays/go` | Go + SQLite — canonical self-hosted relay. |
-| `relays/cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
+| `apps/relay-go` | Go + SQLite — canonical self-hosted relay. |
+| `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
 
-**Reference clients:** `examples/cli` (CLI) and `examples/expo`
-(native Expo) — read and copy them. For fully native, JavaScript-free clients
-there are clean-room **Swift** (`ports/swift`) and **Kotlin/JVM**
-(`ports/kotlin`) ports of the protocol — see
-[Native clients](./native.md).
+**Canonical example:** [`apps/todolist`](../../apps/todolist) groups its CLI,
+browser, React Native, Swift, and Kotlin clients around one schema, owner, and
+relay. Every face uses the same source-module surface rather than app-specific
+sync code. Use the repository's selective clone command to keep only one face
+and its dependencies — see [Native clients](./native.md).
 
 ## Credits & prior art
 
@@ -114,8 +168,8 @@ We built our own because we wanted a few specific things:
   copied into your app and owned, so you can audit every line. (Evolu is a fuller,
   more featureful platform with a larger surface.)
 - **A deliberately dumb relay over plain HTTP** (keyset-paginated pull + cursor),
-  shipped as three wire-identical implementations — Go, Bun, and Cloudflare — so
-  you can self-host on whatever you already run. (Evolu syncs over WebSocket;
+  shipped as two wire-compatible deployments — Go + SQLite and Cloudflare
+  Workers + D1/R2 — so you can self-host on what fits. (Evolu syncs over WebSocket;
   also self-hostable, just more to reimplement.)
 - **First-class encrypted binary blobs** — lazy, content-addressed, chunked — for
   image-heavy apps.

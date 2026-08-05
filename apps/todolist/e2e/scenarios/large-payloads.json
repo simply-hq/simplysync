@@ -1,0 +1,32 @@
+{
+  "name": "large-payloads",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }, { "id": "small", "env": { "MAX_EVENT_BYTES": "4096" } }],
+  "steps": [
+    { "do": "mutate", "device": "A", "table": "todo", "rowId": "large-1",
+      "values": {
+        "title": { "$repeat": { "of": "x", "times": 100000 } },
+        "done": 0
+      } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+
+    { "do": "mutate", "device": "A", "table": "todo", "rowId": "large-2",
+      "values": {
+        "title": { "$repeat": { "of": "y", "times": 8192 } },
+        "done": 0
+      } },
+    { "do": "syncExpectError", "device": "A", "relay": "small", "capture": "error" },
+    { "assert": "equals", "actual": "$error.threw", "expected": true },
+    { "assert": "equals", "actual": "$error.kind", "expected": "quotaExceeded" },
+
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "rowCount", "device": "B", "table": "todo", "expect": 2 }
+  ]
+}

@@ -5,8 +5,8 @@
 // sites build on.
 
 import { isRecoveryMnemonic, normalizeMnemonic } from "@simplysync/protocol";
-import { isOrderKey } from "./order";
-import { isJsonString } from "./json";
+import { isOrderKey } from "./order.js";
+import { isJsonString } from "./json.js";
 
 declare const brandSymbol: unique symbol;
 export type Brand<B extends string> = { readonly [brandSymbol]: B };
@@ -34,6 +34,8 @@ export interface Type<T> {
   readonly name: string;
   readonly sqlite: SqliteColumnType;
   readonly nullable: boolean;
+  /** Optional SQLite default used for omitted columns on inserts/migrations. */
+  readonly defaultValue?: T;
   from: (value: unknown) => Result<T>;
   orThrow: (value: unknown) => T;
 }
@@ -168,6 +170,14 @@ export const nullOr = <T>(base: Type<T>): Type<T | null> =>
       const result = base.from(v);
       return result.ok ? null : result.error.message;
     },
+  });
+
+/** Adds a validated SQLite default without changing the column's decoded type. */
+export const withDefault =
+  <T>(value: T) =>
+  (base: Type<T>): Type<T> => ({
+    ...base,
+    defaultValue: base.orThrow(value),
   });
 
 // ----- Ids ---------------------------------------------------------------

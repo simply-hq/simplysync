@@ -6,29 +6,43 @@
   "license": "MIT",
   "type": "module",
   "workspaces": [
+    "apps/*",
+    "apps/todolist/*",
     "packages/*",
-    "relays/*",
-    "examples/*",
-    "docs/site",
-    "tests/*"
+    "tools/*"
   ],
   "packageManager": "bun@1.3.9",
   "scripts": {
+    "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "relay:go": "cd relays/go && go run .",
-    "relay:cloudflare:setup": "bun run --cwd relays/cloudflare setup",
-    "demo": "bun run --cwd examples/cli demo:with-relay",
-    "expo": "bun run --cwd examples/expo start",
-    "docs:dev": "bun run --cwd docs/site dev",
-    "kotlin:test": "cd ports/kotlin && ./gradlew test",
-    "app-e2e": "bun run --cwd tests/app-e2e e2e",
+    "docs:check-links": "bun run scripts/check-markdown-links.ts",
+    "docs:check-entrypoints": "bun run scripts/check-doc-entrypoints.ts",
+    "docs:build": "turbo run build --filter=@simplysync/docs",
+    "clone": "sh clone-simplysync.sh",
+    "clone:check": "sh scripts/check-selective-clone.sh",
+    "scaffold": "sh scaffold-simplysync.sh",
+    "scaffold:check": "sh scripts/check-scaffold.sh",
+    "relay:go": "cd apps/relay-go && go run .",
+    "relay:cloudflare:setup": "bun run --cwd apps/relay-cloudflare setup",
+    "protocol:demo": "turbo run build && bun run --cwd tools/protocol-demo demo:with-relay",
+    "todo": "turbo run build && bun run --cwd apps/todolist/cli start",
+    "todo:dev": "turbo run build && bun run --cwd apps/todolist/cli dev",
+    "todo:interop": "turbo run build && bun run --cwd apps/todolist/cli interop",
+    "todo:expo": "turbo run build && bun run --cwd apps/todolist/expo start",
+    "docs:dev": "turbo run build && bun run --cwd apps/docs dev",
+    "kotlin:test": "cd apps/todolist/kotlin && ./gradlew test",
+    "swift:test": "swift test",
+    "todo:e2e": "turbo run build && bun run --cwd apps/todolist/e2e e2e",
     "app-port:check": "node scripts/check-native-app-port-drift.mjs",
     "app-port:update": "node scripts/check-native-app-port-drift.mjs --update",
-    "sync:diff": "node scripts/diff-sync-port.mjs",
-    "security:bip39": "bun run --cwd packages/simplysync-protocol security:bip39"
+    "sync:diff": "node scripts/diff-sync-port.mjs"
   },
   "devDependencies": {
+    "@types/node": "22.15.30",
     "turbo": "2.9.16"
+  },
+  "overrides": {
+    "undici": "7.29.0"
   }
 }

@@ -98,9 +98,9 @@ describe("identity derivation from a mnemonic", () => {
   // derivation change far more likely to trip a test.
   test("derives a second phrase to its locked owner id", async () => {
     const secondMnemonic =
-      "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo vote";
+      "differ crew income average style spring cloth prison salt tell lock forget they universe gold orbit nerve doll door endorse dwarf resist rude layer";
     const identity = await deriveIdentityFromMnemonic(secondMnemonic);
-    expect(identity.ownerId).toBe("Eqflu0ohQdEAjGXnm3ZxLQ");
+    expect(identity.ownerId).toBe("JaiLPDhC5NYBd9jD09FQuQ");
   });
 });
 

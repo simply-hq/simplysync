@@ -4,10 +4,7 @@
 // only for use within the package; base64UrlEncode/base64UrlDecode are the only
 // ones re-exported from the package entry.
 
-const DERIVATION_SALT = new Uint8Array([
-  115, 98, 116, 45, 108, 111, 99, 97, 108,
-  45, 102, 105, 114, 115, 116, 45, 118, 49,
-]);
+const DERIVATION_SALT = new TextEncoder().encode("sbt-local-first-v1");
 
 // Pure-JS base64url so the protocol runs on any runtime (Node, Bun, browsers,
 // React Native/Hermes) without depending on the browser globals btoa/atob,

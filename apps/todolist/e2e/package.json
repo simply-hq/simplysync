@@ -1,0 +1,19 @@
+{
+  "name": "@simplysync/todolist-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless cross-platform E2E harness for the local TodoList web, Swift, and Kotlin clients.",
+  "scripts": {
+    "e2e": "bun run src/cli.ts",
+    "test": "bun run src/test-entry.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@simplysync/browser": "workspace:*",
+    "@simplysync/engine": "workspace:*",
+    "@types/bun": "1.3.14",
+    "sql.js": "1.14.1",
+    "typescript": "~5.9.2"
+  }
+}

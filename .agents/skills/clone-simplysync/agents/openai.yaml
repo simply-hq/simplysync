@@ -1,0 +1,4 @@
+interface:
+  display_name: "Clone SimplySync"
+  short_description: "Clone or scaffold one SimplySync platform"
+  default_prompt: "Use $clone-simplysync to clone only the React Native example."

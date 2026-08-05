@@ -1,0 +1,22 @@
+{
+  "name": "offline-queue-reconnect",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "mutateRange", "device": "A", "table": "todo", "rowIdPrefix": "offline-",
+      "count": 3, "values": { "title": "Queued offline", "done": 0 } },
+    { "do": "syncExpectError", "device": "A", "relayUrl": "http://127.0.0.1:1",
+      "capture": "error" },
+    { "assert": "equals", "actual": "$error.threw", "expected": true },
+    { "assert": "equals", "actual": "$error.kind", "expected": "unreachable" },
+    { "assert": "outboxCount", "device": "A", "expect": 3 },
+
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "assert": "outboxCount", "device": "A", "expect": 0 },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] }
+  ]
+}

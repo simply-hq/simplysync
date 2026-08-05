@@ -1,0 +1,148 @@
+name: SimplySync iOS stable-host archive
+
+on:
+  push:
+    tags:
+      - "simplysync-testflight-*"
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve build number
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_number="${GITHUB_REF_NAME#simplysync-testflight-}"
+          if [ "$GITHUB_REF_NAME" != "simplysync-testflight-$build_number" ] ||
+             ! [[ "$build_number" =~ ^[0-9]+$ ]]; then
+            echo "Invalid SimplySync TestFlight tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+
+      - name: Select a released Xcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          selected=""
+          for app in \
+            /Applications/Xcode_26.6.app \
+            /Applications/Xcode_26.6.0.app \
+            /Applications/Xcode_26.5.app \
+            /Applications/Xcode_26.4.1.app \
+            /Applications/Xcode.app
+          do
+            [ -d "$app" ] || continue
+            version="$("$app/Contents/Developer/usr/bin/xcodebuild" -version | awk 'NR == 1 { print $2 }')"
+            build="$("$app/Contents/Developer/usr/bin/xcodebuild" -version | awk 'NR == 2 { print $3 }')"
+            if [[ "$build" =~ [a-z]$ ]]; then
+              echo "Skipping pre-release Xcode ${version} (${build}) at ${app}."
+              continue
+            fi
+            case "$version" in
+              26.*) selected="$app"; break ;;
+            esac
+          done
+
+          if [ -z "$selected" ]; then
+            echo "No released Xcode 26 installation is available." >&2
+            exit 1
+          fi
+
+          sudo xcode-select -s "$selected/Contents/Developer"
+          xcodebuild -version
+          sw_vers
+
+          host_build="$(sw_vers -buildVersion)"
+          if [[ "$host_build" =~ [a-z]$ ]]; then
+            echo "Refusing to archive on pre-release macOS build $host_build." >&2
+            exit 1
+          fi
+
+      - name: Verify generated Xcode project
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/todolist/swift/verify/gen-xcodeproj.mjs
+          git diff --exit-code -- \
+            apps/todolist/swift/SimplySyncDemo.xcodeproj/project.pbxproj
+
+      - name: Archive without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build/ci
+          mkdir -p build/ci
+
+          xcodebuild \
+            -project apps/todolist/swift/SimplySyncDemo.xcodeproj \
+            -scheme SimplySyncDemo \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ci/SimplySync.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CURRENT_PROJECT_VERSION='${{ steps.release.outputs.build_number }}'
+
+      - name: Verify archive provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="build/ci/SimplySync.xcarchive/Products/Applications/SimplySyncDemo.app"
+          plist="$app/Info.plist"
+
+          test -f "$plist"
+          test -f "$app/PrivacyInfo.xcprivacy"
+
+          bundle="$(plutil -extract CFBundleIdentifier raw -o - "$plist")"
+          display_name="$(plutil -extract CFBundleDisplayName raw -o - "$plist")"
+          marketing_version="$(plutil -extract CFBundleShortVersionString raw -o - "$plist")"
+          build_number="$(plutil -extract CFBundleVersion raw -o - "$plist")"
+          xcode_build="$(plutil -extract DTXcodeBuild raw -o - "$plist")"
+          sdk_name="$(plutil -extract DTSDKName raw -o - "$plist")"
+          host_build="$(plutil -extract BuildMachineOSBuild raw -o - "$plist")"
+          app_icon="$(plutil -extract CFBundleIcons.CFBundlePrimaryIcon.CFBundleIconName raw -o - "$plist")"
+
+          test "$bundle" = dev.simplysync.engineios
+          test "$display_name" = SimplySync
+          test -n "$marketing_version"
+          test "$build_number" = '${{ steps.release.outputs.build_number }}'
+          test "$app_icon" = AppIcon
+          case "$sdk_name" in iphoneos26.*) ;; *) exit 1 ;; esac
+          if [[ "$xcode_build" =~ [a-z]$ ]] || [[ "$host_build" =~ [a-z]$ ]]; then
+            echo "Pre-release archive provenance is not uploadable." >&2
+            exit 1
+          fi
+
+          cat > build/ci/release-provenance.txt <<EOF
+          commit=$GITHUB_SHA
+          ref=$GITHUB_REF
+          bundle=$bundle
+          display_name=$display_name
+          marketing_version=$marketing_version
+          build_number=$build_number
+          xcode_build=$xcode_build
+          sdk=$sdk_name
+          host=$host_build
+          EOF
+          cat build/ci/release-provenance.txt
+
+          tar -C build/ci -czf build/ci/simplysync-unsigned.xcarchive.tar.gz \
+            SimplySync.xcarchive release-provenance.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simplysync-${{ steps.release.outputs.build_number }}-unsigned-archive
+          path: build/ci/simplysync-unsigned.xcarchive.tar.gz
+          if-no-files-found: error
+          retention-days: 3

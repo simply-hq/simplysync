@@ -39,6 +39,13 @@ function memoryStorage(): SecureStorage {
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
 const settle = () => new Promise((r) => setTimeout(r, 25));
+const waitUntil = async (predicate: () => boolean, message: string) => {
+  for (let i = 0; i < 100; i++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error(message);
+};
 
 const okPush = () =>
   new Response(JSON.stringify({ accepted: 0, duplicate: 0 }), { status: 200 });
@@ -48,6 +55,55 @@ const okPull = () =>
   });
 
 describe("getRelayStatuses", () => {
+  test("transport replacement during an in-flight sync is contacted immediately after it", async () => {
+    let releaseOldPull!: () => void;
+    const oldPullBlocked = new Promise<void>((resolve) => {
+      releaseOldPull = resolve;
+    });
+    let markOldPullStarted!: () => void;
+    const oldPullStarted = new Promise<void>((resolve) => {
+      markOldPullStarted = resolve;
+    });
+    let newRelayPulls = 0;
+    const fetchStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") return okPush();
+      if (url.includes("relay-old")) {
+        markOldPullStarted();
+        await oldPullBlocked;
+        return okPull();
+      }
+      if (url.includes("relay-new")) {
+        newRelayPulls += 1;
+        return okPull();
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const engine = createSync({
+      createSqliteDriver: () => makeDriver(),
+      secureStorage: memoryStorage(),
+      fetch: fetchStub,
+    })(schema, {
+      name: "relay-transport-replacement-test",
+      transports: [{ type: "Http", url: "http://relay-old.test" }],
+      syncIntervalMs: 3_600_000,
+    });
+    await engine.ready;
+    await oldPullStarted;
+
+    engine.setTransports([{ type: "Http", url: "http://relay-new.test" }]);
+    expect(newRelayPulls).toBe(0);
+    releaseOldPull();
+
+    await waitUntil(
+      () => newRelayPulls > 0,
+      "replacement relay was not contacted after the in-flight sync",
+    );
+    expect(newRelayPulls).toBe(1);
+    engine.setTransports([]);
+  });
+
   test("reports the /v1/status storage snapshot per relay, with /health fallback for empty accounts", async () => {
     // relay-a has an account (usage + quota); relay-b has never seen this
     // owner (404 on status) but is alive (/health answers).

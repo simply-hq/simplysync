@@ -1,6 +1,6 @@
 // Public data types for the local-first sync protocol: the derived identity, the
 // envelope/payload that travel through a relay, and the blob manifest/chunk
-// shapes. Pure type declarations — no runtime.
+// shapes, plus the pinned wire-version constants shared by writers and readers.
 
 /** How a {@link LocalFirstIdentity} was derived from its recovery credential. */
 export type IdentitySource = "recoveryKey" | "mnemonic";
@@ -43,8 +43,14 @@ export interface SyncEnvelope {
   readonly streamId?: string;
 }
 
-export interface SyncPayload<T = unknown> {
-  readonly schemaVersion: 1;
+/** Current payload schema emitted by clients that do not opt into a newer one. */
+export const SYNC_SCHEMA_VERSION = 1 as const;
+
+export interface SyncPayload<
+  T = unknown,
+  Version extends number = typeof SYNC_SCHEMA_VERSION,
+> {
+  readonly schemaVersion: Version;
   readonly table: string;
   readonly op: "upsert" | "delete";
   readonly rowId: string;

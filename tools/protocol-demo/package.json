@@ -1,0 +1,21 @@
+{
+  "name": "@simplysync/protocol-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "demo": "bun run src/index.ts demo",
+    "demo:with-relay": "bun run src/run-with-relay.ts",
+    "blob-demo": "bun run src/blob-demo.ts",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf data/*.db data/*.db-shm data/*.db-wal"
+  },
+  "dependencies": {
+    "@simplysync/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.14",
+    "typescript": "~5.9.2"
+  }
+}

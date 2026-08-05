@@ -1,0 +1,354 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AABB00000000000000000002 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000001 /* AppModel.swift */; };
+		AABB00000000000000000004 /* AppSchema.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000003 /* AppSchema.swift */; };
+		AABB00000000000000000006 /* SimplySyncDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000005 /* SimplySyncDemoApp.swift */; };
+		AABB00000000000000000008 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000007 /* Views.swift */; };
+		AABB0000000000000000000A /* Sources/SimplySync/Engine/Counter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000009 /* Sources/SimplySync/Engine/Counter.swift */; };
+		AABB0000000000000000000C /* Sources/SimplySync/Engine/Order.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000000B /* Sources/SimplySync/Engine/Order.swift */; };
+		AABB0000000000000000000E /* Sources/SimplySync/Engine/Presence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000000D /* Sources/SimplySync/Engine/Presence.swift */; };
+		AABB00000000000000000010 /* Sources/SimplySync/Engine/Query.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000000F /* Sources/SimplySync/Engine/Query.swift */; };
+		AABB00000000000000000012 /* Sources/SimplySync/Engine/RowDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000011 /* Sources/SimplySync/Engine/RowDecoder.swift */; };
+		AABB00000000000000000014 /* Sources/SimplySync/Engine/Schema.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000013 /* Sources/SimplySync/Engine/Schema.swift */; };
+		AABB00000000000000000016 /* Sources/SimplySync/Engine/SecureStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000015 /* Sources/SimplySync/Engine/SecureStorage.swift */; };
+		AABB00000000000000000018 /* Sources/SimplySync/Engine/SqliteDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000017 /* Sources/SimplySync/Engine/SqliteDriver.swift */; };
+		AABB0000000000000000001A /* Sources/SimplySync/Engine/Store.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000019 /* Sources/SimplySync/Engine/Store.swift */; };
+		AABB0000000000000000001C /* Sources/SimplySync/Engine/SyncEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000001B /* Sources/SimplySync/Engine/SyncEngine.swift */; };
+		AABB0000000000000000001E /* Sources/SimplySync/Engine/SyncTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000001D /* Sources/SimplySync/Engine/SyncTypes.swift */; };
+		AABB00000000000000000020 /* Sources/SimplySync/Engine/SyncValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000001F /* Sources/SimplySync/Engine/SyncValue.swift */; };
+		AABB00000000000000000022 /* Sources/SimplySync/Kit/Base64URL.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000021 /* Sources/SimplySync/Kit/Base64URL.swift */; };
+		AABB00000000000000000024 /* Sources/SimplySync/Kit/BIP39.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000023 /* Sources/SimplySync/Kit/BIP39.swift */; };
+		AABB00000000000000000026 /* Sources/SimplySync/Kit/BIP39Wordlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000025 /* Sources/SimplySync/Kit/BIP39Wordlist.swift */; };
+		AABB00000000000000000028 /* Sources/SimplySync/Kit/CanonicalJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000027 /* Sources/SimplySync/Kit/CanonicalJSON.swift */; };
+		AABB0000000000000000002A /* Sources/SimplySync/Kit/Crypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000029 /* Sources/SimplySync/Kit/Crypto.swift */; };
+		AABB0000000000000000002C /* Sources/SimplySync/Kit/Envelope.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000002B /* Sources/SimplySync/Kit/Envelope.swift */; };
+		AABB0000000000000000002E /* Sources/SimplySync/Kit/HLC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000002D /* Sources/SimplySync/Kit/HLC.swift */; };
+		AABB00000000000000000030 /* Sources/SimplySync/Kit/Identity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB0000000000000000002F /* Sources/SimplySync/Kit/Identity.swift */; };
+		AABB00000000000000000032 /* Sources/SimplySync/Kit/RelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000031 /* Sources/SimplySync/Kit/RelayClient.swift */; };
+		AABB00000000000000000034 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000033 /* Assets.xcassets */; };
+		AABB00000000000000000036 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = AABB00000000000000000035 /* PrivacyInfo.xcprivacy */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AABB00000000000000000001 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		AABB00000000000000000003 /* AppSchema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSchema.swift; sourceTree = "<group>"; };
+		AABB00000000000000000005 /* SimplySyncDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimplySyncDemoApp.swift; sourceTree = "<group>"; };
+		AABB00000000000000000007 /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		AABB00000000000000000009 /* Counter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Counter.swift; sourceTree = "<group>"; };
+		AABB0000000000000000000B /* Order.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Order.swift; sourceTree = "<group>"; };
+		AABB0000000000000000000D /* Presence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Presence.swift; sourceTree = "<group>"; };
+		AABB0000000000000000000F /* Query.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Query.swift; sourceTree = "<group>"; };
+		AABB00000000000000000011 /* RowDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RowDecoder.swift; sourceTree = "<group>"; };
+		AABB00000000000000000013 /* Schema.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Schema.swift; sourceTree = "<group>"; };
+		AABB00000000000000000015 /* SecureStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecureStorage.swift; sourceTree = "<group>"; };
+		AABB00000000000000000017 /* SqliteDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SqliteDriver.swift; sourceTree = "<group>"; };
+		AABB00000000000000000019 /* Store.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Store.swift; sourceTree = "<group>"; };
+		AABB0000000000000000001B /* SyncEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncEngine.swift; sourceTree = "<group>"; };
+		AABB0000000000000000001D /* SyncTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncTypes.swift; sourceTree = "<group>"; };
+		AABB0000000000000000001F /* SyncValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncValue.swift; sourceTree = "<group>"; };
+		AABB00000000000000000021 /* Base64URL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Base64URL.swift; sourceTree = "<group>"; };
+		AABB00000000000000000023 /* BIP39.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BIP39.swift; sourceTree = "<group>"; };
+		AABB00000000000000000025 /* BIP39Wordlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BIP39Wordlist.swift; sourceTree = "<group>"; };
+		AABB00000000000000000027 /* CanonicalJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanonicalJSON.swift; sourceTree = "<group>"; };
+		AABB00000000000000000029 /* Crypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Crypto.swift; sourceTree = "<group>"; };
+		AABB0000000000000000002B /* Envelope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Envelope.swift; sourceTree = "<group>"; };
+		AABB0000000000000000002D /* HLC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HLC.swift; sourceTree = "<group>"; };
+		AABB0000000000000000002F /* Identity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Identity.swift; sourceTree = "<group>"; };
+		AABB00000000000000000031 /* RelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClient.swift; sourceTree = "<group>"; };
+		AABB00000000000000000033 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AABB00000000000000000035 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		AABB00000000000000000039 /* SimplySyncDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SimplySyncDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AABB00000000000000000041 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AABB0000000000000000003A = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000000003B /* SimplySyncDemo */,
+				AABB0000000000000000003C /* SimplySync */,
+				AABB0000000000000000003F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AABB0000000000000000003B /* SimplySyncDemo */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000000001 /* AppModel.swift */,
+				AABB00000000000000000003 /* AppSchema.swift */,
+				AABB00000000000000000005 /* SimplySyncDemoApp.swift */,
+				AABB00000000000000000007 /* Views.swift */,
+				AABB00000000000000000033 /* Assets.xcassets */,
+				AABB00000000000000000035 /* PrivacyInfo.xcprivacy */,
+			);
+			path = SimplySyncDemo;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000000003C /* SimplySync */ = {
+			isa = PBXGroup;
+			children = (
+				AABB0000000000000000003E /* Engine */,
+				AABB0000000000000000003D /* Kit */,
+			);
+			path = ../../../Sources/SimplySync;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000000003D /* Kit */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000000021 /* Base64URL.swift */,
+				AABB00000000000000000023 /* BIP39.swift */,
+				AABB00000000000000000025 /* BIP39Wordlist.swift */,
+				AABB00000000000000000027 /* CanonicalJSON.swift */,
+				AABB00000000000000000029 /* Crypto.swift */,
+				AABB0000000000000000002B /* Envelope.swift */,
+				AABB0000000000000000002D /* HLC.swift */,
+				AABB0000000000000000002F /* Identity.swift */,
+				AABB00000000000000000031 /* RelayClient.swift */,
+			);
+			path = Kit;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000000003E /* Engine */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000000009 /* Counter.swift */,
+				AABB0000000000000000000B /* Order.swift */,
+				AABB0000000000000000000D /* Presence.swift */,
+				AABB0000000000000000000F /* Query.swift */,
+				AABB00000000000000000011 /* RowDecoder.swift */,
+				AABB00000000000000000013 /* Schema.swift */,
+				AABB00000000000000000015 /* SecureStorage.swift */,
+				AABB00000000000000000017 /* SqliteDriver.swift */,
+				AABB00000000000000000019 /* Store.swift */,
+				AABB0000000000000000001B /* SyncEngine.swift */,
+				AABB0000000000000000001D /* SyncTypes.swift */,
+				AABB0000000000000000001F /* SyncValue.swift */,
+			);
+			path = Engine;
+			sourceTree = "<group>";
+		};
+		AABB0000000000000000003F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AABB00000000000000000039 /* SimplySyncDemo.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AABB00000000000000000038 /* SimplySyncDemo */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AABB00000000000000000044 /* Build configuration list for PBXNativeTarget "SimplySyncDemo" */;
+			buildPhases = (
+				AABB00000000000000000040 /* Sources */,
+				AABB00000000000000000041 /* Frameworks */,
+				AABB00000000000000000042 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SimplySyncDemo;
+			productName = SimplySyncDemo;
+			productReference = AABB00000000000000000039 /* SimplySyncDemo.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AABB00000000000000000037 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					AABB00000000000000000038 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = AABB00000000000000000043 /* Build configuration list for PBXProject */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AABB0000000000000000003A;
+			productRefGroup = AABB0000000000000000003F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AABB00000000000000000038 /* SimplySyncDemo */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		AABB00000000000000000042 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB00000000000000000034 /* Assets.xcassets in Resources */,
+				AABB00000000000000000036 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AABB00000000000000000040 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AABB00000000000000000002 /* AppModel.swift in Sources */,
+				AABB00000000000000000004 /* AppSchema.swift in Sources */,
+				AABB00000000000000000006 /* SimplySyncDemoApp.swift in Sources */,
+				AABB00000000000000000008 /* Views.swift in Sources */,
+				AABB0000000000000000000A /* Sources/SimplySync/Engine/Counter.swift in Sources */,
+				AABB0000000000000000000C /* Sources/SimplySync/Engine/Order.swift in Sources */,
+				AABB0000000000000000000E /* Sources/SimplySync/Engine/Presence.swift in Sources */,
+				AABB00000000000000000010 /* Sources/SimplySync/Engine/Query.swift in Sources */,
+				AABB00000000000000000012 /* Sources/SimplySync/Engine/RowDecoder.swift in Sources */,
+				AABB00000000000000000014 /* Sources/SimplySync/Engine/Schema.swift in Sources */,
+				AABB00000000000000000016 /* Sources/SimplySync/Engine/SecureStorage.swift in Sources */,
+				AABB00000000000000000018 /* Sources/SimplySync/Engine/SqliteDriver.swift in Sources */,
+				AABB0000000000000000001A /* Sources/SimplySync/Engine/Store.swift in Sources */,
+				AABB0000000000000000001C /* Sources/SimplySync/Engine/SyncEngine.swift in Sources */,
+				AABB0000000000000000001E /* Sources/SimplySync/Engine/SyncTypes.swift in Sources */,
+				AABB00000000000000000020 /* Sources/SimplySync/Engine/SyncValue.swift in Sources */,
+				AABB00000000000000000022 /* Sources/SimplySync/Kit/Base64URL.swift in Sources */,
+				AABB00000000000000000024 /* Sources/SimplySync/Kit/BIP39.swift in Sources */,
+				AABB00000000000000000026 /* Sources/SimplySync/Kit/BIP39Wordlist.swift in Sources */,
+				AABB00000000000000000028 /* Sources/SimplySync/Kit/CanonicalJSON.swift in Sources */,
+				AABB0000000000000000002A /* Sources/SimplySync/Kit/Crypto.swift in Sources */,
+				AABB0000000000000000002C /* Sources/SimplySync/Kit/Envelope.swift in Sources */,
+				AABB0000000000000000002E /* Sources/SimplySync/Kit/HLC.swift in Sources */,
+				AABB00000000000000000030 /* Sources/SimplySync/Kit/Identity.swift in Sources */,
+				AABB00000000000000000032 /* Sources/SimplySync/Kit/RelayClient.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AABB00000000000000000045 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AABB00000000000000000046 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		AABB00000000000000000047 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = X26WJHVDQ4;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "SimplySyncDemo/Info.plist";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.simplysync.engineios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AABB00000000000000000048 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = X26WJHVDQ4;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "SimplySyncDemo/Info.plist";
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.simplysync.engineios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AABB00000000000000000043 /* Build configuration list for PBXProject */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AABB00000000000000000045 /* Debug */,
+				AABB00000000000000000046 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AABB00000000000000000044 /* Build configuration list for PBXNativeTarget "SimplySyncDemo" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AABB00000000000000000047 /* Debug */,
+				AABB00000000000000000048 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = AABB00000000000000000037 /* Project object */;
+}

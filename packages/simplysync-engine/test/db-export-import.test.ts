@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import {
+  createRecoveryKey,
+  encryptStringWithPassphrase,
   InvalidBackupEnvelopeError,
   PassphraseDecryptError,
 } from "@simplysync/protocol";
@@ -11,6 +13,7 @@ import {
   id,
   NonEmptyString,
   sqliteTrue,
+  type AppOwner,
   type SecureStorage,
   type SqliteDriver,
 } from "../src/index";
@@ -37,8 +40,8 @@ function wrapDriver(db: Database): SqliteDriver {
   };
 }
 
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
+function memoryStorage(initial: Record<string, string> = {}): SecureStorage {
+  const map = new Map<string, string>(Object.entries(initial));
   return {
     getItem: (k) => map.get(k) ?? null,
     setItem: (k, v) => {
@@ -50,11 +53,11 @@ function memoryStorage(): SecureStorage {
   };
 }
 
-function makeEngine(name = "test-db") {
+function makeEngine(name = "test-db", storage = memoryStorage()) {
   const db = new Database(":memory:");
   const engine = createSync({
     createSqliteDriver: () => wrapDriver(db),
-    secureStorage: memoryStorage(),
+    secureStorage: storage,
     reloadApp: () => {},
   })(schema, { name });
   return { engine, db };
@@ -92,10 +95,11 @@ describe("db export / import", () => {
   // Assert a fresh device B fully adopted device A's backup.
   async function expectRestored(
     b: { engine: ReturnType<typeof makeEngine>["engine"]; db: Database },
-    ownerA: { id: string; mnemonic: string },
+    ownerA: AppOwner,
     hlcTimeA: string | undefined,
   ) {
     const ownerAfter = await b.engine.appOwner;
+    expect(ownerAfter?.recoveryKey).toBe(ownerA.recoveryKey);
     expect(ownerAfter?.mnemonic).toBe(ownerA.mnemonic);
     expect(ownerAfter?.id).toBe(ownerA.id);
 
@@ -131,11 +135,11 @@ describe("db export / import", () => {
     const b = makeEngine("device-b");
     await b.engine.ready;
     const ownerBefore = await b.engine.appOwner;
-    expect(ownerBefore?.mnemonic).not.toBe(ownerA!.mnemonic);
+    expect(ownerBefore?.recoveryKey).not.toBe(ownerA!.recoveryKey);
 
-    // Restoring requires the backup's recovery phrase.
+    // Restoring requires the backup's recovery key or phrase.
     await b.engine.importDatabase(envelope, {
-      recoveryPhrase: ownerA!.mnemonic,
+      recoveryKey: ownerA!.recoveryKey,
     });
 
     await expectRestored(b, ownerA!, hlcTimeA);
@@ -149,14 +153,16 @@ describe("db export / import", () => {
     await b.engine.ready;
     const ownerBefore = await b.engine.appOwner;
 
-    // Device B's own (different) phrase derives a different owner.
+    // Device B's own (different) credential derives a different owner.
     await expect(
       b.engine.importDatabase(envelope, {
-        recoveryPhrase: ownerBefore!.mnemonic,
+        recoveryKey: ownerBefore!.recoveryKey,
       }),
-    ).rejects.toThrow(/different recovery phrase/i);
+    ).rejects.toThrow(/different recovery key or phrase/i);
 
-    expect((await b.engine.appOwner)?.mnemonic).toBe(ownerBefore?.mnemonic);
+    expect((await b.engine.appOwner)?.recoveryKey).toBe(
+      ownerBefore?.recoveryKey,
+    );
     expect(b.db.prepare(`select id from account`).all()).toHaveLength(0);
   });
 
@@ -198,5 +204,116 @@ describe("db export / import", () => {
     await expect(
       b.engine.importDatabase("not json at all", { passphrase: "pw" }),
     ).rejects.toBeInstanceOf(InvalidBackupEnvelopeError);
+  });
+
+  test("a malformed snapshot is rejected before owner or rows change", async () => {
+    const source = makeEngine("invalid-snapshot-source");
+    await source.engine.ready;
+    const sourceOwner = await source.engine.appOwner;
+    expect(sourceOwner).not.toBeNull();
+    const malformed = {
+      format: "simplysync-db-snapshot",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      recoveryKey: sourceOwner!.recoveryKey,
+      tables: {
+        account: [{
+          id: "broken",
+          name: "Broken",
+          createdAt: new Date().toISOString(),
+          updatedAt: "not-an-hlc",
+          isDeleted: 2,
+        }],
+      },
+      meta: {},
+    };
+    const envelope = await encryptStringWithPassphrase(
+      "pw",
+      JSON.stringify(malformed),
+    );
+
+    const target = makeEngine("invalid-snapshot-target");
+    await target.engine.ready;
+    const ownerBefore = await target.engine.appOwner;
+    const keep = target.engine.insert("account", { name: "Keep me" });
+    expect(keep.ok).toBe(true);
+
+    await expect(
+      target.engine.importDatabase(envelope, { passphrase: "pw" }),
+    ).rejects.toThrow(/updatedAt|isDeleted/);
+
+    expect((await target.engine.appOwner)?.recoveryKey).toBe(
+      ownerBefore?.recoveryKey,
+    );
+    expect(target.db.prepare(`select name from account`).all()).toEqual([
+      { name: "Keep me" },
+    ]);
+  });
+
+  test("a late snapshot write failure rolls back all rows and the owner credential", async () => {
+    const source = makeEngine("atomic-snapshot-source");
+    await source.engine.ready;
+    const sourceAccount = source.engine.insert("account", { name: "Source" });
+    if (!sourceAccount.ok) throw new Error("source account insert failed");
+    const sourceLedger = source.engine.insert("ledger", {
+      accountId: sourceAccount.value.id,
+      amount: 777,
+    } as never);
+    if (!sourceLedger.ok) throw new Error("source ledger insert failed");
+    const envelope = await source.engine.exportDatabase({ passphrase: "pw" });
+
+    const storage = memoryStorage();
+    const target = makeEngine("atomic-snapshot-target", storage);
+    await target.engine.ready;
+    const ownerBefore = await target.engine.appOwner;
+    const keep = target.engine.insert("account", { name: "Keep me" });
+    if (!keep.ok) throw new Error("target account insert failed");
+    target.db.exec(`
+      create trigger reject_snapshot_row
+      before insert on ledger when new.amount = 777
+      begin select raise(abort, 'injected snapshot failure'); end
+    `);
+
+    await expect(
+      target.engine.importDatabase(envelope, { passphrase: "pw" }),
+    ).rejects.toThrow(/injected snapshot failure/);
+
+    expect(target.db.prepare(`select name from account`).all()).toEqual([
+      { name: "Keep me" },
+    ]);
+    expect(target.db.prepare(`select id from ledger`).all()).toHaveLength(0);
+    expect((await target.engine.appOwner)?.recoveryKey).toBe(
+      ownerBefore?.recoveryKey,
+    );
+
+    // The in-memory owner changes only after import succeeds, so reopen with
+    // the same storage to prove the durable credential was compensated too.
+    const reopened = makeEngine("atomic-snapshot-target", storage);
+    await reopened.engine.ready;
+    expect((await reopened.engine.appOwner)?.recoveryKey).toBe(
+      ownerBefore?.recoveryKey,
+    );
+  });
+
+  test("native sf1_ identity round-trips through a recovery-keyed snapshot", async () => {
+    const recoveryKey = await createRecoveryKey();
+    const aName = "native-snapshot-a";
+    const a = makeEngine(
+      aName,
+      memoryStorage({ [`${aName}:mnemonic`]: recoveryKey }),
+    );
+    await a.engine.ready;
+    a.engine.insert("account", { name: "Native key account" });
+    const envelope = await a.engine.exportDatabase();
+    expect(envelope.keying).toBe("recovery-phrase");
+
+    const b = makeEngine("native-snapshot-b");
+    await b.engine.ready;
+    await b.engine.importDatabase(envelope, { recoveryKey });
+
+    const restoredOwner = await b.engine.appOwner;
+    expect(restoredOwner?.recoveryKey).toBe(recoveryKey);
+    expect(restoredOwner?.mnemonic).toBeUndefined();
+    expect(b.db.prepare(`select id from account`).all()).toHaveLength(1);
   });
 });

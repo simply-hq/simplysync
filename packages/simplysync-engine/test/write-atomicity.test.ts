@@ -371,8 +371,8 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     const sealedOnce = readEnvelope();
     expect(sealedOnce).toBeTruthy();
 
-    // A second full sync: relay-good has nothing new to push for this event
-    // (its cursor already passed it) and the row must not be re-encrypted —
+    // A second full sync: relay-good already acknowledged this event and the
+    // row must not be re-encrypted —
     // AES-GCM uses a fresh random nonce per encryption, so a re-seal would be
     // detectable as a changed envelope_json.
     await engine.sync();

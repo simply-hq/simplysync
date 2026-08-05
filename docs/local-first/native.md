@@ -8,8 +8,8 @@ clean-room ports live in the repo and are byte-verified against the canonical
 
 | Port | Path | Shape |
 | --- | --- | --- |
-| **Swift** (`SimplySyncKit` + engine) | [`ports/swift`](../../ports/swift/README.md) | Foundation + CryptoKit + `SQLite3`. Ships a near-complete `@simplysync/engine` port (schema, SQLite, reactive queries) on top of the `Kit/` protocol core; also runs on macOS. |
-| **Kotlin / JVM** | [`ports/kotlin`](../../ports/kotlin/README.md) | Pure JVM (no Android framework deps). The protocol core that powers the Simply Finance Android build. |
+| **Swift** (`SimplySync`) | [`Package.swift`](../../Package.swift) · [guide](../../apps/todolist/swift/README.md) | SwiftPM library: Foundation + CryptoKit + `SQLite3`, engine + SwiftUI `LiveQuery`; also runs on macOS. |
+| **Kotlin / JVM** | [`apps/todolist/kotlin`](../../apps/todolist/kotlin/README.md) | Source-owned pure JVM module with `StateFlow`; Android injects platform storage. |
 
 This page is the cross-language reference: why interop works, what each port
 covers, the exact API surface, and — importantly — the **one place identity
@@ -48,24 +48,30 @@ split.)
 
 | Layer | TypeScript | Swift | Kotlin |
 | --- | --- | --- | --- |
-| **Protocol** (identity, envelope, HLC, canonical JSON, BIP39, base64url, relay client) | `@simplysync/protocol` | **Ported** — `Kit/` | **Ported** — `com.simplysync.kotlin` |
-| **Engine** (schema, SQLite store, outbox, sync loop, reactive queries) | `@simplysync/engine` | **Ported** — `Engine/` ([guide](./guide-swift.html)) | **Ported** — same package ([guide](./guide-kotlin.html)) |
-| **Relay** | `relays/*` | Unchanged | Unchanged |
+| **Protocol** (identity, envelope, HLC, canonical JSON, BIP39, base64url, relay client) | `@simplysync/protocol` | **Ported** — `Sources/SimplySync/Kit/` | **Ported** — `com.simplysync.kotlin` |
+| **Engine** (schema, SQLite store, outbox, sync loop, reactive queries) | `@simplysync/engine` | **Ported** — `Sources/SimplySync/Engine/` ([guide](./guide.swift.md)) | **Ported** — same package ([guide](./guide.kotlin.md)) |
+| **Relay** | `apps/relay-*` | Unchanged | Unchanged |
 
 So on the server you port nothing, and both native clients get the full engine
 DX. The reactive layer is idiomatic per platform — SwiftUI `LiveQuery`
 (`ObservableObject`) in Swift, a `StateFlow` in Kotlin — over the same SQLite store
 and sync loop.
 
-## The Swift port — `SimplySyncKit`
+## The Swift package — `SimplySync`
 
-`Kit/` is a clean-room Swift port of `@simplysync/protocol` built on **Foundation
+`Sources/SimplySync/Kit/` is a clean-room Swift port of `@simplysync/protocol` built on **Foundation
 + CryptoKit only** — no UIKit, no third-party packages — so it also compiles and
-runs on macOS and is unit-testable without a simulator. It ships inside the
-`SimplySyncDemo` SwiftUI app (onboarding + a synced todo list).
+runs on macOS and is unit-testable without a simulator. The repository-root
+SwiftPM product and the `SimplySyncDemo` SwiftUI app compile that same standard
+package source tree.
+
+Use the `swift` selective clone, add its repository root as a local package in
+Xcode, and select the `SimplySync` product. The
+[Swift README](../../apps/todolist/swift/README.md#clone-and-use-the-source)
+has the complete dependency and engine setup.
 
 > For the step-by-step API — derive identity → build a payload → encrypt → push /
-> pull → apply — see the **[Client API → Swift](./guide-swift.html)** guide.
+> pull → apply — see the **[Client API → Swift](./guide.swift.md)** guide.
 
 | File | Role |
 | --- | --- |
@@ -103,14 +109,14 @@ for env in pulled.events {
 }
 ```
 
-Above `Kit/`, `Engine/` ports `@simplysync/engine`: a typed schema, a real SQLite
+Above `Kit/`, `Sources/SimplySync/Engine/` ports `@simplysync/engine`: a typed schema, a real SQLite
 store, typed mutations, and reactive `LiveQuery` results — so the example above is
 the *low-level* path, and most app code uses the engine instead (see the
-[Client API → Swift](./guide-swift.html) guide). Run the demo from Xcode against a
+[Client API → Swift](./guide.swift.md) guide). Run the demo from Xcode against a
 local relay (`bun run relay:go`), then **⋯ → Show recovery key** and paste the
-same key into a second simulator, the web playground, or the Expo app to watch them
+same key into a second simulator, the TodoList web client, or the Expo app to watch them
 converge. Full run/verify steps are in the
-[Swift README](../../ports/swift/README.md).
+[Swift README](../../apps/todolist/swift/README.md).
 
 **Not ported (by design):** binary blobs, the encrypted DB export/import (snapshot)
 format, and legacy import. Conflict resolution is row-level last-writer-wins by
@@ -122,8 +128,13 @@ The Kotlin port is **pure JVM** — no Android framework dependencies — so the
 crypto unit-tests without an emulator and the same artifact is reusable from any
 Android app. It's the protocol core behind the Simply Finance Android build.
 
+The `kotlin` selective clone contains this Gradle source module and its tests.
+Android apps include that directory as a local Gradle project; the
+[Kotlin README](../../apps/todolist/kotlin/README.md#clone-and-use-the-source)
+shows the exact source dependency.
+
 > For the step-by-step API — including snapshot crypto and the phrase-interop
-> caveat — see the **[Client API → Kotlin](./guide-kotlin.html)** guide.
+> caveat — see the **[Client API → Kotlin](./guide.kotlin.md)** guide.
 
 | File | Role |
 | --- | --- |
@@ -155,7 +166,7 @@ pulled.events.forEach { Envelope.decrypt(identity, it) }
 This module is **library-only** — no UI. Above the protocol core it ships a port
 of `@simplysync/engine`: a typed schema, a SQLite store, typed mutations, and
 reactive `StateFlow` queries (the example above is the *low-level* path; most app
-code uses the engine — see the [Client API → Kotlin](./guide-kotlin.html) guide).
+code uses the engine — see the [Client API → Kotlin](./guide.kotlin.md) guide).
 The default `JdbcSqliteDriver` keeps the module pure-JVM and emulator-free for
 tests; an Android app injects its own `android.database`-backed driver. Treat the
 protocol core as pinned: **update it wholesale, don't fork it**, or clients stop
@@ -174,24 +185,25 @@ and they interoperate differently:
 | Secret | Scheme | TypeScript | Swift | Kotlin |
 | --- | --- | --- | --- | --- |
 | `sf1_` recovery key | HKDF-SHA256, labels `owner-id` · `data-key` · `relay-auth` · `stream-key` | ✓ | ✓ | ✓ |
-| 24-word BIP39 phrase | SLIP-21 path prefix | `SimplySync` | `SimplySync` | **`Evolu`** |
+| 24-word BIP39 phrase | SLIP-21 path prefix | `SimplySync` | `SimplySync` | `SimplySync` (default) · `Evolu` (legacy profile) |
 
 - **`sf1_` recovery keys interoperate everywhere.** All three derive `ownerId` /
   `dataKey` / `relayAuth` / `streamKey` with byte-identical HKDF labels, so a key
   generated on any client resolves to the same owner on every other.
-- **BIP39 phrases are where Kotlin diverges.** TypeScript and Swift both expand a
-  phrase under the SLIP-21 prefix `"SimplySync"`. The Kotlin port deliberately
-  pins `"Evolu"` instead, because its consumer (Simply Finance Android) migrated
-  from Evolu and a phrase **must keep resolving to the owner the existing data and
-  relay already use**. A regression test (`SyncKitTest.identityUsesEvoluPaths…`)
-  locks this — rebranding the path would orphan every existing user's synced data.
+- **New BIP39 phrases interoperate everywhere.** The one-argument Kotlin API uses
+  the same `"SimplySync"` prefix as TypeScript and Swift.
+- **Existing Android owners stay existing owners.** Older Simply Finance builds
+  used Evolu's prefix. Kotlin retains that derivation as
+  `MnemonicIdentityProfile.EVOLU_LEGACY_V1`; the engine persists the selected
+  profile, recognizes an existing outbox/local database, and probes both profiles
+  when restoring from a relay. An upgrade therefore does not silently strand the
+  prior local or remote owner.
 
-> **Consequence:** the same 24-word phrase derives the *same* owner on
-> TypeScript + Swift, but a *different* owner on Kotlin. To sync a Kotlin client
-> with a TS/Swift client, share an **`sf1_` recovery key** (identical on all
-> three), not a phrase — or reconcile the SLIP-21 prefix first. The envelope,
-> relay protocol, and `sf1_` derivation are otherwise byte-identical across all
-> three.
+> The Evolu profile is a Kotlin migration profile, not the cross-platform
+> default. For a brand-new multi-platform app, use the default `SimplySync`
+> profile or an **`sf1_` recovery key**. An app intentionally opening an old
+> Android owner can select `EVOLU_LEGACY_V1` explicitly; TypeScript and Swift do
+> not currently expose that legacy profile.
 
 Everything below the secret — the AES-GCM envelope, canonical JSON, the
 `streamId` grouping key, the HLC encoding, the wire protocol — is shared verbatim,
@@ -215,6 +227,7 @@ against the [protocol source](../../packages/simplysync-protocol).
 | Encrypted DB snapshot | `snapshot-crypto.ts` | — (not ported) | `SnapshotCrypto` |
 | Define a schema | `{ table: { col: Type } }` | `Schema([...])` | `Schema(mapOf(...))` |
 | Create the engine | `createSync(deps)(schema, cfg)` | `createSync(deps)(schema, cfg)` | `createSync(deps)(schema, cfg)` |
+| Declare payload compatibility | `cfg.schemaVersion` | `cfg.schemaVersion` | `cfg.schemaVersion` |
 | Write a row | `engine.insert(...)` | `engine.insert(...)` | `engine.insert(...)` |
 | Reactive query | `useQuery(q)` | `engine.liveQuery(q)` → `LiveQuery` | `engine.liveQuery(q)` → `StateFlow` |
 
@@ -226,11 +239,11 @@ protocol, so drift is caught, not hoped against.
 **Swift** — host-side, no simulator needed:
 
 ```sh
-cd ports/swift
+cd apps/todolist/swift
 # 1) crypto byte-compatibility vs @simplysync/protocol (verify/vectors.json)
-swiftc SimplySyncDemo/Kit/*.swift verify/main.swift -o /tmp/ssverify && /tmp/ssverify
+swiftc ../../../Sources/SimplySync/Kit/*.swift verify/main.swift -o /tmp/ssverify && /tmp/ssverify
 # 2) live end-to-end against a running relay (push → pull → decrypt)
-swiftc SimplySyncDemo/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
+swiftc ../../../Sources/SimplySync/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
 /tmp/ssintegration http://localhost:4100
 ```
 
@@ -239,7 +252,7 @@ swiftc SimplySyncDemo/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
 HLC ordering, canonical JSON, and PBKDF2:
 
 ```sh
-cd ports/kotlin
+cd apps/todolist/kotlin
 ./gradlew test
 ```
 
@@ -248,9 +261,9 @@ cd ports/kotlin
 If you change a port (or add a third language), these are the load-bearing
 contracts. Break any one and decryption fails or owners drift:
 
-- **Canonical JSON.** Keys sorted to match JS `localeCompare`; it's both the
-  AES-GCM plaintext *and* the AAD. Keep row/column names lowercase-ASCII so the
-  ordering matches across runtimes.
+- **Canonical JSON.** Keys sorted to match JavaScript's raw UTF-16 code-unit
+  `<`/`>` comparison; it is both the AES-GCM plaintext *and* the AAD. Keep
+  row/column names lowercase-ASCII so ordering matches across runtimes.
 - **The AAD is the header.** `{version, ownerId, eventId, deviceId, createdAt,
   streamId?}` as canonical JSON. A relay can't rebind a ciphertext to a different
   event/owner without GCM failing on decrypt.

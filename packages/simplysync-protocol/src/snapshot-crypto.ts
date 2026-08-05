@@ -2,11 +2,11 @@
 // exportDatabase / importDatabase). A self-describing envelope, AES-256-GCM in
 // both cases, with two ways to derive the key:
 //
-//   keying: "recovery-phrase" — the key is derived from the owner's recovery
-//     phrase (see deriveBackupKeyBytes). The default: no extra secret to invent
-//     or store, and the 256-bit phrase-derived key is far stronger than a human
-//     passphrase. The phrase must be supplied to restore — the file alone is
-//     useless, and it carries the ownerId so a wrong phrase fails fast.
+//   keying: "recovery-phrase" — the historical wire name for a key derived from
+//     the owner's recovery credential: either an `sf1_` key or BIP39 phrase (see
+//     deriveBackupKeyBytes). The credential must be supplied to restore — the
+//     file alone is useless, and it carries the ownerId so a wrong credential
+//     fails fast.
 //
 //   keying: "passphrase" — the key is stretched from a user passphrase with
 //     PBKDF2-HMAC-SHA256. Optional/advanced: a second, independent secret, so
@@ -22,7 +22,7 @@ import {
   getCrypto,
   randomBytes,
   toArrayBuffer,
-} from "./crypto";
+} from "./crypto.js";
 
 export const ENCRYPTED_SNAPSHOT_FORMAT = "simplysync-db-snapshot";
 export const ENCRYPTED_SNAPSHOT_VERSION = 1;
@@ -56,10 +56,13 @@ interface EnvelopeBaseV1 {
   readonly ciphertext: string; // base64url
 }
 
-/** A snapshot encrypted under a key derived from the owner's recovery phrase. */
+/**
+ * A snapshot encrypted under a key derived from the owner's recovery key or
+ * phrase. The `recovery-phrase` discriminator is retained for wire compatibility.
+ */
 export interface RecoveryPhraseEnvelopeV1 extends EnvelopeBaseV1 {
   readonly keying: "recovery-phrase";
-  /** Owner the phrase must derive to — lets a wrong phrase fail fast. */
+  /** Owner the credential must derive to — lets a wrong key/phrase fail fast. */
   readonly ownerId: string;
 }
 

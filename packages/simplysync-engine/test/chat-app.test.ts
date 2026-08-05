@@ -150,8 +150,13 @@ describe("chat app", () => {
       content: encodeJson([{ type: "text", text: streamed }]),
     });
     const withContent = await engine.loadQuery(
-      engine.createQuery((db) =>
-        db.selectFrom("message").select(["content"]).where("id", "=", reply.value.id),
+      engine.createQuery(
+        (db) =>
+          db
+            .selectFrom("message")
+            .select(["content"])
+            .where("id", "=", reply.value.id),
+        { includeDeleted: true },
       ),
     );
     expect(

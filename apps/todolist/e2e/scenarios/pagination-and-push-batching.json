@@ -1,0 +1,22 @@
+{
+  "name": "pagination-and-push-batching",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{
+    "id": "r1",
+    "env": { "DEFAULT_EVENTS_PER_PULL": "25", "MAX_EVENTS_PER_PULL": "25" }
+  }],
+  "steps": [
+    { "do": "mutateRange", "device": "A", "table": "todo", "rowIdPrefix": "bulk-",
+      "count": 1005, "values": { "title": "Batched todo", "done": 0 } },
+    { "assert": "outboxCount", "device": "A", "expect": 1005 },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "assert": "outboxCount", "device": "A", "expect": 0 },
+
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "rowCount", "device": "B", "table": "todo", "expect": 1005 }
+  ]
+}

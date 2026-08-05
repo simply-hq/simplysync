@@ -1,0 +1,28 @@
+{
+  "name": "conflict-lww",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "mutate", "device": "A", "table": "todo", "rowId": "todo-1",
+      "values": { "title": "Original", "done": 0 } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+
+    { "do": "mutate", "device": "A", "table": "todo", "rowId": "todo-1",
+      "values": { "title": "Edit from A" } },
+    { "do": "mutate", "device": "B", "table": "todo", "rowId": "todo-1",
+      "values": { "title": "Later edit from B" } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "do": "sync", "device": "A", "relay": "r1" },
+
+    { "assert": "statesEqual", "devices": ["A", "B"] },
+    { "assert": "row", "device": "A", "table": "todo", "rowId": "todo-1",
+      "expect": { "title": "Later edit from B" } },
+    { "assert": "row", "device": "B", "table": "todo", "rowId": "todo-1",
+      "expect": { "title": "Later edit from B" } }
+  ]
+}

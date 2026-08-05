@@ -1,0 +1,39 @@
+{
+  "name": "tombstone-replication",
+  "devices": {
+    "A": { "platform": "$P1" },
+    "B": { "platform": "$P2" },
+    "C": { "platform": "$P1" }
+  },
+  "relays": [{ "id": "r1" }],
+  "steps": [
+    { "do": "mutate", "device": "A", "table": "todo", "rowId": "todo-1",
+      "values": { "title": "Delete me", "done": 0 } },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "assert": "row", "device": "B", "table": "todo", "rowId": "todo-1",
+      "expect": { "isDeleted": 0 } },
+
+    { "do": "mutate", "device": "A", "table": "todo", "rowId": "todo-1",
+      "op": "delete", "values": {} },
+    { "do": "sync", "device": "A", "relay": "r1" },
+    { "do": "sync", "device": "B", "relay": "r1" },
+    { "do": "sync", "device": "C", "relay": "r1" },
+
+    { "assert": "statesEqual", "devices": ["A", "B", "C"] },
+    { "assert": "row", "device": "C", "table": "todo", "rowId": "todo-1",
+      "expect": { "title": "Delete me", "isDeleted": 1 } },
+
+    { "do": "purge", "device": "B", "olderThanMs": 2592000000, "capture": "graced" },
+    { "assert": "equals", "actual": "$graced.purged", "expected": 0 },
+    { "assert": "row", "device": "B", "table": "todo", "rowId": "todo-1",
+      "expect": { "isDeleted": 1 } },
+
+    { "do": "purge", "device": "B", "olderThanMs": 0, "capture": "retained" },
+    { "assert": "equals", "actual": "$retained.purged", "expected": 0 },
+    { "assert": "row", "device": "B", "table": "todo", "rowId": "todo-1",
+      "expect": { "title": "Delete me", "isDeleted": 1 } },
+    { "assert": "row", "device": "A", "table": "todo", "rowId": "todo-1",
+      "expect": { "isDeleted": 1 } }
+  ]
+}

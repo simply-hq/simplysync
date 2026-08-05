@@ -1,5 +1,5 @@
 import { base64UrlEncode } from "@simplysync/protocol";
-import type { Id } from "../type";
+import type { Id } from "../type.js";
 
 /** Random row id (base64url, 16 bytes). */
 export function createId(): Id {

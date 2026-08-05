@@ -1,0 +1,40 @@
+{
+  "name": "@simplysync/node",
+  "version": "0.0.1",
+  "description": "Node.js SQLite and secure-storage adapters for the SimplySync local-first engine.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simply-hq/simplysync.git",
+    "directory": "packages/simplysync-node"
+  },
+  "keywords": ["local-first", "offline-first", "sync", "sqlite", "node", "raycast", "e2ee"],
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist", "README.md"],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "bun run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@simplysync/engine": "0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "typescript": "~5.9.2"
+  }
+}

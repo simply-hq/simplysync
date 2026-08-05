@@ -1,0 +1,225 @@
+import initSqlJs, {
+  type BindParams,
+  type Database,
+  type SqlJsStatic,
+} from "sql.js";
+import type { SqliteDriver } from "@simplysync/engine";
+import type { SnapshotStore } from "./snapshot-store.js";
+import type { TabCoordinator } from "./tab-coordinator.js";
+import {
+  acquireBrowserWriterLock,
+  type BrowserWriterLockResult,
+} from "./writer-lock.js";
+
+export type WriterLockMode = "required" | "best-effort" | "disabled";
+
+export interface SqlJsDriverOptions {
+  readonly store: SnapshotStore;
+  readonly locateFile?: (file: string) => string;
+  readonly debounceMs?: number;
+  readonly onPersistError?: (error: unknown) => void;
+  /**
+   * Whole-database snapshots require one writer. Browser consumers should keep
+   * the default ("required"); tests and non-browser tooling may opt out.
+   * Ignored when a coordinating `coordinator` is supplied — leadership then
+   * owns the same lock and followers open cooperatively instead of failing.
+   */
+  readonly writerLock?: WriterLockMode;
+  /** Test seam for the Web Locks API. */
+  readonly acquireWriterLock?: (
+    name: string,
+  ) => Promise<BrowserWriterLockResult>;
+  /**
+   * Multi-tab coordination (see tab-coordinator.ts): only the leader tab
+   * writes snapshots; followers boot behind a fresh-snapshot barrier and
+   * forward explicit `persistNow` calls to the leader. Pass the same instance
+   * as `SyncEngineDeps.tabSync`.
+   */
+  readonly coordinator?: TabCoordinator;
+}
+
+interface OpenDb {
+  readonly db: Database;
+  readonly store: SnapshotStore;
+  readonly onPersistError?: (error: unknown) => void;
+  readonly releaseWriterLock?: () => Promise<void>;
+  readonly coordinator?: TabCoordinator;
+}
+
+const registry = new Map<string, OpenDb>();
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const persistQueues = new Map<string, Promise<void>>();
+let lastOpened: string | null = null;
+let sqlStaticPromise: Promise<SqlJsStatic> | null = null;
+
+export function getActiveDb(name?: string): Database | null {
+  const key = name ?? lastOpened;
+  return key ? (registry.get(key)?.db ?? null) : null;
+}
+
+export async function persistNow(name?: string): Promise<void> {
+  const names = name ? [name] : [...registry.keys()];
+  for (const key of names) {
+    const timer = debounceTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      debounceTimers.delete(key);
+    }
+    const open = registry.get(key);
+    if (!open) continue;
+
+    // A follower never writes the shared snapshot (the leader's copy is the
+    // canonical one and already contains this tab's broadcast writes) — it
+    // asks the leader to persist instead. A false return means this tab got
+    // promoted while waiting: fall through and persist locally.
+    if (open.coordinator?.isCoordinating() && !open.coordinator.isLeader()) {
+      if (await open.coordinator.requestPersist()) continue;
+    }
+
+    // Capture at call time, then serialize saves so an older async IndexedDB
+    // write can never finish after (and overwrite) a newer snapshot.
+    const bytes = open.db.export();
+    const prior = persistQueues.get(key) ?? Promise.resolve();
+    const queued = prior.then(() => open.store.save(key, bytes));
+    persistQueues.set(key, queued);
+    try {
+      await queued;
+    } finally {
+      if (persistQueues.get(key) === queued) persistQueues.delete(key);
+    }
+  }
+}
+
+export async function closeSqlJsDatabases(name?: string): Promise<void> {
+  const names = name ? [name] : [...registry.keys()];
+  await persistNow(name);
+  for (const key of names) {
+    registry.get(key)?.db.close();
+    await registry.get(key)?.releaseWriterLock?.();
+    registry.delete(key);
+    debounceTimers.delete(key);
+    persistQueues.delete(key);
+    if (lastOpened === key) lastOpened = null;
+  }
+}
+
+function schedulePersist(name: string, debounceMs: number): void {
+  // Followers skip write-triggered persistence entirely: their writes reach
+  // the leader as broadcasts, and the leader's own apply schedules its save.
+  const open = registry.get(name);
+  if (open?.coordinator?.isCoordinating() && !open.coordinator.isLeader())
+    return;
+  const existing = debounceTimers.get(name);
+  if (existing !== undefined) clearTimeout(existing);
+  debounceTimers.set(
+    name,
+    setTimeout(() => {
+      debounceTimers.delete(name);
+      const open = registry.get(name);
+      void persistNow(name).catch((error) => {
+        open?.onPersistError?.(error);
+      });
+    }, debounceMs),
+  );
+}
+
+/**
+ * Creates the synchronous SQLite driver required by SimplySync using sql.js.
+ *
+ * ponytail: this snapshots the whole database to IndexedDB after writes; move to
+ * an async OPFS driver only when measured database size or write latency demands
+ * an engine-wide async storage API.
+ */
+export function createSqlJsDriverFactory(
+  options: SqlJsDriverOptions,
+): (name: string) => Promise<SqliteDriver> {
+  const debounceMs = options.debounceMs ?? 250;
+  const writerLock = options.writerLock ?? "required";
+  const acquireWriterLock =
+    options.acquireWriterLock ?? acquireBrowserWriterLock;
+
+  return async (name: string): Promise<SqliteDriver> => {
+    if (registry.has(name)) {
+      throw new Error(`SimplySync database ${name} is already open in this page.`);
+    }
+
+    // Cooperative multi-tab open: the coordinator owns the writer lock
+    // (leadership election), so the fail-fast acquisition below is skipped.
+    // Followers first wait for the current leader to persist a fresh
+    // snapshot, so they never boot from a stale save.
+    const coordinator = options.coordinator?.isCoordinating()
+      ? options.coordinator
+      : undefined;
+    let releaseWriterLock: (() => Promise<void>) | undefined;
+    if (coordinator) {
+      await coordinator.ensureFreshSnapshot();
+    } else if (writerLock !== "disabled") {
+      const lock = await acquireWriterLock(name);
+      if (lock.acquired) {
+        releaseWriterLock = lock.release;
+      } else if (writerLock === "required") {
+        const detail =
+          lock.reason === "held"
+            ? "another tab or window is already using it"
+            : "this browser does not provide the Web Locks API";
+        throw new Error(
+          `Cannot open SimplySync database ${name}: ${detail}.`,
+        );
+      }
+    }
+
+    sqlStaticPromise ??= initSqlJs(
+      options.locateFile ? { locateFile: options.locateFile } : undefined,
+    );
+    let db: Database;
+    try {
+      const SQL = await sqlStaticPromise;
+      const prior = await options.store.load(name);
+      db = prior ? new SQL.Database(prior) : new SQL.Database();
+      registry.set(name, {
+        db,
+        store: options.store,
+        onPersistError: options.onPersistError,
+        releaseWriterLock,
+        coordinator,
+      });
+      lastOpened = name;
+    } catch (error) {
+      await releaseWriterLock?.();
+      throw error;
+    }
+
+    return {
+      exec(sql, params) {
+        db.run(sql, (params ?? []) as BindParams);
+        schedulePersist(name, debounceMs);
+      },
+      select<R = Record<string, unknown>>(
+        sql: string,
+        params?: readonly unknown[],
+      ): R[] {
+        const statement = db.prepare(sql);
+        try {
+          if (params && params.length > 0) statement.bind(params as BindParams);
+          const rows: Record<string, unknown>[] = [];
+          while (statement.step()) rows.push(statement.getAsObject());
+          return rows as R[];
+        } finally {
+          statement.free();
+        }
+      },
+      transaction<T>(fn: () => T): T {
+        db.run("BEGIN");
+        try {
+          const result = fn();
+          db.run("COMMIT");
+          schedulePersist(name, debounceMs);
+          return result;
+        } catch (error) {
+          db.run("ROLLBACK");
+          throw error;
+        }
+      },
+    };
+  };
+}

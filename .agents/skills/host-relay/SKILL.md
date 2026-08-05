@@ -1,6 +1,6 @@
 ---
 name: host-relay
-description: Deploy and verify a personal SimplySync relay on Cloudflare for a non-technical user. Use when the user says "host my own relay", "set up my own sync relay/server", "deploy a Simply Finance relay", asks for Cloudflare relay hosting, or wants an agent to handle Cloudflare signup, authentication, D1/R2 provisioning, migrations, deployment, and health verification end to end.
+description: Deploy and verify a source-owned personal SimplySync relay on Cloudflare. Use when a user says "host my own relay", "set up my own sync relay/server", asks for Cloudflare relay hosting, or wants an agent to handle Cloudflare signup, authentication, D1/R2 provisioning, migrations, deployment, and health verification end to end.
 ---
 
 # Host a SimplySync Relay
@@ -20,11 +20,12 @@ CAPTCHA, payment details, or legal acceptance.
   personal acceptance, then continue after completion.
 - Do not introduce a domain, VPS, Docker, private network, or TLS setup. Use the
   generated `workers.dev` HTTPS URL.
-- Keep the built-in relay enabled until the custom relay passes a real
-  two-device sync and restore test.
-- Do not describe the built-in relay as testing-only. It is the managed default
-  for ongoing use and can remain enabled alongside the custom relay. Simply
-  Finance may retire it later only if demand outgrows sustainable capacity.
+- Keep the app's existing local data and relay configuration intact until the
+  new relay passes a real two-device sync and restore test.
+- Do not imply that SimplySync provides a managed relay. This skill deploys the
+  relay source from the user's checkout into the user's Cloudflare account.
+- Do not call a second relay redundant until the app has pushed its existing
+  encrypted history to it and the two-device restore test passes.
 - Do not declare success until `<relay-url>/health` returns `ok: true`.
 
 Before provider work, read
@@ -32,12 +33,12 @@ Before provider work, read
 
 ## Prepare the deployment source
 
-1. Find `relays/cloudflare` in the current workspace.
+1. Find `apps/relay-cloudflare` in the current workspace.
 2. Resolve this skill's real directory if it was opened through a symlink.
 3. Create an isolated copy:
 
    ```bash
-   node <skill-directory>/scripts/prepare-relay.mjs <relays/cloudflare>
+   node <skill-directory>/scripts/prepare-relay.mjs <apps/relay-cloudflare>
    ```
 
 4. Use the printed `RELAY_WORKDIR=...` directory for every provider command.
@@ -51,12 +52,12 @@ SimplySync repository. Do not substitute an unrelated relay implementation.
 Give the user:
 
 1. The verified relay URL.
-2. **Simply Finance → Settings → Sync Relays → Add Relay**.
-3. Keep **Built-in + custom** while verifying the new relay.
-4. Make a change on one device and restore or sync the same recovery phrase on
-   a second device.
-5. After verification, keep both relays for redundancy or switch to **Custom
-   only** if the user prefers.
+2. The app-specific connection step: paste it into the scaffold's **Relay URL**
+   field, or set the relay URL environment/configuration value the app uses.
+3. Make a change on one device and confirm it reaches the relay.
+4. Restore the same recovery key on a second device, configure the same relay
+   URL, and confirm the change appears there.
+5. Keep the previous relay data/configuration until that verification succeeds.
 
 Explain that the URL can remain public: it is an address, not a decryption or
 write key. The relay stores ciphertext; recovery-phrase-derived data and write

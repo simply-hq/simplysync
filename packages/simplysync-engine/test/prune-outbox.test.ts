@@ -71,18 +71,23 @@ describe("pruneOutbox (store)", () => {
   test("drops events delivered to every relay, keeps the rest", () => {
     const { store, db } = makeStore(["http://a", "http://b"]);
     for (const eid of ["e1", "e2", "e3", "e4"]) enqueueFakeEvent(db, eid);
-    // a has acked through e3, b only through e2 -> min is e2.
-    store.setMeta("push:http://a", "e3");
-    store.setMeta("push:http://b", "e2");
+    for (const eid of ["e1", "e2", "e3"]) {
+      store.markOutboxDelivered(eid, "http://a");
+    }
+    for (const eid of ["e1", "e2"]) {
+      store.markOutboxDelivered(eid, "http://b");
+    }
 
     expect(store.pruneOutbox(["http://a", "http://b"])).toBe(2); // e1, e2
     expect(outboxCount(db)).toBe(2); // e3, e4 remain (not yet on b)
   });
 
-  test("prunes nothing when a relay has no cursor yet (newly added)", () => {
+  test("prunes nothing when a newly added relay has no acknowledgement", () => {
     const { store, db } = makeStore(["http://a", "http://b"]);
     for (const eid of ["e1", "e2"]) enqueueFakeEvent(db, eid);
-    store.setMeta("push:http://a", "e2"); // b never pushed -> cursor ""
+    for (const eid of ["e1", "e2"]) {
+      store.markOutboxDelivered(eid, "http://a");
+    }
     expect(store.pruneOutbox(["http://a", "http://b"])).toBe(0);
     expect(outboxCount(db)).toBe(2);
   });
@@ -138,7 +143,9 @@ describe("sync prunes the outbox automatically", () => {
     // remain in their table.
     expect(outboxCount(handle.db)).toBe(0);
     const notes = await engine.loadQuery(
-      engine.createQuery((qb) => qb.selectFrom("note").select(["body"])),
+      engine.createQuery((qb) => qb.selectFrom("note").select(["body"]), {
+        includeDeleted: true,
+      }),
     );
     expect(notes.length).toBe(2);
   });

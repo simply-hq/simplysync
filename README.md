@@ -55,17 +55,104 @@ Choose a different approach if the app needs:
 SimplySync resolves simultaneous edits at the row level: the latest edit wins.
 It is designed for one owner using several devices, not a shared team database.
 
-## Try the demo
+## Quickstart: a source-owned React Native app
 
-You need [Bun](https://bun.sh/) and Go 1.25 or newer.
+<!-- quickstart:react-native:start -->
+SimplySync is clone-only: the app owns the exact source it ships. This path
+needs Git, Bun, Go 1.25+, and either Xcode or Android Studio.
+
+```sh
+# Only Expo/React Native, its source dependencies, and the local Go relay.
+curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
+  sh -s -- --with-relay react-native simplysync-mobile
+cd simplysync-mobile
+
+# Derive your app from the checked-in TodoList client; no template registry.
+sh scaffold-simplysync.sh react-native my-notes
+bun install --no-save
+bun run build
+```
+
+Start the included ciphertext-only relay in one terminal:
+
+```sh
+bun run relay:go
+```
+
+Build and launch the native development client in another terminal:
+
+```sh
+# iOS Simulator
+EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://127.0.0.1:4100 \
+  bun run --cwd apps/my-notes ios
+
+# Android Emulator (use this instead of the iOS command)
+EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://10.0.2.2:4100 \
+  bun run --cwd apps/my-notes android
+```
+
+If Expo reports that Metro port 8081 is already in use, rerun the same platform
+command with `--port 8082`.
+
+On the first device, save the recovery key and choose **I saved this key**.
+Launch the same development build on a second simulator or device, choose
+**Already have a key?**, and paste it. A todo added on either device then syncs
+through the relay. For a physical phone, replace the loopback URL with the
+development machine's reachable HTTPS or LAN address.
+
+If you only want the canonical React Native example, skip the scaffold command
+and use `apps/todolist/expo` in the launch command. Omit `--with-relay` when you
+want an exact local-only client clone.
+
+For a fast two-device proof without a native SDK:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
+  sh -s -- --with-relay cli simplysync-proof
+cd simplysync-proof
+bun install --no-save
+bun run todo:dev -- --once
+```
+<!-- quickstart:react-native:end -->
+
+Use `web`, `cli`, `node`, `swift`, `kotlin`, `relay-go`,
+`relay-cloudflare`, or `core` in place of `react-native`. From a full checkout,
+run `bun run clone --list` to see every preset.
+
+## Explore the complete repository
+
+In a complete repository checkout, you need [Bun](https://bun.sh/) and Go 1.25
+or newer.
 
 ```sh
 bun install
-bun run demo
+bun run todo:dev
 ```
 
-The demo starts a local relay, syncs two example clients, shows their decrypted
-local state and an unreadable relay message, then shuts everything down.
+That starts a local relay, mints one owner, and shows two devices converge
+through it — then stays up so you can drive the same account from other
+terminals (`bun run todo list --device phone`). It's the canonical example app:
+one todo schema, implemented identically in TypeScript, Swift, Kotlin, and
+React Native.
+
+To check the three headless/native engine implementations really agree — one
+relay, one account, rows written on each platform and read back:
+
+```sh
+bun run todo:interop
+```
+
+Kotlin needs a JDK and Swift needs `swiftc`; a missing toolchain is reported as
+skipped, never as a pass.
+
+For the lower-level protocol diagnostic (raw envelopes, HLC, cursors):
+
+```sh
+bun run protocol:demo
+```
+
+It starts a relay, syncs two clients, shows their decrypted local state and an
+unreadable relay message, then shuts everything down.
 
 For a visual, two-device browser demo:
 
@@ -79,17 +166,21 @@ bun run docs:dev
 
 Then open <http://localhost:4200> and choose **Demo**.
 
-For the Expo example, keep the relay running and use `bun run expo`.
+For the React Native UI of that same todo app, keep the relay running and use
+`bun run todo:expo`.
 
 ## Choose your next step
 
 | I want to… | Start here |
 | --- | --- |
 | Understand the idea and its limits | [What is SimplySync?](docs/local-first/README.md) |
+| Trace inputs through transformations to outputs | [SimplySync system pipelines](docs/simplysync-system/README.md) |
+| Point a coding agent at SimplySync | [SimplySync for coding agents](docs/local-first/agents.md) |
 | Add SimplySync to a TypeScript or React app | [Client API guide](docs/local-first/guide.md) |
-| See the smallest working client | [CLI example](examples/cli) |
-| See a complete app | [AI chat example](examples/ai-chat) |
-| Build for Expo | [Expo example](examples/expo) |
+| See one app built for every platform | [TodoList](apps/todolist) |
+| Run the canonical todo from a terminal | [TodoList CLI](apps/todolist/cli) |
+| Build for React Native / Expo | [`@simplysync/react-native`](packages/simplysync-react-native) and the [todo UI](apps/todolist/expo) |
+| Build a Raycast extension or Node CLI | [`@simplysync/node`](packages/simplysync-node) |
 | Build a native Swift or Kotlin client | [Native client guide](docs/local-first/native.md) |
 | Run my own sync service | [Self-hosting guide](docs/local-first/self-hosting.md) |
 | Check the privacy and security claims | [Security and threat model](SECURITY.md) |
@@ -120,8 +211,11 @@ core engine.
 | Client | Purpose |
 | --- | --- |
 | [`@simplysync/react`](packages/simplysync-react) | React context and hooks for queries, sync status, and errors. |
-| [Swift client](ports/swift) | Native, JavaScript-free Swift protocol and engine implementation. |
-| [Kotlin client](ports/kotlin) | Native, JavaScript-free Kotlin/JVM protocol and engine implementation. |
+| [`@simplysync/react-native`](packages/simplysync-react-native) | React Native hooks plus Expo SQLite, SecureStore, optional SQLCipher, native crypto, and app-lifecycle wiring. |
+| [`@simplysync/browser`](packages/simplysync-browser) | Browser storage, encrypted recovery-secret storage, and safe multi-tab coordination. |
+| [`@simplysync/node`](packages/simplysync-node) | Built-in `node:sqlite` driver and lifecycle wiring for Raycast, Node CLIs, and desktop commands. |
+| [`SimplySync` Swift source module](Package.swift) | Swift package sources with the native engine, SwiftUI `LiveQuery`, Keychain/SQLite adapters, and protocol core. |
+| [Kotlin/JVM source module](apps/todolist/kotlin) | Kotlin engine with `StateFlow` queries and Android-injectable storage. |
 
 Your schema, interface, React components, and relay configuration remain
 app-specific and can evolve independently.
@@ -133,17 +227,17 @@ encrypted data rather than readable app content.
 
 | Relay | Purpose |
 | --- | --- |
-| [Go relay](relays/go) | Canonical self-hosted relay using Go and SQLite. |
-| [Cloudflare relay](relays/cloudflare) | Serverless relay using Cloudflare Workers, D1, and R2. |
+| [Go relay](apps/relay-go) | Canonical self-hosted relay using Go and SQLite. |
+| [Cloudflare relay](apps/relay-cloudflare) | Serverless relay using Cloudflare Workers, D1, and R2. |
 
-### Examples and tests
+### Canonical example and tools
 
 | Project | Purpose |
 | --- | --- |
-| [CLI example](examples/cli) | Small reference client and one-shot two-client demo. |
-| [Expo example](examples/expo) | Mobile example using Expo SQLite and secure device storage. |
-| [AI chat example](examples/ai-chat) | Complete local-first application built on the engine. |
-| [Compatibility tests](tests) | Confirms that relays and clients follow the same protocol. |
+| [TodoList](apps/todolist) | The only product example: one schema, owner, and relay across CLI, browser, React Native, Swift, and Kotlin. |
+| [Raw protocol tool](tools/protocol-demo) | Low-level envelope/HLC diagnostics for protocol port authors. |
+| [Relay conformance tests](apps/relay-conformance) | Checks that relay implementations follow the same contract. |
+| [Cross-platform tests](apps/todolist/e2e) | Proves that the TodoList web, Swift, and Kotlin clients converge on the same data. |
 
 ## Privacy and security
 
@@ -155,7 +249,7 @@ encryption key, or recovery phrase.
   required to sync them.
 - The relay stores a SHA-256 hash of its authentication token, not the token
   itself.
-- Self-hosted and hosted relays use the same protocol, so changing providers
+- The Go and Cloudflare relays use the same protocol, so changing deployments
   does not weaken encryption.
 
 A relay can delay or delete encrypted updates, and it can see routing metadata.
@@ -174,10 +268,20 @@ limitations, and source files to audit.
 4. [Sync protocol and relay behavior](docs/local-first/sync.md)
 5. [Native Swift and Kotlin clients](docs/local-first/native.md)
 6. [Self-hosting a relay](docs/local-first/self-hosting.md)
+7. [SimplySync for coding agents](docs/local-first/agents.md)
 
 Run `bun run docs:dev` to view the documentation site and browser demo locally.
-The repository's reconstructed public timeline is explained in
-[Project history](HISTORY.md).
+
+### Using an AI agent
+
+Point the agent at [`docs/local-first/agents.md`](docs/local-first/agents.md) —
+the constraints that cause silent bugs come first, followed by a complete
+working app, the platform wiring, and the whole API surface. The docs build also
+generates `llms.txt` and `llms-full.txt` (the entire corpus in one fetch), so an
+agent can load the reference without crawling. Agents working *on this
+repository* instead read [`AGENTS.md`](AGENTS.md). Ask an agent to use the
+repo-owned `clone-simplysync` skill for requests such as “give me only the React
+Native example.”
 
 ## Credits
 

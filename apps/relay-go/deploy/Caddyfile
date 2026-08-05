@@ -1,0 +1,37 @@
+# Caddy terminates TLS and reverse-proxies to the relay on localhost.
+# Caddy fetches + renews a Let's Encrypt cert automatically. Set Cloudflare's
+# SSL/TLS mode to "Full (strict)" so the edge -> origin hop is encrypted too.
+#
+# Install to /etc/caddy/Caddyfile, then: sudo systemctl reload caddy
+#
+# If you'd rather not run Caddy, you can instead use a Cloudflare Tunnel
+# (cloudflared) and skip the public port entirely — see DEPLOY.md.
+
+sync.simplyfinance.app {
+	# The ops dashboard already lives at a secret, token-gated path with
+	# brute-force lockout. For extra defense-in-depth you can also IP-allowlist
+	# it here — set the path to your ADMIN_PATH (or the logged /ops-<hash>) and
+	# your address(es). Leave commented out if relying on the secret path alone.
+	# @admin_blocked {
+	# 	path /your-secret-path /your-secret-path/*
+	# 	not remote_ip 203.0.113.0/24
+	# }
+	# respond @admin_blocked 403
+
+	reverse_proxy 127.0.0.1:4100
+
+	# Lightweight origin-side rate limit as defense-in-depth behind Cloudflare's
+	# edge WAF rule. (Requires the caddy-ratelimit plugin; optional.)
+	# rate_limit {
+	# 	zone api {
+	# 		key {remote_host}
+	# 		events 120
+	# 		window 10s
+	# 	}
+	# }
+
+	encode gzip
+	log {
+		output file /var/log/caddy/sbt-relay.log
+	}
+}

@@ -1,18 +1,32 @@
 {
   "name": "@simplysync/protocol",
   "version": "0.0.1",
-  "private": true,
+  "description": "Cross-platform identity, encryption, and wire types for SimplySync.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simply-hq/simplysync.git",
+    "directory": "packages/simplysync-protocol"
+  },
+  "keywords": ["local-first", "offline-first", "sync", "encryption", "e2ee"],
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "sideEffects": false,
+  "files": ["dist", "README.md"],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "gen:vectors": "bun run scripts/gen-vectors.ts",
-    "security:bip39": "bun run scripts/check-bip39-fixtures.ts"
+    "gen:vectors": "bun run scripts/gen-vectors.ts"
   },
   "dependencies": {
     "@scure/bip39": "2.2.0"

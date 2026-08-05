@@ -4,11 +4,12 @@ The Swift client is a **full engine**, not just the protocol core. Like
 `@simplysync/engine`, it owns a local SQLite database, a typed schema, the HLC
 clock, the outbox, a reactive query cache, and the sync loop — so you call
 `insert` / `update` / `query` and bind reactive results into SwiftUI, the same way
-the React version works. It lives in
-[`ports/swift`](../../ports/swift/README.md)
-(`SimplySyncDemo/Engine/`, built on the `Kit/` protocol port).
+the React version works. It ships as the repository-root
+[`SimplySync` Swift package](../../Package.swift); the
+[`apps/todolist/swift`](../../apps/todolist/swift/README.md) todo
+client compiles the same root `Sources/SimplySync/` tree.
 
-> This page mirrors the [React/TypeScript guide](./guide.html) section-for-section.
+> This page mirrors the [React/TypeScript guide](./guide.md) section-for-section.
 > For the on-the-wire protocol and the identity interop boundary, see
 > [Native clients](./native.md). Pure Foundation + CryptoKit + `SQLite3` — no
 > third-party dependencies.
@@ -32,12 +33,25 @@ the React version works. It lives in
  relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ LiveQuery.rows updates
 ```
 
-## Add the engine
+## Clone the engine source
 
-Copy `SimplySyncDemo/Engine/*.swift` and `SimplySyncDemo/Kit/*.swift` into your
-app (the demo's layout), or build them as a local Swift package. The engine is
-pure Foundation + Combine + CryptoKit + `SQLite3` (in the iOS/macOS SDK), so there
-are no external dependencies and it also runs on macOS.
+Use the `swift` selective clone preset:
+
+```sh
+bun run clone swift ../my-swift-sync
+```
+
+Add `../my-swift-sync` as a local package in Xcode and select the `SimplySync`
+product, then:
+
+```swift
+import SimplySync
+```
+
+The engine is pure Foundation + Combine + CryptoKit + `SQLite3` (in the
+iOS/macOS SDK), so there are no external dependencies and it also runs on
+macOS. The [Swift source README](../../apps/todolist/swift/README.md#clone-and-use-the-source)
+shows the manifest declaration.
 
 ## 1. Define a schema
 
@@ -84,10 +98,16 @@ let deps = SyncEngineDeps(
 let engine = createSync(deps)(appSchema, SyncEngineConfig(
     name: "my-app",
     transports: [Transport(url: "http://localhost:4100")], // optional relay
-    syncIntervalMs: 3000))                                  // poll cadence
+    syncIntervalMs: 3000,                                   // poll cadence
+    schemaVersion: 1))                                      // optional; default 1
 
 await engine.ready // resolves once the DB is open and the owner is loaded
 ```
+
+Keep `schemaVersion` at `1` for additive table and column changes. Only bump it
+when payload meaning changes incompatibly. Older clients durably retain a newer
+payload without partially applying it, then replay it after an upgraded app
+declares support.
 
 On first run the engine mints a new owner (a fresh `sf1_` recovery key, stored via
 `secureStorage`). On later runs it loads the existing one.
@@ -252,7 +272,8 @@ The engine also syncs opportunistically after local writes. Watch progress with
 
 A **terminal** failure (auth/quota/bad request — 400/401/403/413) won't fix itself
 by retrying the same batch, so the engine backs the poller off (still retrying on
-the next explicit `sync()`). Network and 5xx/429 errors retry at the normal cadence.
+the next explicit `sync()`). A nonterminal `429` uses the same five-minute
+backoff; network and 5xx errors retry at the normal cadence.
 
 With multiple relays, every one receives a full copy of the outbox and
 `syncState` stays `.synced` while **any** relay works. For the per-relay truth —

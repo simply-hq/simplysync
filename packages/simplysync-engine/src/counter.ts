@@ -25,8 +25,8 @@ import type {
   Query,
   SchemaDefinition,
   SyncEngine,
-} from "./engine-types";
-import { FiniteNumber, id, NonEmptyString } from "./type";
+} from "./engine-types.js";
+import { FiniteNumber, id, NonEmptyString } from "./type.js";
 
 /**
  * Column set for a counter table. Add it to a schema as e.g.

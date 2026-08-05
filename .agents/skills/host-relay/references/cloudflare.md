@@ -19,7 +19,8 @@ npm run setup
 ```
 
 The idempotent setup creates or reuses D1 and R2, applies migrations, deploys
-the Worker, and prints its URL.
+the Worker, discovers its `workers.dev` URL, and verifies `/health` before it
+prints the handoff.
 
 Handle provider checkpoints:
 
@@ -29,21 +30,22 @@ Handle provider checkpoints:
 - Accept a reasonable available `workers.dev` name.
 - If multiple accounts are plausible, show account names and let the user
   choose.
-- Reuse existing `simplysync-relay` and `simplysync-relay-blobs` resources. Do not create
+- Reuse existing `sbt-relay` and `sbt-relay-blobs` resources. Do not create
   suffixed duplicates unless the existing resources belong to another project.
 - Never approve a paid plan or checkout for the user.
 
 ## Verify and recover
 
-Extract the `https://...workers.dev` URL and run:
+Require the setup output to report a successful health check. Then independently
+verify the printed `https://...workers.dev` URL with the repository-owned check:
 
 ```bash
-curl --fail --silent "<relay-url>/health"
+npm run verify -- <relay-url>
 ```
 
-Retry for up to 30 seconds. Require JSON containing `"ok":true`. If it fails,
-inspect deployment output and `npx wrangler tail`, fix the binding or runtime
-error, redeploy, and retry.
+The check retries for up to 30 seconds and requires JSON containing
+`"ok":true`. If it fails, inspect deployment output and `npx wrangler tail`,
+fix the binding or runtime error, redeploy, and retry.
 
 Cloudflare usage notifications are optional. A custom domain or additional WAF
 rule is not required for a personal relay.

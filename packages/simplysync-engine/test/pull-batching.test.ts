@@ -15,6 +15,7 @@ import { createEngineState } from "../src/engine/state";
 import { createClock, createStore } from "../src/engine/store";
 import { createQueryCache } from "../src/engine/query-cache";
 import { createRelaySync } from "../src/engine/relay";
+import { createTabBridge } from "../src/engine/tab-sync";
 
 // Plan 008: pullAndApply decrypts a page into memory, then applies every row +
 // _sync_seen insert inside ONE driver.transaction instead of one auto-commit
@@ -90,6 +91,14 @@ function makeRelay(
     harness.store,
     harness.clock,
     harness.queryCache,
+    createTabBridge(
+      harness.state,
+      harness.store,
+      harness.clock,
+      harness.queryCache,
+      schema,
+      undefined, // no tab coordination in this harness
+    ),
     schema,
     {
       createSqliteDriver: () => {

@@ -14,12 +14,12 @@ SimplySync is three layers, each doing one job:
 | --- | --- | --- |
 | **Engine** | `@simplysync/engine` | Local SQLite store, the HLC clock, the outbox, the sync loop, reactive queries. The client API. |
 | **Protocol** | `@simplysync/protocol` | The crypto and wire primitives: identity derivation, the AES-GCM envelope, blob chunking, HLC encoding. |
-| **Relay** | `relays/*` | A dumb, opaque event store. Holds ciphertext + routing metadata. Optional and self-hostable. |
+| **Relay** | `apps/relay-*` | A dumb, opaque event store. Holds ciphertext + routing metadata. Optional and self-hostable. |
 
 ```
 ┌─ Engine (on device) ─────────────────────────────────┐     ┌─ Relay (optional) ─┐
-│  insert/update ─▶ local SQLite row (source of truth)  │     │                    │
-│                └▶ encrypt ─▶ outbox ──────────────────┼─push▶ opaque event store │
+│  insert/update ─▶ row + pending outbox intent         │     │                    │
+│                └▶ async seal ─▶ encrypted outbox ─────┼─push▶ opaque event store │
 │  reactive query cache ◀─ refresh on change            │     │ (ciphertext only)  │
 │  poll loop: pull ─▶ decrypt ─▶ apply (LWW) ─▶ row ◀───┼─pull─                    │
 └───────────────────────────────────────────────────────┘     └────────────────────┘
@@ -48,18 +48,25 @@ create table "entry" (
 );
 ```
 
-Alongside your tables it maintains three internal ones — the entire sync state
-machine, all just rows you can inspect:
+Alongside your tables it maintains seven internal ones — the sync state machine,
+all just rows you can inspect:
 
 ```sql
-_sync_outbox(event_id text primary key, envelope_json text, pushed_at text)
-_sync_seen(event_id text primary key)            -- dedupe pulled events
-_sync_meta(key text primary key, value text)     -- HLC high-water mark + per-relay cursor
+_sync_outbox(...)        -- pending plaintext intent, then its sealed envelope
+_sync_outbox_relay(...)  -- exact (event, relay) delivery acknowledgements
+_sync_seen(...)          -- bounded dedupe set for pulled events
+_sync_deferred(...)      -- authenticated events not safe to apply yet
+_sync_meta(...)          -- HLC state plus per-relay cursor/backfill progress
+_sync_log(...)           -- bounded device-local sync diagnostics
+_sync_purge(...)         -- compatibility queue for older purge requests
 ```
 
-Reads go straight to your tables. Writes go to your tables *and* the outbox, in
-the same step. (`_sync_outbox`, `_sync_seen`, and the cursor are consumed by the
-[sync loop](./sync.md#the-sync-loop).)
+Reads go straight to your tables. A normal engine-stamped write commits the
+application row and a plaintext-pending `_sync_outbox` intent in the **same
+SQLite transaction**.
+That pending payload has the same local trust boundary as the readable row. An
+asynchronous seal step then encrypts it before any push; the relay never receives
+`payload_json`. See the [sync loop](./sync.md#the-sync-loop).
 
 ## The Hybrid Logical Clock
 
@@ -81,17 +88,24 @@ When you call `engine.insert` / `update` / `upsert`:
 
 1. **Validate & coerce** the values against the typed schema; an invalid value
    returns `{ ok: false, error }` and writes nothing.
-2. **Upsert the row** into your local SQLite table (instant; the UI can read it
-   immediately), stamping `updatedAt` with a fresh HLC.
-3. **Encrypt an envelope** for the change and insert `JSON.stringify(envelope)`
-   into `_sync_outbox` with `pushed_at = NULL`.
-4. **Refresh affected reactive queries**, so every `useQuery` over that table
-   re-renders (see [the read path](#the-read-path)).
-5. **Kick a sync** opportunistically, if a relay is configured.
+2. **Merge and stamp the full row** with a fresh HLC in `updatedAt`.
+3. **Commit the row and replication intent together.** One SQLite transaction
+   upserts the local row and inserts its plaintext payload into `_sync_outbox`
+   with an empty `envelope_json`. If either write throws, both roll back.
+4. **Publish the committed result** to sibling tabs and refresh affected
+   reactive queries. The UI can read it immediately.
+5. **Kick an asynchronous sync.** It seals every pending intent with AES-GCM,
+   then pushes only non-empty encrypted envelopes if relays are configured.
 
-The plaintext inside the envelope is a `SyncPayload`:
-`{ schemaVersion, table, op: "upsert" | "delete", rowId, hlc, value }`. How it's
+The plaintext eventually sealed inside the envelope is a `SyncPayload`:
+`{ schemaVersion, table, op, rowId, hlc, value }`. Current writers emit
+`op: "upsert"` for every full-row payload, including tombstones. How it is
 encrypted and pushed is in [Sync & the relay](./sync.md).
+
+> **Imported-HLC boundary.** A caller-supplied `updatedAt` also becomes the
+> outbox primary key. It must be unique per emitted event. Reusing the same HLC
+> for different writes can make the later `INSERT OR IGNORE` discard its
+> replication intent even though the row commits; engine-minted HLCs are unique.
 
 **Deletes are soft.** A delete sets the `isDeleted` system column and emits a
 normal envelope; queries filter `where isDeleted = 0`. You never hard-delete a
@@ -109,8 +123,10 @@ changes — from a local write *or* an incoming sync.
   data actually changes. It also records which tables each query touches (by
   scanning the compiled SQL).
 - **On a change**, `refreshQueries(changedTables)` re-runs only the queries whose
-  tables overlap the change, swaps their `rows`, and fires their listeners.
-  Mutations pass the table they wrote; a sync passes every table it applied.
+  tables overlap the change, then structurally compares the result (including
+  byte-wise BLOB comparison). It swaps `rows` and fires listeners only when the
+  result actually differs. Mutations pass the table they wrote; a sync passes
+  every table it applied.
 - **`useQuery(query)`** subscribes to that entry; **`getQueryRows`** reads the
   cached snapshot synchronously; **`loadQuery`** does a one-shot eager read.
 
@@ -126,10 +142,10 @@ bun install
 bun run test                       # turbo: all package tests
 bun run typecheck                  # turbo: all typechecks
 
-bun run demo                       # relay + two clients + sync, one shot
+bun run protocol:demo              # raw envelope/HLC diagnostic
 bun run relay:go                   # canonical Go relay (needs Go 1.25+)
 bun run docs:dev                   # these docs + the browser Demo on :4200
-bun run --cwd examples/cli blob-demo   # encrypted image round-trip
+bun run --cwd tools/protocol-demo blob-demo       # encrypted image round-trip
 ```
 
 ---

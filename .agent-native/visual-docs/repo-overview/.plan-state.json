@@ -1,0 +1,15 @@
+{
+  "localOnly": true,
+  "kind": "plan",
+  "visualDocs": {
+    "manifest": "../../../agent-native.json",
+    "targets": [
+      "engine",
+      "protocol",
+      "platforms",
+      "relays",
+      "system-docs"
+    ]
+  },
+  "createdAt": "2026-08-01T12:46:53.694Z"
+}

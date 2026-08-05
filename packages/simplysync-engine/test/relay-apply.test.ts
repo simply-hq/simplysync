@@ -37,9 +37,12 @@ const MNEMONIC = createMnemonic();
 const RELAY_URL = "http://relay.test";
 
 // The schema the *receiving* device (the one under test) runs. Deliberately
-// narrower than what a newer app version might write — it only knows `title`.
+// narrower than what a newer app version might write. `details` deliberately
+// has no SQLite default so omitted local values exercise NULL projection too.
 // That gap is what the "unknown column" tests exploit.
-const schema = { note: { id: id("Note"), title: NonEmptyString } };
+const schema = {
+  note: { id: id("Note"), title: NonEmptyString, details: NonEmptyString },
+};
 
 function wrapDriver(db: Database): SqliteDriver {
   return {
@@ -148,13 +151,14 @@ async function getIdentity(): Promise<LocalFirstIdentity> {
  * pushed it) directly into the fake relay's event log. */
 async function pushSynthetic(
   relay: ReturnType<typeof createFakeRelay>,
-  payload: SyncPayload<Record<string, unknown>>,
+  payload: SyncPayload<Record<string, unknown>, number>,
   deviceId = "device-remote",
+  eventId = payload.hlc,
 ): Promise<void> {
   const identity = await getIdentity();
   const envelope = await encryptPayload(
     identity,
-    { eventId: payload.hlc, deviceId },
+    { eventId, deviceId },
     payload,
   );
   relay.events.push(envelope);
@@ -168,6 +172,27 @@ function isSeen(db: Database, eventId: string): boolean {
 }
 
 describe("relay pull/apply — Plan 004 (schema projection on remote apply)", () => {
+  test("configured payload versions must be positive safe integers", () => {
+    const deps = {
+      createSqliteDriver: () => {
+        throw new Error("must not open");
+      },
+      secureStorage: memoryStorage(),
+    };
+    expect(() =>
+      createSync(deps)(schema, {
+        name: "invalid-schema-version",
+        schemaVersion: 0,
+      })
+    ).toThrow("positive safe integer");
+    expect(() =>
+      createSync(deps)(schema, {
+        name: "invalid-schema-version",
+        schemaVersion: Number.MAX_SAFE_INTEGER + 1,
+      })
+    ).toThrow("positive safe integer");
+  });
+
   test("a remote row carrying a column unknown to the local schema is applied, not dropped", async () => {
     const relay = createFakeRelay();
     const { engine, db } = makeDevice(relay.fetchImpl, "unknown-column");
@@ -208,6 +233,56 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     const log = engine.getSyncLog(5);
     expect(log[0]?.applied).toBe(1);
     expect(log[0]?.kind).toBeUndefined(); // no failure surfaced
+  });
+
+  test("a merged remote row may carry SQLite NULLs for never-supplied typed columns", async () => {
+    const relay = createFakeRelay();
+    const { engine, db } = makeDevice(relay.fetchImpl, "merged-null-column");
+    await engine.ready;
+
+    const rowId = "row-null";
+    const firstHlc = createHlc("device-remote", Date.now(), 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId,
+      hlc: firstHlc,
+      value: {
+        title: "First title",
+        createdAt: new Date().toISOString(),
+        updatedAt: firstHlc,
+        isDeleted: 0,
+      },
+    });
+    await connect(engine);
+
+    const secondHlc = createHlc("device-remote", Date.now() + 1, 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId,
+      hlc: secondHlc,
+      value: {
+        title: "Updated title",
+        details: null,
+        createdAt: new Date().toISOString(),
+        // Native ports treat the top-level HLC as canonical and may omit or
+        // carry a stale system value inside the row payload.
+        updatedAt: firstHlc,
+        isDeleted: 0,
+      },
+    });
+    await engine.sync();
+
+    const row = db.prepare(`select title, details, updatedAt from note where id = ?`).get(rowId) as {
+      title: string;
+      details: string | null;
+      updatedAt: string;
+    };
+    expect(row).toEqual({ title: "Updated title", details: null, updatedAt: secondHlc });
+    expect(engine.getSyncLog(1)[0]?.applied).toBe(1);
   });
 
   test("re-pulling the same page (cursor rewound) is idempotent", async () => {
@@ -340,14 +415,55 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
 
     expect(isSeen(db, hlc)).toBe(true); // terminal: marked seen anyway
 
-    let log = engine.getSyncLog(5);
-    expect(log[0]?.kind).toBe("applyFailed");
+    const logBeforeIdleSync = engine.getSyncLog(5);
+    expect(logBeforeIdleSync[0]?.kind).toBe("applyFailed");
 
-    // Re-syncing must NOT retry it (already seen) or log another failure.
+    // Re-syncing must NOT retry it (already seen) or write a zero-activity
+    // success entry. Idle polling stays out of the durable diagnostics log.
     await engine.sync();
-    log = engine.getSyncLog(5);
-    expect(log[0]?.result).toBe("ok");
-    expect(log[0]?.kind).toBeUndefined();
+    expect(engine.getSyncLog(5)).toEqual(logBeforeIdleSync);
+  });
+
+  test("malformed row ids and system columns are terminal apply failures", async () => {
+    const relay = createFakeRelay();
+    const { engine, db } = makeDevice(relay.fetchImpl, "invalid-system-columns");
+    await engine.ready;
+
+    const badIdHlc = createHlc("device-remote", Date.now(), 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId: "",
+      hlc: badIdHlc,
+      value: {
+        title: "empty id",
+        createdAt: new Date().toISOString(),
+        updatedAt: badIdHlc,
+        isDeleted: 0,
+      },
+    });
+    const badFlagHlc = createHlc("device-remote", Date.now() + 1, 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId: "bad-flag",
+      hlc: badFlagHlc,
+      value: {
+        title: "bad flag",
+        createdAt: new Date().toISOString(),
+        updatedAt: badFlagHlc,
+        isDeleted: "false",
+      },
+    });
+
+    await connect(engine);
+
+    expect(db.prepare(`select 1 from note`).all()).toHaveLength(0);
+    expect(isSeen(db, badIdHlc)).toBe(true);
+    expect(isSeen(db, badFlagHlc)).toBe(true);
+    expect(engine.getSyncLog(1)[0]?.kind).toBe("applyFailed");
   });
 
   test("normal apply (no schema gap) still works end to end", async () => {
@@ -401,7 +517,7 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     await oldEngine.ready;
     const hlc = createHlc("device-remote", Date.now(), 0);
     await pushSynthetic(relay, {
-      schemaVersion: 2,
+      schemaVersion: 1,
       table: "task",
       op: "upsert",
       rowId: "task-1",
@@ -434,7 +550,109 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     ).toEqual({ c: 0 });
   });
 
-  test("an absurd future HLC is rejected before last-write-wins apply", async () => {
+  test("a future payload for a known table is retained until the app declares support", async () => {
+    const relay = createFakeRelay();
+    const db = new Database(":memory:");
+    const storage = memoryStorage();
+    const makeAtVersion = (version: number) =>
+      createSync({
+        createSqliteDriver: () => wrapDriver(db),
+        secureStorage: storage,
+        fetch: relay.fetchImpl,
+      })(schema, {
+        name: "payload-version-upgrade",
+        schemaVersion: version,
+        externalAppOwner: { id: "", mnemonic: MNEMONIC, writeKey: "" },
+        syncIntervalMs: 3_600_000,
+      });
+
+    const oldEngine = makeAtVersion(1);
+    await oldEngine.ready;
+    const hlc = createHlc("device-remote", Date.now(), 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 2,
+      table: "note",
+      op: "upsert",
+      rowId: "future-schema-row",
+      hlc,
+      value: {
+        title: "Only version 2 understands this meaning",
+        createdAt: new Date().toISOString(),
+        updatedAt: hlc,
+        isDeleted: 0,
+      },
+    });
+
+    await connect(oldEngine);
+    expect(
+      db.prepare(`select 1 from note where id = ?`).get("future-schema-row"),
+    ).toBeNull();
+    expect(
+      db.prepare(`select count(*) as c from _sync_deferred`).get(),
+    ).toEqual({ c: 1 });
+    expect(isSeen(db, hlc)).toBe(true);
+    oldEngine.setTransports([]);
+
+    const upgraded = makeAtVersion(2);
+    await upgraded.ready;
+    expect(
+      db.prepare(`select title from note where id = ?`).get("future-schema-row"),
+    ).toEqual({ title: "Only version 2 understands this meaning" });
+    expect(
+      db.prepare(`select count(*) as c from _sync_deferred`).get(),
+    ).toEqual({ c: 0 });
+  });
+
+  test("local events carry the configured payload schema version", async () => {
+    const db = new Database(":memory:");
+    const engine = createSync({
+      createSqliteDriver: () => wrapDriver(db),
+      secureStorage: memoryStorage(),
+    })(schema, {
+      name: "payload-version-writer",
+      schemaVersion: 2,
+      externalAppOwner: { id: "", mnemonic: MNEMONIC, writeKey: "" },
+    });
+    await engine.ready;
+    const result = await engine.insert("note", { title: "Versioned write" });
+    expect(result.ok).toBe(true);
+    const row = db
+      .prepare(`select payload_json from _sync_outbox limit 1`)
+      .get() as { payload_json: string };
+    expect(JSON.parse(row.payload_json).schemaVersion).toBe(2);
+  });
+
+  test("an invalid payload schema version is terminal, not deferred forever", async () => {
+    const relay = createFakeRelay();
+    const { engine, db } = makeDevice(relay.fetchImpl, "invalid-payload-version");
+    await engine.ready;
+    const hlc = createHlc("device-remote", Date.now(), 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 0,
+      table: "note",
+      op: "upsert",
+      rowId: "invalid-version-row",
+      hlc,
+      value: {
+        title: "Invalid version",
+        createdAt: new Date().toISOString(),
+        updatedAt: hlc,
+        isDeleted: 0,
+      },
+    });
+
+    await connect(engine);
+    expect(
+      db.prepare(`select 1 from note where id = ?`).get("invalid-version-row"),
+    ).toBeNull();
+    expect(
+      db.prepare(`select count(*) as c from _sync_deferred`).get(),
+    ).toEqual({ c: 0 });
+    expect(isSeen(db, hlc)).toBe(true);
+    expect(engine.getSyncLog(5)[0]?.kind).toBe("applyFailed");
+  });
+
+  test("an absurd future HLC is quarantined before last-write-wins apply", async () => {
     const relay = createFakeRelay();
     const { engine, db } = makeDevice(relay.fetchImpl, "future-hlc-apply");
     await engine.ready;
@@ -456,6 +674,108 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     await connect(engine);
     expect(db.prepare(`select 1 from note where id = ?`).get("future-row")).toBeNull();
     expect(isSeen(db, hlc)).toBe(true);
+    expect(
+      db.prepare(`select event_id, retry_after_ms from _sync_deferred`).get(),
+    ).toEqual({
+      event_id: hlc,
+      retry_after_ms: expect.any(Number),
+    });
+    const retryAfter = db
+      .prepare(`select retry_after_ms from _sync_deferred where event_id = ?`)
+      .get(hlc) as { retry_after_ms: number };
+    expect(retryAfter.retry_after_ms).toBeGreaterThan(Date.now());
+    await engine.sync();
+    expect(
+      db.prepare(`select event_id from _sync_deferred where event_id = ?`).get(hlc),
+    ).toEqual({ event_id: hlc });
+    expect(engine.getSyncLog(5).some((entry) => entry.kind === "applyFailed")).toBe(false);
+  });
+
+  test("opaque replay is schema-gated, bounded, and advances without starvation", async () => {
+    const relay = createFakeRelay();
+    const { engine, db } = makeDevice(relay.fetchImpl, "bounded-deferred-replay");
+    await engine.ready;
+
+    const insert = db.prepare(
+      `insert into _sync_deferred (event_id, payload_json, retry_after_ms) values (?, ?, null)`,
+    );
+    const baseMillis = Date.now() - 60_000;
+    for (let index = 0; index < 300; index++) {
+      const eventId = createHlc("opaque-device", baseMillis + index, 0);
+      insert.run(
+        eventId,
+        JSON.stringify({
+          schemaVersion: 1,
+          table: "notInstalledYet",
+          op: "upsert",
+          rowId: `opaque-${index}`,
+          hlc: eventId,
+          value: {},
+        }),
+      );
+    }
+    db.prepare(
+      `delete from _sync_meta where key in ('deferred:opaque:activeSchema', 'deferred:opaque:completeSchema', 'deferred:opaque:cursor')`,
+    ).run();
+
+    await engine.sync();
+    const firstCursor = db
+      .prepare(`select value from _sync_meta where key = 'deferred:opaque:cursor'`)
+      .get() as { value: string };
+    expect(firstCursor.value).not.toBe("");
+    expect(
+      db.prepare(`select value from _sync_meta where key = 'deferred:opaque:completeSchema'`).get(),
+    ).toBeNull();
+
+    await engine.sync();
+    expect(
+      db.prepare(`select value from _sync_meta where key = 'deferred:opaque:completeSchema'`).get(),
+    ).not.toBeNull();
+    expect(db.prepare(`select count(*) as c from _sync_deferred`).get()).toEqual({ c: 300 });
+
+    db.exec(`create table deferred_rewrites (count integer not null)`);
+    db.exec(`insert into deferred_rewrites values (0)`);
+    db.exec(`
+      create trigger count_deferred_rewrites after insert on _sync_deferred
+      begin update deferred_rewrites set count = count + 1; end
+    `);
+    await engine.sync();
+    expect(db.prepare(`select count from deferred_rewrites`).get()).toEqual({ count: 0 });
+  });
+
+  test("a payload HLC that does not match its authenticated event id is rejected", async () => {
+    const relay = createFakeRelay();
+    const { engine, db } = makeDevice(relay.fetchImpl, "mismatched-hlc");
+    await engine.ready;
+    const eventId = createHlc("device-remote", Date.now(), 0);
+    const payloadHlc = createHlc("device-remote", Date.now(), 1);
+    await pushSynthetic(
+      relay,
+      {
+        schemaVersion: 1,
+        table: "note",
+        op: "upsert",
+        rowId: "mismatched-row",
+        hlc: payloadHlc,
+        value: {
+          title: "must not apply",
+          createdAt: new Date().toISOString(),
+          updatedAt: payloadHlc,
+          isDeleted: 0,
+        },
+      },
+      "device-remote",
+      eventId,
+    );
+
+    await connect(engine);
+    expect(
+      db.prepare(`select 1 from note where id = ?`).get("mismatched-row"),
+    ).toBeNull();
+    expect(isSeen(db, eventId)).toBe(true);
+    expect(
+      db.prepare(`select count(*) as c from _sync_deferred`).get(),
+    ).toEqual({ c: 0 });
     expect(engine.getSyncLog(5)[0]?.kind).toBe("applyFailed");
   });
 });

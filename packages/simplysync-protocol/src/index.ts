@@ -17,24 +17,25 @@ import {
   hmacSha256,
   randomBytes,
   toArrayBuffer,
-} from "./crypto";
-import type {
-  BlobChunkRef,
-  BlobManifest,
-  EncryptedBlob,
-  EncryptedBlobChunk,
-  LocalFirstIdentity,
-  SyncEnvelope,
-  SyncPayload,
-} from "./types";
+} from "./crypto.js";
+import {
+  SYNC_SCHEMA_VERSION,
+  type BlobChunkRef,
+  type BlobManifest,
+  type EncryptedBlob,
+  type EncryptedBlobChunk,
+  type LocalFirstIdentity,
+  type SyncEnvelope,
+  type SyncPayload,
+} from "./types.js";
 
 // The protocol data types live in ./types; the low-level crypto primitives
 // (base64url, HKDF/HMAC/SLIP-21, byte helpers) live in ./crypto. This file is
 // the public API: identity derivation, envelope encrypt/decrypt, the hybrid
 // logical clock, and blob encryption.
-export * from "./types";
-export * from "./snapshot-crypto";
-export { base64UrlEncode, base64UrlDecode } from "./crypto";
+export * from "./types.js";
+export * from "./snapshot-crypto.js";
+export { base64UrlEncode, base64UrlDecode } from "./crypto.js";
 
 const RECOVERY_KEY_PREFIX = "sf1_";
 const AES_GCM_NONCE_BYTES = 12;
@@ -204,6 +205,56 @@ export async function createDeviceId(): Promise<string> {
   return base64UrlEncode(await randomBytes(8));
 }
 
+/** Maximum clock skew accepted when applying a remote HLC. */
+export const HLC_MAX_FUTURE_DRIFT_MS = 5 * 60_000;
+
+export interface ParsedHlc {
+  readonly millis: number;
+  readonly counter: number;
+  readonly deviceId: string;
+}
+
+export type HlcAdmissibility = "admissible" | "future" | "malformed";
+
+// Device ids are base64url, with an optional `.base64url` tab discriminator.
+// Keeping the grammar ASCII-only is important because HLC strings are compared
+// by their raw code-unit order in every port.
+const HLC_PATTERN = /^([0-9a-z]{10})-([0-9a-z]{4})-([A-Za-z0-9_.-]+)$/u;
+
+/**
+ * Strictly parses the canonical SimplySync HLC representation.
+ *
+ * `parseInt` alone is deliberately insufficient: it accepts prefixes such as
+ * `000000000!`, and accepting a widened counter would break the fixed-width
+ * lexical ordering used for last-write-wins and relay compaction.
+ */
+export function parseHlc(hlc: string): ParsedHlc | null {
+  const match = HLC_PATTERN.exec(hlc);
+  if (!match) return null;
+  const millis = Number.parseInt(match[1]!, 36);
+  const counter = Number.parseInt(match[2]!, 36);
+  if (!Number.isSafeInteger(millis) || !Number.isSafeInteger(counter)) {
+    return null;
+  }
+  return { millis, counter, deviceId: match[3]! };
+}
+
+/**
+ * Classifies a remote HLC at the apply boundary without changing its value.
+ * Future values remain distinguishable from malformed values so engines can
+ * durably quarantine and retry them instead of either poisoning LWW or losing
+ * authenticated data.
+ */
+export function getHlcAdmissibility(
+  hlc: string,
+  now = Date.now(),
+  maxFutureDriftMs = HLC_MAX_FUTURE_DRIFT_MS,
+): HlcAdmissibility {
+  const parsed = parseHlc(hlc);
+  if (!parsed) return "malformed";
+  return parsed.millis > now + maxFutureDriftMs ? "future" : "admissible";
+}
+
 export function createHlc(deviceId: string, now = Date.now(), counter = 0): string {
   return [
     now.toString(36).padStart(10, "0"),
@@ -243,14 +294,17 @@ export async function deriveStreamId(
  * Production code should use {@link encryptPayload}, which always generates a
  * fresh random nonce.
  */
-export async function sealPayload<T>(
+export async function sealPayload<
+  T,
+  Version extends number = typeof SYNC_SCHEMA_VERSION,
+>(
   identity: LocalFirstIdentity,
   event: {
     readonly eventId: string;
     readonly deviceId: string;
     readonly createdAt?: string;
   },
-  payload: SyncPayload<T>,
+  payload: SyncPayload<T, Version>,
   nonce: Uint8Array,
 ): Promise<SyncEnvelope> {
   const crypto = await getCrypto();
@@ -286,23 +340,29 @@ export async function sealPayload<T>(
   };
 }
 
-export async function encryptPayload<T>(
+export async function encryptPayload<
+  T,
+  Version extends number = typeof SYNC_SCHEMA_VERSION,
+>(
   identity: LocalFirstIdentity,
   event: {
     readonly eventId: string;
     readonly deviceId: string;
     readonly createdAt?: string;
   },
-  payload: SyncPayload<T>,
+  payload: SyncPayload<T, Version>,
 ): Promise<SyncEnvelope> {
   const nonce = await randomBytes(AES_GCM_NONCE_BYTES);
   return sealPayload(identity, event, payload, nonce);
 }
 
-export async function decryptEnvelope<T>(
+export async function decryptEnvelope<
+  T,
+  Version extends number = typeof SYNC_SCHEMA_VERSION,
+>(
   identity: LocalFirstIdentity,
   envelope: SyncEnvelope,
-): Promise<SyncPayload<T>> {
+): Promise<SyncPayload<T, Version>> {
   if (envelope.ownerId !== identity.ownerId) {
     throw new Error("Envelope owner does not match this recovery key.");
   }
@@ -328,7 +388,9 @@ export async function decryptEnvelope<T>(
     toArrayBuffer(base64UrlDecode(envelope.ciphertext)),
   );
 
-  return JSON.parse(decodeUtf8(new Uint8Array(decrypted))) as SyncPayload<T>;
+  return JSON.parse(
+    decodeUtf8(new Uint8Array(decrypted)),
+  ) as SyncPayload<T, Version>;
 }
 
 export async function sha256Base64Url(value: string): Promise<string> {

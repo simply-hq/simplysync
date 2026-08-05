@@ -1,19 +1,34 @@
 {
   "name": "@simplysync/engine",
   "version": "0.0.1",
-  "private": true,
+  "description": "Local-first SQLite sync engine with encrypted relay replication.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simply-hq/simplysync.git",
+    "directory": "packages/simplysync-engine"
+  },
+  "keywords": ["local-first", "offline-first", "sync", "sqlite", "e2ee"],
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "sideEffects": false,
+  "files": ["dist", "README.md"],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
-    "@simplysync/protocol": "workspace:*",
+    "@simplysync/protocol": "0.0.1",
     "kysely": "0.28.17"
   },
   "devDependencies": {

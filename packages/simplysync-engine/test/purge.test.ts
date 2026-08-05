@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 
-import { createHlc } from "@simplysync/protocol";
+import {
+  createHlc,
+  createMnemonic,
+  type SyncEnvelope,
+} from "@simplysync/protocol";
 
 import {
   createSync,
@@ -14,22 +18,23 @@ import { createEngineState } from "../src/engine/state";
 import { createStore } from "../src/engine/store";
 import { SYNC_OUTBOX_TABLE, SYNC_PURGE_TABLE } from "../src/engine/constants";
 
-function makeDriver(): { driver: SqliteDriver; db: Database } {
-  const db = new Database(":memory:");
+function makeDriverFromDb(db: Database): SqliteDriver {
   return {
-    db,
-    driver: {
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
+    exec(sql, params) {
+      db.prepare(sql).run(...((params ?? []) as never[]));
+    },
+    select(sql, params) {
+      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
+    },
+    transaction(fn) {
+      return db.transaction(fn)();
     },
   };
+}
+
+function makeDriver(): { driver: SqliteDriver; db: Database } {
+  const db = new Database(":memory:");
+  return { db, driver: makeDriverFromDb(db) };
 }
 
 function memoryStorage(): SecureStorage {
@@ -216,6 +221,180 @@ describe("purgeRows (manual permanent delete)", () => {
 
 describe("purge drain (relay stream compaction)", () => {
   const settle = () => new Promise((r) => setTimeout(r, 25));
+
+  test("a device returning after the legacy retention window still receives the tombstone", async () => {
+    const events: SyncEnvelope[] = [];
+    let compactCalls = 0;
+    const fetchStub = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/streams/compact") {
+        compactCalls += 1;
+        const body = JSON.parse(String(init?.body)) as { streamIds: string[] };
+        const targets = new Set(body.streamIds);
+        for (let i = events.length - 1; i >= 0; i--) {
+          if (targets.has(events[i]!.streamId)) events.splice(i, 1);
+        }
+        return new Response(
+          JSON.stringify({ deletedEvents: body.streamIds.length, reclaimedBytes: 1 }),
+          { status: 200 },
+        );
+      }
+      if (url.pathname !== "/v1/events") {
+        return new Response("not found", { status: 404 });
+      }
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as {
+          events: SyncEnvelope[];
+        };
+        const known = new Set(events.map((event) => event.eventId));
+        for (const event of body.events) {
+          if (!known.has(event.eventId)) events.push(event);
+        }
+        return new Response(
+          JSON.stringify({ accepted: body.events.length, duplicate: 0 }),
+          { status: 200 },
+        );
+      }
+      const after = Number(url.searchParams.get("after") ?? "0") || 0;
+      const page = events.slice(after);
+      return new Response(
+        JSON.stringify({
+          events: page,
+          nextCursor: String(after + page.length),
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    const mnemonic = createMnemonic();
+    const makeDevice = (name: string) => {
+      const db = new Database(":memory:");
+      const engine = createSync({
+        createSqliteDriver: () => makeDriverFromDb(db),
+        secureStorage: memoryStorage(),
+        fetch: fetchStub,
+      })(schema, {
+        name,
+        externalAppOwner: { id: "", mnemonic, writeKey: "" },
+        syncIntervalMs: 3_600_000,
+        // Existing apps may still pass the former option. It must not erase the
+        // only durable delete marker, even when its window has elapsed.
+        tombstoneRetentionMs: 0,
+      });
+      return { db, engine };
+    };
+    const online = makeDevice("purge-online-device");
+    const returning = makeDevice("purge-returning-device");
+    await Promise.all([online.engine.ready, returning.engine.ready]);
+
+    const inserted = online.engine.insert("todo", { title: "delete everywhere" });
+    if (!inserted.ok) throw new Error("insert failed");
+    online.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    for (let i = 0; i < 40 && events.length < 1; i++) {
+      await online.engine.sync();
+      await settle();
+    }
+
+    returning.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    for (let i = 0; i < 40 && rowCount(returning.db) < 1; i++) {
+      await returning.engine.sync();
+      await settle();
+    }
+    expect(
+      returning.db.prepare(`select isDeleted from todo`).get(),
+    ).toEqual({ isDeleted: 0 });
+    returning.engine.setTransports([]);
+
+    online.engine.delete("todo", inserted.value.id);
+    for (let i = 0; i < 40 && events.length < 2; i++) {
+      await online.engine.sync();
+      await settle();
+    }
+    expect(events).toHaveLength(2);
+    expect(compactCalls).toBe(0);
+
+    returning.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    for (let i = 0; i < 40; i++) {
+      await returning.engine.sync();
+      const row = returning.db
+        .prepare(`select isDeleted from todo where id = ?`)
+        .get(inserted.value.id) as { isDeleted: number } | null;
+      if (row?.isDeleted === 1) break;
+      await settle();
+    }
+    expect(
+      returning.db
+        .prepare(`select isDeleted from todo where id = ?`)
+        .get(inserted.value.id),
+    ).toEqual({ isDeleted: 1 });
+  });
+
+  test("sync retains tombstones even when a legacy retention window is configured", async () => {
+    const fetchStub = (async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { events?: unknown[] };
+        return new Response(
+          JSON.stringify({
+            accepted: body.events?.length ?? 0,
+            duplicate: 0,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ events: [], nextCursor: "" }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+
+    let handle!: { db: Database };
+    const engine = createSync({
+      createSqliteDriver: () => {
+        const made = makeDriver();
+        handle = made;
+        return made.driver;
+      },
+      secureStorage: memoryStorage(),
+      fetch: fetchStub,
+    })(schema, {
+      name: "purge-retention-safety-test",
+      tombstoneRetentionMs: 0,
+    });
+    await engine.ready;
+
+    const inserted = engine.insert("todo", { title: "keep tombstone" });
+    if (!inserted.ok) throw new Error("insert failed");
+    engine.delete("todo", inserted.value.id);
+    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+
+    for (let i = 0; i < 40 && engine.getPendingOutboxCount() > 0; i++) {
+      await engine.sync();
+      await settle();
+    }
+
+    expect(engine.getPendingOutboxCount()).toBe(0);
+    expect(rowCount(handle.db)).toBe(1);
+    expect(
+      handle.db.prepare(`select isDeleted from todo`).get(),
+    ).toEqual({ isDeleted: 1 });
+    expect(
+      handle.db.prepare(`select count(*) as c from "${SYNC_PURGE_TABLE}"`).get(),
+    ).toEqual({ c: 0 });
+
+    // Detaching transports does not erase the durable fact that this database
+    // has synced. Without this guard, a temporary offline/local-only mode could
+    // hard-delete the tombstone and let a long-offline peer resurrect the row.
+    engine.setTransports([]);
+    expect(engine.purgeDeleted({ olderThanMs: 0 }).purged).toBe(0);
+    expect(engine.purgeRows([{ table: "todo", id: inserted.value.id }]).purged)
+      .toBe(0);
+    expect(rowCount(handle.db)).toBe(1);
+  });
 
   test("purged streams are compacted on every relay; a failing relay is retried and the queue drains only after all ack", async () => {
     // Two stub relays: both accept pushes; relay-b fails its first compact.

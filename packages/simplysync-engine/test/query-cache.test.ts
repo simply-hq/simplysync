@@ -71,11 +71,10 @@ describe("query-cache result diffing (stable rows reference)", () => {
 
     engine.insert("task", { title: "Done task", done: sqliteTrue });
 
-    const doneQuery = engine.createQuery((db) =>
-      db
-        .selectFrom("task")
-        .select(["id", "title"])
-        .where("done", "=", sqliteTrue),
+    const doneQuery = engine.createQuery(
+      (db) =>
+        db.selectFrom("task").select(["id", "title"]).where("done", "=", sqliteTrue),
+      { includeDeleted: true },
     );
     const before = engine.getQueryRows(doneQuery);
     expect(before).toHaveLength(1);
@@ -102,11 +101,10 @@ describe("query-cache result diffing (stable rows reference)", () => {
     const created = engine.insert("task", { title: "Task", done: sqliteFalse });
     if (!created.ok) throw new Error("insert failed");
 
-    const doneQuery = engine.createQuery((db) =>
-      db
-        .selectFrom("task")
-        .select(["id", "title"])
-        .where("done", "=", sqliteTrue),
+    const doneQuery = engine.createQuery(
+      (db) =>
+        db.selectFrom("task").select(["id", "title"]).where("done", "=", sqliteTrue),
+      { includeDeleted: true },
     );
     const before = engine.getQueryRows(doneQuery);
     expect(before).toHaveLength(0);
@@ -135,13 +133,15 @@ describe("query-cache result diffing (stable rows reference)", () => {
     const b = engine.insert("task", { title: "B", done: sqliteFalse });
     if (!a.ok || !b.ok) throw new Error("insert failed");
 
-    const doneQuery = engine.createQuery((db) =>
-      db.selectFrom("task").select(["id"]).where("done", "=", sqliteTrue),
+    const doneQuery = engine.createQuery(
+      (db) => db.selectFrom("task").select(["id"]).where("done", "=", sqliteTrue),
+      { includeDeleted: true },
     );
     // Selects only `id`, so toggling `done` on an existing row doesn't change
     // this query's result set (same ids, same order).
-    const allIdsQuery = engine.createQuery((db) =>
-      db.selectFrom("task").select(["id"]).orderBy("id"),
+    const allIdsQuery = engine.createQuery(
+      (db) => db.selectFrom("task").select(["id"]).orderBy("id"),
+      { includeDeleted: true },
     );
 
     void engine.getQueryRows(doneQuery);
@@ -172,8 +172,9 @@ describe("query-cache result diffing (stable rows reference)", () => {
     });
     if (!created.ok) throw new Error("insert failed");
 
-    const query = engine.createQuery((db) =>
-      db.selectFrom("task").select(["id", "title"]),
+    const query = engine.createQuery(
+      (db) => db.selectFrom("task").select(["id", "title"]),
+      { includeDeleted: true },
     );
     const before = engine.getQueryRows(query);
     expect(before).toHaveLength(1);
