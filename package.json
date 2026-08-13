@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Open-source, end-to-end-encrypted local-first sync engine. Clone it and use it as you see fit.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "type": "module",
   "workspaces": [

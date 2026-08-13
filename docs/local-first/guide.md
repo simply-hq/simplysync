@@ -131,7 +131,7 @@ const engine = createSync({
   reloadApp,          // optional: re-evaluate app state after restore/reset
 })(schema, {
   name: "my-app",
-  transports: [{ type: "Http", url: "http://localhost:4100" }], // optional relay
+  transports: [], // local-only until you add a relay in §7
   syncIntervalMs: 5000, // poll cadence; default 5000
   schemaVersion: 1,     // optional; defaults to 1
 });
@@ -415,8 +415,8 @@ and the relay `version`. A relay that has never seen this owner reports
 `reachable: true` with no account block. In React, `useRelayStatuses()` polls it
 for you (default every 30 s) — right-sized for a diagnostics or settings screen.
 
-> **For Android emulators** point the relay URL at `http://10.0.2.2:4100`; iOS
-> simulators and the web use `http://localhost:4100`.
+Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
+every platform.
 
 ## 8. Platform drivers
 

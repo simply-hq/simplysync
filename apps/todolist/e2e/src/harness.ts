@@ -24,7 +24,7 @@ import {
 
 export type Pairing = [Platform, Platform];
 
-export class AssertionError extends Error {}
+class AssertionError extends Error {}
 
 /** Owns the (lazily started, reused) runners and executes scenarios against them. */
 export class Harness {
@@ -107,7 +107,7 @@ export class Harness {
       relays.set(
         spec.id,
         spec.rejectStatus === undefined
-          ? await launchRelay("go", spec.env ?? {})
+          ? await launchRelay(spec.env ?? {})
           : rejectingEndpoint(spec.rejectStatus),
       );
     }

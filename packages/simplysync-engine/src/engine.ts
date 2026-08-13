@@ -37,11 +37,6 @@ import {
 //   mutations-lifecycle  — the write path + boot/owner management
 export { createIdFromString } from "./engine/ids.js";
 
-// Default tombstone grace period for `purgeDeleted`: long enough that a delete
-// has reached the relay and any active peer before its row is reclaimed.
-// Shared with the sync loop's automatic sweep (see engine/constants.ts).
-const THIRTY_DAYS_MS = TOMBSTONE_RETENTION_MS;
-
 /** Builds a compile-only Kysely instance (SQLite dialect, no real driver). */
 function createCompiler<S extends SchemaDefinition>(): Kysely<Database<S>> {
   return new Kysely<Database<S>>({
@@ -315,7 +310,7 @@ export const createSync =
         if (state.transports.length > 0 || store.hasRelayHistory()) {
           return { purged: 0 };
         }
-        const olderThanMs = options?.olderThanMs ?? THIRTY_DAYS_MS;
+        const olderThanMs = options?.olderThanMs ?? TOMBSTONE_RETENTION_MS;
         const purged = store.purgeDeleted(olderThanMs, Date.now());
         // Nudge the relay-side stream compaction along without waiting for the
         // next poll; failures are retried by the sync loop's drain.

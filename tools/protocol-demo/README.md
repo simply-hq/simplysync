@@ -5,16 +5,17 @@ This is a low-level wire-protocol tool for port authors. It intentionally uses
 ciphertext. Product developers should start with the canonical
 [TodoList app](../../apps/todolist) instead.
 
-From the repository root:
+Point the diagnostic at your deployed Cloudflare relay:
 
 ```sh
-bun run protocol:demo
+RELAY_URL=https://your-relay.workers.dev \
+  bun run --cwd tools/protocol-demo demo
 ```
 
 For manual commands:
 
 ```sh
-bun run relay:go
+export RELAY_URL=https://your-relay.workers.dev
 bun run --cwd tools/protocol-demo start init --client alice
 bun run --cwd tools/protocol-demo start add --client alice "Coffee" -450
 bun run --cwd tools/protocol-demo start sync --client alice

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-02T19:45:19.824Z",
+  "updatedAt": "2026-08-13T06:10:15.328Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -22,7 +22,7 @@
         ".ts"
       ],
       "note": "The reference engine changed; review native engine ports and app SyncEngine implementations.",
-      "sha256": "09e830b2c6a28147c42341803265198b22e20a5b116f6d943a77b1d78752fa2d",
+      "sha256": "c23f99a84c7915ee744ef64687aff5c4e4108c7cab0865fe036e81f99900cae1",
       "fileCount": 19
     },
     {
@@ -77,15 +77,18 @@
         "AppDatabase.swift",
         "Backup.swift",
         "DataPortability.swift",
+        "EvoluLegacyMigration.swift",
         "FinanceStore.swift",
+        "FinancialStreak.swift",
         "LegacyRekeyMigration.swift",
         "Records.swift",
         "SyncDiagnostics.swift",
-        "SyncEngine.swift"
+        "SyncEngine.swift",
+        "WalletBoundaryLifecycle.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "7e02fe61800534653a6ae3c946912ab9e346b531745fd7967e867f3b9d7593ec",
-      "fileCount": 8
+      "sha256": "adf0f7b553710ebbbbacb58415efec1ca191f48356fa39cd712fd1f64680939c",
+      "fileCount": 11
     },
     {
       "name": "Android app synckit",
@@ -105,16 +108,21 @@
       "files": [
         "Backup.kt",
         "DataPortability.kt",
+        "DatabaseOwnerBinding.kt",
+        "DatabaseRetirementGate.kt",
         "Db.kt",
         "FinanceStore.kt",
+        "FinancialStreak.kt",
+        "LegacyExpoMigration.kt",
         "Records.kt",
         "RekeyMigration.kt",
         "SyncDiagnostics.kt",
-        "SyncEngine.kt"
+        "SyncEngine.kt",
+        "StoreCloseLifecycle.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "b6b3c21bb895ee963742276486b7f1a097133290a27d45215bd6fa7f90eb2d69",
-      "fileCount": 8
+      "sha256": "230aa9fb0fed56e30bdf2c5e5c7786317eeef9ded3f1ecab6f6f860f600043ec",
+      "fileCount": 13
     }
   ]
 }

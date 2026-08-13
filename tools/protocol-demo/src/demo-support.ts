@@ -11,13 +11,8 @@ export const exampleRoot = resolve(
   dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-export const repoRoot = resolve(exampleRoot, "../..");
-export const relayRoot = resolve(repoRoot, "apps/relay-go");
+export const relayRoot = resolve(exampleRoot, "../../apps/relay-go");
 export const relayUrl = process.env.RELAY_URL ?? "http://localhost:4100";
-
-export function sleep(ms: number): Promise<void> {
-  return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
-}
 
 /**
  * Deletes the SQLite main/-wal/-shm files for a database at `basePath` (a path
@@ -42,7 +37,7 @@ export async function isRelayHealthy(): Promise<boolean> {
 export async function waitForRelay(): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (await isRelayHealthy()) return;
-    await sleep(100);
+    await Bun.sleep(100);
   }
   throw new Error(`Relay did not become healthy at ${relayUrl}.`);
 }

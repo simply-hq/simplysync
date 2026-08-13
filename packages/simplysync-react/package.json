@@ -2,6 +2,7 @@
   "name": "@simplysync/react",
   "version": "0.0.1",
   "description": "React bindings for the SimplySync local-first engine.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "repository": {
     "type": "git",

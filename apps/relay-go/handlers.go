@@ -454,7 +454,7 @@ func validateEnvelope(ownerID string, env SyncEnvelope) string {
 	if env.EventID == "" {
 		return "Missing eventId"
 	}
-	hlcState, _ := classifyHLCAt(env.EventID, time.Now().UnixMilli())
+	hlcState := classifyHLCAt(env.EventID, time.Now().UnixMilli())
 	if hlcState == hlcMalformed {
 		return "Invalid eventId"
 	}

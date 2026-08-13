@@ -78,8 +78,8 @@ Plus the **engine layer** (the `@simplysync/engine` port):
 ## Build & test
 
 ```sh
-./gradlew test                                    # local engine + protocol tests
-./gradlew test -PrelayUrl=http://localhost:4100   # + live two-device interop
+./gradlew test                                           # local engine + protocol tests
+./gradlew test -PrelayUrl=https://your-relay.workers.dev # + live two-device interop
 ```
 
 `SyncKitTest.kt` covers the protocol (canonical BIP39 vector, current and legacy
@@ -99,7 +99,7 @@ val schema = Schema(mapOf("todo" to mapOf(
 val engine = createSync(SyncEngineDeps(
     makeDriver = { JdbcSqliteDriver(dbPath(it)) },   // Android: an android.database driver
     secureStorage = secureStorage,
-))(schema, SyncEngineConfig(name = "todos", transports = listOf(Transport("http://10.0.2.2:4100"))))
+))(schema, SyncEngineConfig(name = "todos", transports = emptyList()))
 engine.ready()
 
 engine.insert("todo", "title" to "Buy milk", "done" to false)
@@ -109,6 +109,10 @@ val q = engine.createQuery("""select id, title, done from "todo" where "isDelete
 }
 val todos: StateFlow<List<Triple<String, String, Boolean>>> = engine.liveQuery(q) // collect in Compose
 ```
+
+Add the HTTPS URL from the [Cloudflare relay
+setup](../../../docs/local-first/self-hosting.md) with `engine.setTransports(...)`
+when you are ready to sync.
 
 `SyncEngineConfig.schemaVersion` defaults to `1`. Keep it there for additive
 tables/columns; bump it only for an incompatible payload-meaning change. Older

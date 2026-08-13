@@ -21,15 +21,15 @@ var (
 	byEndpoint     = map[string]int64{}
 	byStatus       = map[string]int64{}
 	samples        []sample
-	maxSamples     = 1440 // 24h at 60s
 	lastCompaction *CompactionResult
 )
+
+const maxSamples = 1440 // 24h at 60s
 
 type sample struct {
 	t             int64
 	owners        int64
 	events        int64
-	blobs         int64
 	storedBytes   int64
 	dbBytes       int64
 	diskFreeBytes uint64
@@ -148,13 +148,11 @@ func collect(st *store, dataDir string) {
 		return
 	}
 	_, free := diskInfo(dataDir)
-	_, memFree := memInfo()
-	memTotal, _ := memInfo()
+	memTotal, memFree := memInfo()
 	s := sample{
 		t:             time.Now().UnixMilli(),
 		owners:        agg.Owners,
 		events:        agg.Events,
-		blobs:         agg.Blobs,
 		storedBytes:   agg.StoredBytes,
 		dbBytes:       dbBytes(dataDir),
 		diskFreeBytes: free,
@@ -261,13 +259,13 @@ type resStat struct {
 }
 
 type storageStats struct {
-	Owners          int64        `json:"owners"`
-	Events          int64        `json:"events"`
-	Blobs           int64        `json:"blobs"`
-	StoredBytes     int64        `json:"storedBytes"`
-	DBBytes         int64        `json:"dbBytes"`
-	AvgBytesPerOwner float64     `json:"avgBytesPerOwner"`
-	TopOwners       []ownerUsage `json:"topOwners"`
+	Owners           int64        `json:"owners"`
+	Events           int64        `json:"events"`
+	Blobs            int64        `json:"blobs"`
+	StoredBytes      int64        `json:"storedBytes"`
+	DBBytes          int64        `json:"dbBytes"`
+	AvgBytesPerOwner float64      `json:"avgBytesPerOwner"`
+	TopOwners        []ownerUsage `json:"topOwners"`
 }
 
 type trafficStats struct {

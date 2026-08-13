@@ -4,10 +4,9 @@
 import type { Transport } from "@simplysync/engine";
 
 const RELAY_KEY = "simplysync-todolist:relayUrl";
-export const DEFAULT_RELAY_URL = "";
 
 export function loadRelayUrl(): string {
-  return localStorage.getItem(RELAY_KEY)?.trim() || DEFAULT_RELAY_URL;
+  return localStorage.getItem(RELAY_KEY)?.trim() || "";
 }
 
 export function saveRelayUrl(url: string): void {

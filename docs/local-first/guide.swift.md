@@ -97,7 +97,7 @@ let deps = SyncEngineDeps(
 
 let engine = createSync(deps)(appSchema, SyncEngineConfig(
     name: "my-app",
-    transports: [Transport(url: "http://localhost:4100")], // optional relay
+    transports: [], // local-only until you add a relay in §7
     syncIntervalMs: 3000,                                   // poll cadence
     schemaVersion: 1))                                      // optional; default 1
 
@@ -286,8 +286,8 @@ for s in await engine.getRelayStatuses() {
 }
 ```
 
-> **For Android emulators** the React guide notes `http://10.0.2.2:4100`; iOS
-> simulators reach your Mac at `http://localhost:4100`.
+Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
+every platform.
 
 ## 8. Platform drivers
 

@@ -350,8 +350,6 @@ export function createMutations(
   return { mutate, batch };
 }
 
-export type Lifecycle = ReturnType<typeof createLifecycle>;
-
 /**
  * Boot + owner management: derive/persist the identity and device id, open the
  * DB and create the schema (`init`), the one-time legacy importer, and the

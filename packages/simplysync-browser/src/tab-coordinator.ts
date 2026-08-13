@@ -180,15 +180,6 @@ export function createTabCoordinator(
       }
     });
 
-  // The held-forever leadership promise above can't be released directly; a
-  // leader receiving "shutdown" instead reloads (onShutdown), and the browser
-  // releases its lock on unload. releaseHeld exists for a non-reloading
-  // onShutdown override (tests): resolve the hold so the initiator's queued
-  // request is granted without a page unload.
-  const holdUntilShutdown = (resolve: () => void): void => {
-    releaseHeld = resolve;
-  };
-
   const requestPersist = (): Promise<boolean> =>
     new Promise<boolean>((resolve) => {
       const reqId = `${tabId}:${(reqSeq += 1)}`;

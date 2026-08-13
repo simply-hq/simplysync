@@ -2,6 +2,7 @@
   "name": "@simplysync/protocol",
   "version": "0.0.1",
   "description": "Cross-platform identity, encryption, and wire types for SimplySync.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "repository": {
     "type": "git",

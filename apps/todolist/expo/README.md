@@ -27,9 +27,9 @@ After that development client is installed, `bun run todo:expo` starts Metro
 for later runs.
 
 The first launch is local-only. To sync, open settings and enter a relay URL, or
-set `EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL` before starting Expo. An iOS Simulator
-uses `http://localhost:4100`; an Android Emulator uses
-`http://10.0.2.2:4100` for a relay running on the development machine.
+set `EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL` before starting Expo. Use the HTTPS URL
+printed by the [Cloudflare relay setup](../../../docs/local-first/self-hosting.md)
+on simulators, emulators, and physical devices.
 
 To create an independently named app from this exact client source:
 
@@ -43,7 +43,7 @@ On first launch, save the displayed recovery key and confirm it. To add a
 device, open settings, choose **Show add-device key**, then paste that key into
 **Already have a key?** on the new device. If the key is lost, no one can
 recover the synced data. Pull to refresh or use the Sync button; encrypted rows
-converge through the same canonical Go relay.
+converge through the same ciphertext-only relay.
 
 The app config enables Expo SQLite's SQLCipher build, and the React Native
 adapter generates a device-held database passphrase in SecureStore before

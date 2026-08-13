@@ -6,7 +6,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, posix } from "node:path";
+import { createHash } from "node:crypto";
+import { basename, dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 
@@ -25,12 +26,14 @@ const REPO_BLOB_BASE =
   "https://github.com/simply-hq/simplysync/blob/main";
 
 const SITE_TITLE = "SimplySync";
-
-// One web-font request (Space Grotesk display · IBM Plex Sans body · IBM Plex
-// Mono code), preconnected and cached across every page.
-const FONT_LINKS = `<link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" />`;
+const SITE_ORIGIN = "https://simplysync.org";
+const SITE_DESCRIPTION =
+  "Documentation for SimplySync, the app-owned, end-to-end-encrypted local-first sync engine.";
+const OG_SITE_NAME = "SimplySync";
+const SIMPLY_FINANCE_URL = "https://simplyfinance.app/";
+const GOALIST_URL = "https://goalist.app/";
+const SIMPLYSYNC_CLOUD_URL = "https://cloud.simplysync.org/";
+const BRAND_MARK = `<span class="brand-mark" aria-hidden="true"></span>`;
 
 // Sets data-theme before first paint to avoid a flash: stored choice wins,
 // otherwise follow the OS preference.
@@ -38,7 +41,22 @@ const THEME_SCRIPT = `<script>(function(){try{var t=localStorage.getItem("ss-the
 
 // Toggle: flip data-theme on <html> and persist. Inline so it works on the
 // static pages with no bundle.
-const THEME_TOGGLE = `<button class="theme-toggle" type="button" aria-label="Toggle dark mode" onclick="(function(d){var n=d.getAttribute('data-theme')==='dark'?'light':'dark';d.setAttribute('data-theme',n);try{localStorage.setItem('ss-theme',n)}catch(e){}})(document.documentElement)"><span class="t-sun" aria-hidden="true">☀</span><span class="t-moon" aria-hidden="true">☾</span></button>`;
+const THEME_TOGGLE = `<button class="theme-toggle" type="button" aria-label="Switch colour theme" onclick="window.ssToggleTheme(this)"><svg class="t-sun" aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="3.25"/><path d="M10 1.75v2M10 16.25v2M1.75 10h2M16.25 10h2M4.17 4.17l1.42 1.42M14.41 14.41l1.42 1.42M15.83 4.17l-1.42 1.42M5.59 14.41l-1.42 1.42"/></svg><svg class="t-moon" aria-hidden="true" viewBox="0 0 20 20"><path d="M16.45 12.64A7 7 0 0 1 7.36 3.55a7 7 0 1 0 9.09 9.09Z"/></svg></button>`;
+
+const MENU_TOGGLE = `<button class="menu-toggle" type="button" aria-label="Open documentation navigation" aria-controls="docs-sidebar" aria-expanded="false" onclick="window.ssToggleNav()"><svg aria-hidden="true" viewBox="0 0 20 20"><path d="M3 5.5h14M3 10h14M3 14.5h14"/></svg></button>`;
+
+// Progressive enhancement only: the pages remain fully navigable without it.
+// The script manages the mobile drawer, theme label, and a light scrollspy for
+// the on-this-page rail while keeping the static build dependency-free.
+const SITE_SCRIPT = `<script>(function(){
+  var root=document.documentElement,body=document.body,menu=document.querySelector('.menu-toggle');
+  window.ssToggleTheme=function(button){var next=root.getAttribute('data-theme')==='dark'?'light':'dark';root.setAttribute('data-theme',next);button.setAttribute('aria-label','Switch to '+(next==='dark'?'light':'dark')+' theme');try{localStorage.setItem('ss-theme',next)}catch(e){}};
+  window.ssToggleNav=function(force){var open=typeof force==='boolean'?force:!body.classList.contains('nav-open');body.classList.toggle('nav-open',open);if(menu){menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'Close documentation navigation':'Open documentation navigation');}};
+  var themeButton=document.querySelector('.theme-toggle');if(themeButton){themeButton.setAttribute('aria-label','Switch to '+(root.getAttribute('data-theme')==='dark'?'light':'dark')+' theme');}
+  document.addEventListener('keydown',function(event){if(event.key==='Escape')window.ssToggleNav(false)});
+  var links=Array.prototype.slice.call(document.querySelectorAll('.toc a'));
+  if('IntersectionObserver' in window&&links.length){var byId=new Map(links.map(function(link){return[link.getAttribute('href').slice(1),link]}));var setCurrent=function(id){links.forEach(function(link){var active=link===byId.get(id);link.classList.toggle('current',active);if(active)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')})};var observer=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting)setCurrent(entry.target.id)})},{rootMargin:'-18% 0px -68% 0px'});byId.forEach(function(_link,id){var heading=document.getElementById(id);if(heading)observer.observe(heading)});setCurrent(links[0].getAttribute('href').slice(1));}
+})();</script>`;
 
 interface LangTab {
   readonly label: string; // tab label (React / Swift / Kotlin)
@@ -65,7 +83,7 @@ const CLIENT_API_TABS: readonly LangTab[] = [
 ];
 
 const pages: readonly Page[] = [
-  { src: "README.md", out: "index.html", nav: "What & why" },
+  { src: "README.md", out: "docs.html", nav: "What & why" },
   { src: "guide.md", out: "guide.html", nav: "Client API", langTabs: CLIENT_API_TABS },
   { src: "architecture.md", out: "architecture.html", nav: "How it works" },
   { src: "sync.md", out: "sync.html", nav: "Sync & relay" },
@@ -83,6 +101,12 @@ const variantPages: readonly Page[] = [
 
 // Every page that gets rendered (sidebar pages + the hidden language variants).
 const allPages: readonly Page[] = [...pages, ...variantPages];
+
+const NAV_GROUPS = [
+  { label: "Start", pages: ["docs.html", "guide.html", "architecture.html"] },
+  { label: "Operate", pages: ["sync.html", "native.html", "self-hosting.html"] },
+  { label: "Reference", pages: ["agents.html"] },
+] as const;
 
 // Map a source markdown basename to its built page (for inter-doc links).
 const pageByMarkdown = new Map(
@@ -105,7 +129,12 @@ function slugify(text: string): string {
 }
 
 function stripTags(html: string): string {
-  return html.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&");
+  return html
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#(?:39|x27);/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&amp;/gi, "&");
 }
 
 /** Adds stable ids to h2/h3 headings and collects a table of contents. */
@@ -123,7 +152,7 @@ function addHeadingAnchors(html: string): { html: string; toc: TocEntry[] } {
       while (used.has(id)) id = `${slugify(text)}-${++suffix}`;
       used.add(id);
       toc.push({ level, id, text });
-      return `<h${level} id="${id}"><a class="anchor" href="#${id}" aria-hidden="true">#</a>${inner}</h${level}>`;
+      return `<h${level} id="${id}"><a class="anchor" href="#${id}" aria-label="Link to this section">#</a>${inner}</h${level}>`;
     },
   );
 
@@ -162,25 +191,37 @@ function firstHeading(markdown: string): string {
   return match ? match[1].trim() : SITE_TITLE;
 }
 
-function renderNav(activeOut: string): string {
-  // The docs are deliberately ordinal, so the sidebar numbers the sections
-  // rather than presenting a flat list.
-  const items = pages
-    .map((page, i) => {
-      const active = page.out === activeOut ? " active" : "";
-      const idx = String(i + 1).padStart(2, "0");
-      return `<a class="nav-link${active}" href="${page.out}"><span class="n-idx">${idx}</span><span>${page.nav}</span></a>`;
-    })
-    .join("\n        ");
-  // The demo is a bundled SPA, not a markdown page, so it's appended here
-  // rather than living in `pages`.
-  return `<p class="nav-label">Documentation</p>
-        ${items}
-        <a class="nav-demo" href="demo.html">Live demo</a>`;
+function canonicalUrl(out: string): string {
+  const cleanPath = out === "index.html" ? "" : out.replace(/\.html$/, "");
+  return `${SITE_ORIGIN}/${cleanPath}`;
 }
 
-// A segmented control above the prose that switches the Client API page between
-// its language variants. The active tab is inert text; the others are links.
+function renderNav(activeOut: string): string {
+  const groups = NAV_GROUPS.map((group) => {
+    const items = group.pages
+      .map((out) => {
+        const page = pages.find((candidate) => candidate.out === out);
+        if (!page) return "";
+        const active = page.out === activeOut ? " active" : "";
+        const current = active ? ` aria-current="page"` : "";
+        return `<a class="nav-link${active}" href="${page.out}"${current}>${page.nav}</a>`;
+      })
+      .join("\n            ");
+    return `<section class="nav-group">
+          <p class="nav-label">${group.label}</p>
+          <div class="nav-list">
+            ${items}
+          </div>
+        </section>`;
+  }).join("\n        ");
+
+  return `${groups}
+        <a class="nav-demo" href="demo.html">Open the demo</a>
+        <a class="nav-cloud" href="${SIMPLYSYNC_CLOUD_URL}">Managed Cloud ↗</a>`;
+}
+
+// Compact page navigation above the prose switches between Client API variants.
+// The active page is inert text; the others are links.
 function renderLangTabs(
   tabs: readonly LangTab[],
   activeOut: string,
@@ -192,23 +233,42 @@ function renderLangTabs(
         : `<a class="lang-tab" href="${tab.out}">${tab.label}</a>`,
     )
     .join("");
-  return `<div class="lang-tabs" role="tablist" aria-label="Client language">${items}</div>`;
+  return `<nav class="lang-tabs" aria-label="Client language">${items}</nav>`;
 }
 
-function renderFooter(): string {
-  return `<footer class="site-footer">
-      <div class="footer-inner">
-        <p class="footer-statement">Local-first. <em>End-to-end encrypted.</em> App-owned — no data hostage.</p>
-        <nav class="footer-links" aria-label="Resources">
-          <a href="index.html">What &amp; why</a>
-          <a href="guide.html">Client API</a>
-          <a href="architecture.html">How it works</a>
-          <a href="sync.html">Sync &amp; relay</a>
-          <a href="native.html">Native clients</a>
-          <a href="demo.html">Live demo</a>
-          <a href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
-        </nav>
-        <p class="footer-meta">MIT-licensed. Clone it, run your own relay, depend on no one. The relay only ever sees ciphertext.</p>
+function renderTopbar(showMenu: boolean): string {
+  return `<header class="topbar">
+    <div class="topbar-inner">
+      ${showMenu ? MENU_TOGGLE : ""}
+      <div class="brand-lockup">
+        <a class="brand" href="index.html" aria-label="SimplySync home">${BRAND_MARK}<span class="brand-name">${SITE_TITLE}</span></a>
+      </div>
+      <nav class="topbar-links" aria-label="Primary">
+        <a href="docs.html">Docs</a>
+        <a href="demo.html">Demo</a>
+        <a class="topbar-showcase" href="showcase.html">Showcase</a>
+        <a href="${SIMPLYSYNC_CLOUD_URL}">Cloud ↗</a>
+      </nav>
+      ${THEME_TOGGLE}
+    </div>
+  </header>`;
+}
+
+function renderFooter(extraClass = ""): string {
+  const className = extraClass ? `site-footer ${extraClass}` : "site-footer";
+  return `<footer class="${className}">
+      <div class="footer-colophon">
+        <p class="footer-statement"><strong>SimplySync</strong> — app-owned, encrypted sync infrastructure.</p>
+        <div class="footer-meta">
+          <span>MIT licensed.</span>
+          <nav class="footer-links" aria-label="Project resources">
+            <a href="showcase.html">Showcase</a>
+            <a href="${SIMPLYSYNC_CLOUD_URL}">Cloud ↗</a>
+            <a href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source</a>
+            <a href="${REPO_BLOB_BASE}/SECURITY.md">Security</a>
+            <a href="llms.txt">llms.txt</a>
+          </nav>
+        </div>
       </div>
     </footer>`;
 }
@@ -221,61 +281,345 @@ function renderToc(toc: TocEntry[]): string {
         `<a class="toc-l${entry.level}" href="#${entry.id}">${entry.text}</a>`,
     )
     .join("\n        ");
-  return `<nav class="toc" aria-label="On this page">
-        <p class="toc-title">On this page</p>
+  return `<nav class="toc" aria-label="In this guide">
+        <p class="toc-title">In this guide</p>
         ${items}
       </nav>`;
 }
 
-function layout(options: {
-  title: string;
-  activeOut: string; // sidebar highlight
-  content: string;
-  toc: TocEntry[];
-  langTabs?: readonly LangTab[];
-  langActiveOut?: string; // which language tab is active
-}): string {
-  const langBar = options.langTabs
-    ? renderLangTabs(options.langTabs, options.langActiveOut ?? options.activeOut)
-    : "";
+const LANDING_DIRECTORY = [
+  {
+    title: "Core concepts",
+    entries: [
+      { out: "docs.html", title: "What & why", summary: "Decide whether the single-owner model fits." },
+      { out: "architecture.html", title: "How it works", summary: "Follow local writes, clocks, encryption, and blobs." },
+      { out: "sync.html", title: "Sync & relay", summary: "Inspect the HTTP protocol, quotas, and compaction." },
+      { out: "sync.html#threat-model", title: "Security model", summary: "See what the relay can and cannot learn." },
+    ],
+  },
+  {
+    title: "Build & operate",
+    entries: [
+      { out: "guide.html", title: "Client API", summary: "Define schemas, mutations, queries, and React bindings." },
+      { out: "native.html", title: "Native clients", summary: "Own the Swift and Kotlin source surfaces." },
+      { out: "self-hosting.html", title: "Self-hosting", summary: "Deploy the Cloudflare relay in your account." },
+      { out: "agents.html", title: "For agents", summary: "Load the full invariant and implementation contract." },
+    ],
+  },
+] as const;
+
+function extractLandingQuickstart(content: string): string {
+  const sectionStart = content.indexOf(
+    `<h2 id="${slugify("Quickstart: a source-owned React Native app")}">`,
+  );
+  if (sectionStart < 0) return "";
+  const preStart = content.indexOf("<pre>", sectionStart);
+  const preClose = preStart >= 0 ? content.indexOf("</pre>", preStart) : -1;
+  if (preStart < 0 || preClose < 0) return "";
+  const command = content.slice(preStart, preClose + "</pre>".length);
+  const launchStart = command.indexOf("\n\n# iOS Simulator");
+  if (launchStart < 0) return command;
+  return `${command.slice(0, launchStart)}\n</code></pre>`;
+}
+
+function renderLandingDirectory(): string {
+  const groups = LANDING_DIRECTORY.map((group) => {
+    const entries = group.entries.map(
+      (entry) => `<div class="directory-row">
+          <a href="${entry.out}">${entry.title}</a>
+          <span>${entry.summary}</span>
+        </div>`,
+    ).join("\n        ");
+    return `<section class="directory-group">
+        <h3>${group.title}</h3>
+        ${entries}
+      </section>`;
+  }).join("\n      ");
+
+  return `<nav class="landing-directory" aria-labelledby="directory-title">
+    <h2 id="directory-title">Explore the docs</h2>
+    <div class="directory-grid">
+      ${groups}
+    </div>
+  </nav>`;
+}
+
+function landingHtml(assetVersion: string, quickstart: string): string {
+  const pageTitle = `${SITE_TITLE} · App-owned local-first sync`;
+  const canonical = canonicalUrl("index.html");
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${options.title} · ${SITE_TITLE} Docs</title>
-  <meta name="description" content="Docs for the app-owned, end-to-end-encrypted local-first library." />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${pageTitle}</title>
+  <meta name="description" content="${SITE_DESCRIPTION}" />
+  <link rel="canonical" href="${canonical}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="${OG_SITE_NAME}" />
+  <meta property="og:title" content="${pageTitle}" />
+  <meta property="og:description" content="${SITE_DESCRIPTION}" />
+  <meta property="og:url" content="${canonical}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${pageTitle}" />
+  <meta name="twitter:description" content="${SITE_DESCRIPTION}" />
   ${THEME_SCRIPT}
-  ${FONT_LINKS}
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles-${assetVersion}.css" />
+</head>
+<body class="landing-page">
+  <a class="skip-link" href="#content">Skip to content</a>
+  ${renderTopbar(false)}
+  <main id="content" class="landing-main">
+    <section class="landing-hero" aria-labelledby="landing-title">
+      <header class="landing-hero-copy">
+        <h1 id="landing-title">Private sync, owned by your app.</h1>
+        <p>Write to local SQLite first. SimplySync seals changes on-device and sends only ciphertext through an optional relay.</p>
+        <div class="landing-actions">
+          <a class="landing-primary" href="guide.html">Start integrating</a>
+          <a class="landing-secondary" href="demo.html">Live demo <span aria-hidden="true">→</span></a>
+        </div>
+      </header>
+    </section>
+
+    <figure class="landing-proof" aria-labelledby="proof-caption">
+      <div class="flow-panel flow-device">
+        <p class="flow-title">Device A · local SQLite</p>
+        <table aria-label="Readable Todo row on device A">
+          <thead><tr><th>id</th><th>title</th><th>done</th></tr></thead>
+          <tbody><tr><td>42</td><td>Buy milk</td><td>0</td></tr></tbody>
+        </table>
+      </div>
+      <span class="flow-connector" aria-hidden="true"></span>
+      <div class="flow-panel flow-relay">
+        <p class="flow-title">Relay · ciphertext only</p>
+        <pre aria-label="Illustrative encrypted envelope"><code>{
+  "eventId": "HLC",
+  "nonce": "12-byte base64url",
+  "ciphertext": "AES-GCM output"
+}</code></pre>
+      </div>
+      <span class="flow-connector" aria-hidden="true"></span>
+      <div class="flow-panel flow-device">
+        <p class="flow-title">Device B · local SQLite</p>
+        <table aria-label="Readable Todo row on device B">
+          <thead><tr><th>id</th><th>title</th><th>done</th></tr></thead>
+          <tbody><tr><td>42</td><td>Buy milk</td><td>0</td></tr></tbody>
+        </table>
+      </div>
+      <figcaption id="proof-caption">Both devices keep readable SQLite. The relay receives routing metadata, a nonce, and ciphertext — never the row.</figcaption>
+    </figure>
+
+    <section class="landing-quickstart" aria-labelledby="landing-quickstart-title">
+      <header class="landing-section-head">
+        <div>
+          <h2 id="landing-quickstart-title">Quickstart</h2>
+          <p>Clone the React Native client and the source it needs.</p>
+        </div>
+        <a href="docs.html#quickstart-a-source-owned-react-native-app">Continue setup <span aria-hidden="true">→</span></a>
+      </header>
+      ${quickstart}
+    </section>
+
+    ${renderLandingDirectory()}
+  </main>
+  ${renderFooter("home-footer")}
+  ${SITE_SCRIPT}
+</body>
+</html>
+`;
+}
+
+const SHOWCASE_PRODUCTS = [
+  {
+    name: "Simply Finance",
+    domain: "simplyfinance.app",
+    url: SIMPLY_FINANCE_URL,
+    relationship: "Powered by SimplySync",
+    description:
+      "A private, manual-first money app that keeps recorded transactions useful offline and offers optional end-to-end encrypted sync.",
+  },
+  {
+    name: "Goalist",
+    domain: "goalist.app",
+    url: GOALIST_URL,
+    relationship: "From the same maker",
+    description:
+      "A goal and task app organized around one primary goal, resistance lists, side quests, offline support, and optional device sync.",
+  },
+] as const;
+
+function showcaseHtml(assetVersion: string): string {
+  const pageTitle = `Showcase · ${SITE_TITLE}`;
+  const description =
+    "Simply Finance and Goalist: two local-first products from the same maker.";
+  const canonical = canonicalUrl("showcase.html");
+  const products = SHOWCASE_PRODUCTS.map(
+    (product) => `<article class="showcase-entry">
+      <header class="showcase-product">
+        <h2>${product.name}</h2>
+        <p>${product.domain}</p>
+      </header>
+      <div class="showcase-detail">
+        <p>${product.description}</p>
+        <div class="showcase-action">
+          <span>${product.relationship}</span>
+          <a href="${product.url}">Visit ${product.name} <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+    </article>`,
+  ).join("\n    ");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${pageTitle}</title>
+  <meta name="description" content="${description}" />
+  <link rel="canonical" href="${canonical}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="${OG_SITE_NAME}" />
+  <meta property="og:title" content="${pageTitle}" />
+  <meta property="og:description" content="${description}" />
+  <meta property="og:url" content="${canonical}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${pageTitle}" />
+  <meta name="twitter:description" content="${description}" />
+  ${THEME_SCRIPT}
+  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles-${assetVersion}.css" />
+</head>
+<body class="showcase-page">
+  <a class="skip-link" href="#content">Skip to content</a>
+  ${renderTopbar(false)}
+  <main id="content" class="showcase-main">
+    <header class="showcase-intro">
+      <h1>Products</h1>
+      <p>Two local-first products from the same maker. Simply Finance is powered by SimplySync; Goalist is a related goal and task product.</p>
+    </header>
+    <section class="showcase-list" aria-label="Product showcase">
+      ${products}
+    </section>
+  </main>
+  ${renderFooter("home-footer")}
+  ${SITE_SCRIPT}
+</body>
+</html>
+`;
+}
+
+function notFoundHtml(assetVersion: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Page not found · ${SITE_TITLE}</title>
+  <meta name="robots" content="noindex" />
+  ${THEME_SCRIPT}
+  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles-${assetVersion}.css" />
+</head>
+<body class="simple-page">
+  <a class="skip-link" href="#content">Skip to content</a>
+  ${renderTopbar(false)}
+  <main id="content" class="simple-main">
+    <h1>That page isn’t here.</h1>
+    <p>Open the documentation or return to the SimplySync homepage.</p>
+    <div class="simple-actions">
+      <a href="docs.html">Read the docs</a>
+      <a href="index.html">Return home</a>
+    </div>
+  </main>
+  ${renderFooter("home-footer")}
+  ${SITE_SCRIPT}
+</body>
+</html>
+`;
+}
+
+function insertAfterFirstParagraph(content: string, addition: string): string {
+  if (!addition) return content;
+  const paragraphEnd = content.indexOf("</p>");
+  if (paragraphEnd < 0) return `${addition}${content}`;
+  const split = paragraphEnd + "</p>".length;
+  return `${content.slice(0, split)}${addition}${content.slice(split)}`;
+}
+
+function renderPageNav(activeOut: string): string {
+  const index = pages.findIndex((page) => page.out === activeOut);
+  if (index < 0) return "";
+  const previous = index > 0 ? pages[index - 1] : null;
+  const next = index < pages.length - 1 ? pages[index + 1] : null;
+  const previousLink = previous
+    ? `<a class="page-nav-link previous" href="${previous.out}"><span class="page-nav-direction"><span aria-hidden="true">←</span> Previous</span><span class="page-nav-title">${previous.nav}</span></a>`
+    : "";
+  const nextLink = next
+    ? `<a class="page-nav-link next" href="${next.out}"><span class="page-nav-direction">Next <span aria-hidden="true">→</span></span><span class="page-nav-title">${next.nav}</span></a>`
+    : "";
+  const edgeClass = previous ? (next ? "" : " only-previous") : " only-next";
+  return `<nav class="page-nav${edgeClass}" aria-label="Adjacent documentation">${previousLink}${nextLink}</nav>`;
+}
+
+function layout(options: {
+  title: string;
+  out: string; // built filename, used for canonical metadata
+  activeOut: string; // sidebar highlight
+  content: string;
+  toc: TocEntry[];
+  assetVersion: string;
+  langTabs?: readonly LangTab[];
+  langActiveOut?: string; // which language tab is active
+}): string {
+  const pageTitle = `${options.title} · ${SITE_TITLE} Docs`;
+  const canonical = canonicalUrl(options.out);
+  const langBar = options.langTabs
+    ? renderLangTabs(options.langTabs, options.langActiveOut ?? options.activeOut)
+    : "";
+  const bodyContent = insertAfterFirstParagraph(
+    options.content,
+    `<div class="article-tools">${langBar}${renderToc(options.toc)}</div>`,
+  );
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${pageTitle}</title>
+  <meta name="description" content="${SITE_DESCRIPTION}" />
+  <link rel="canonical" href="${canonical}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="${OG_SITE_NAME}" />
+  <meta property="og:title" content="${pageTitle}" />
+  <meta property="og:description" content="${SITE_DESCRIPTION}" />
+  <meta property="og:url" content="${canonical}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${pageTitle}" />
+  <meta name="twitter:description" content="${SITE_DESCRIPTION}" />
+  ${THEME_SCRIPT}
+  <link rel="icon" href="simplysync-mark-${options.assetVersion}.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles-${options.assetVersion}.css" />
 </head>
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
-  <header class="topbar">
-    <button class="menu-toggle" aria-label="Toggle navigation" onclick="document.body.classList.toggle('nav-open')">☰</button>
-    <a class="brand" href="index.html">${SITE_TITLE} <span>Docs</span></a>
-    <span class="topbar-spacer"></span>
-    <a class="repo-link" href="${REPO_BLOB_BASE}/packages/simplysync-protocol">Source ↗</a>
-    ${THEME_TOGGLE}
-  </header>
+  ${renderTopbar(true)}
   <div class="shell">
-    <aside class="sidebar" aria-label="Sections">
+    <aside id="docs-sidebar" class="sidebar" aria-label="Documentation sections">
       <nav class="nav">
         ${renderNav(options.activeOut)}
       </nav>
     </aside>
     <main id="content" class="content">
       <article class="prose">
-        ${langBar}
-        ${options.content}
+        ${bodyContent}
+        ${renderPageNav(options.activeOut)}
       </article>
     </main>
-    <div class="toc-col">
-      ${renderToc(options.toc)}
-    </div>
     ${renderFooter()}
   </div>
-  <div class="nav-scrim" onclick="document.body.classList.remove('nav-open')"></div>
+  <button class="nav-scrim" type="button" aria-label="Close documentation navigation" onclick="window.ssToggleNav(false)"></button>
+  ${SITE_SCRIPT}
 </body>
 </html>
 `;
@@ -313,8 +657,8 @@ function llmsIndex(): string {
 
 > App-owned, end-to-end-encrypted, local-first sync: apps write to a local
 > SQLite database first and sync opportunistically through a relay that only
-> ever sees ciphertext. One protocol, four implementations (TypeScript, Go,
-> Kotlin, Swift), all wire-compatible.
+> ever sees ciphertext. The TypeScript, Kotlin, and Swift clients share one
+> wire contract with the source-owned Cloudflare relay.
 
 For single-user apps across a person's own devices — notes, journals, personal
 finance, health trackers, local AI chat. Not for live multi-user collaboration,
@@ -330,25 +674,44 @@ ${entries}
 `;
 }
 
-function demoHtml(): string {
+function demoHtml(assetVersion: string, scriptName: string): string {
+  const pageTitle = `Demo · ${SITE_TITLE}`;
+  const description =
+    "Run the SimplySync local-first, end-to-end-encrypted engine in your browser.";
+  const canonical = canonicalUrl("demo.html");
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Demo · ${SITE_TITLE}</title>
-  <meta name="description" content="Run the SimplySync local-first, end-to-end-encrypted engine in your browser." />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${pageTitle}</title>
+  <meta name="description" content="${description}" />
+  <link rel="canonical" href="${canonical}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="${OG_SITE_NAME}" />
+  <meta property="og:title" content="${pageTitle}" />
+  <meta property="og:description" content="${description}" />
+  <meta property="og:url" content="${canonical}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${pageTitle}" />
+  <meta name="twitter:description" content="${description}" />
   ${THEME_SCRIPT}
-  ${FONT_LINKS}
-  <link rel="stylesheet" href="demo.css" />
+  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="demo-${assetVersion}.css" />
 </head>
 <body>
   <div class="pg-topnav">
-    <a class="pg-back" href="index.html">← Docs</a>
-    ${THEME_TOGGLE}
+    <div class="pg-brand-lockup">
+      <a class="pg-back" href="index.html" aria-label="SimplySync home">${BRAND_MARK}<span>SimplySync</span></a>
+    </div>
+    <div class="pg-topnav-actions">
+      <a class="pg-cloud-link" href="${SIMPLYSYNC_CLOUD_URL}">Cloud ↗</a>
+      ${THEME_TOGGLE}
+    </div>
   </div>
   <div id="app"></div>
-  <script type="module" src="demo.js"></script>
+  <script type="module" src="${scriptName}"></script>
+  ${SITE_SCRIPT}
 </body>
 </html>
 `;
@@ -357,14 +720,17 @@ function demoHtml(): string {
 // Bundles the React demo SPA into dist/ with Bun's bundler (no extra toolchain),
 // copies sql.js's wasm next to it, and emits the host HTML. The TodoList web app
 // lives with the other clients under apps/todolist/web.
-async function buildDemo(): Promise<void> {
+async function buildDemo(
+  assetVersion: string,
+  versionedDemoCss: string,
+): Promise<void> {
   const result = await Bun.build({
     entrypoints: [join(todoWebDir, "main.tsx")],
     outdir: distDir,
     target: "browser",
     minify: true,
     sourcemap: "none",
-    naming: { entry: "demo.[ext]" },
+    naming: { entry: "demo-[hash].[ext]" },
     // React (and other libs) branch on this; browsers have no `process`.
     define: { "process.env.NODE_ENV": JSON.stringify("production") },
   });
@@ -372,18 +738,31 @@ async function buildDemo(): Promise<void> {
     for (const log of result.logs) console.error(log);
     throw new Error("Demo bundle failed.");
   }
+  const scriptName = basename(result.outputs[0]?.path ?? "");
+  if (!scriptName) throw new Error("Demo bundle emitted no entrypoint.");
 
   // sql.js fetches its wasm at runtime via locateFile(() => "sql-wasm.wasm").
   await copyFile(
     Bun.resolveSync("sql.js/dist/sql-wasm.wasm", here),
     join(distDir, "sql-wasm.wasm"),
   );
-  await copyFile(
-    join(todoWebDir, "styles.css"),
-    join(distDir, "demo.css"),
+  await writeFile(
+    join(distDir, `demo-${assetVersion}.css`),
+    versionedDemoCss,
+    "utf8",
   );
-  await writeFile(join(distDir, "demo.html"), demoHtml(), "utf8");
-  console.log("  apps/todolist/web → dist/demo.{js,html,css} (+ wasm)");
+  // Canonical aliases keep old links useful; current HTML always references
+  // fingerprinted assets so a redeploy cannot mix an old bundle with new UI.
+  await copyFile(join(todoWebDir, "styles.css"), join(distDir, "demo.css"));
+  await copyFile(join(distDir, scriptName), join(distDir, "demo.js"));
+  await writeFile(
+    join(distDir, "demo.html"),
+    demoHtml(assetVersion, scriptName),
+    "utf8",
+  );
+  console.log(
+    `  apps/todolist/web → dist/${scriptName}, demo-${assetVersion}.css, demo.html (+ aliases, wasm)`,
+  );
 }
 
 async function build(): Promise<void> {
@@ -422,9 +801,33 @@ async function build(): Promise<void> {
   await rm(distDir, { recursive: true, force: true });
   await mkdir(distDir, { recursive: true });
 
+  const tokenCss = await readFile(join(here, "tokens.css"), "utf8");
+  const docsCss = await readFile(join(here, "styles.css"), "utf8");
+  const demoCss = await readFile(join(todoWebDir, "styles.css"), "utf8");
+  const brandMark = await readFile(join(here, "simplysync-mark.svg"), "utf8");
+  const assetVersion = createHash("sha256")
+    .update(tokenCss)
+    .update(docsCss)
+    .update(demoCss)
+    .update(brandMark)
+    .digest("hex")
+    .slice(0, 12);
+  const versionedTokenName = `tokens-${assetVersion}.css`;
+  const versionedMarkName = `simplysync-mark-${assetVersion}.svg`;
+  const versionCss = (css: string): string =>
+    css
+      .replace('@import "tokens.css";', `@import "${versionedTokenName}";`)
+      .replaceAll(
+        'url("simplysync-mark.svg")',
+        `url("${versionedMarkName}")`,
+      );
+  const versionedDocsCss = versionCss(docsCss);
+  const versionedDemoCss = versionCss(demoCss);
+
   marked.setOptions({ gfm: true });
 
   const sources = new Map<string, string>();
+  let landingQuickstart = "";
 
   for (const page of allPages) {
     const markdown = await readFile(join(docsDir, page.src), "utf8");
@@ -432,33 +835,63 @@ async function build(): Promise<void> {
     const rendered = await marked.parse(markdown);
     const { html: withAnchors, toc } = addHeadingAnchors(rendered);
     const content = rewriteLinks(withAnchors);
+    if (page.src === "README.md") {
+      landingQuickstart = extractLandingQuickstart(content);
+    }
     const html = layout({
       title: firstHeading(markdown),
+      out: page.out,
       activeOut: page.navActive ?? page.out, // sidebar highlight
       langTabs: page.langTabs,
       langActiveOut: page.out, // active tab is this page
       content,
       toc,
+      assetVersion,
     });
     await writeFile(join(distDir, page.out), html, "utf8");
     console.log(`  ${page.src} → dist/${page.out}`);
   }
 
+  if (!landingQuickstart) {
+    throw new Error("README.md is missing the landing-page Quickstart command.");
+  }
+  await writeFile(
+    join(distDir, "index.html"),
+    landingHtml(assetVersion, landingQuickstart),
+    "utf8",
+  );
+  console.log("  dedicated landing page → dist/index.html");
+  await writeFile(
+    join(distDir, "showcase.html"),
+    showcaseHtml(assetVersion),
+    "utf8",
+  );
+  console.log("  product showcase → dist/showcase.html");
+
   // styles.css and demo.css both @import this shared token layer.
   await writeFile(
     join(distDir, "tokens.css"),
-    await readFile(join(here, "tokens.css"), "utf8"),
+    tokenCss,
     "utf8",
   );
+  await writeFile(join(distDir, versionedTokenName), tokenCss, "utf8");
   await writeFile(
     join(distDir, "styles.css"),
-    await readFile(join(here, "styles.css"), "utf8"),
+    docsCss,
     "utf8",
   );
-  // SPA-style hosts (and GitHub Pages) need a sensible 404; reuse the overview.
+  await writeFile(
+    join(distDir, `styles-${assetVersion}.css`),
+    versionedDocsCss,
+    "utf8",
+  );
+  await writeFile(join(distDir, "simplysync-mark.svg"), brandMark, "utf8");
+  await writeFile(join(distDir, versionedMarkName), brandMark, "utf8");
+  // SPA-style hosts (and GitHub Pages) need a real terminal page, not a copy of
+  // either the product landing page or a documentation article.
   await writeFile(
     join(distDir, "404.html"),
-    await readFile(join(distDir, "index.html"), "utf8"),
+    notFoundHtml(assetVersion),
     "utf8",
   );
 
@@ -467,11 +900,29 @@ async function build(): Promise<void> {
     .filter((markdown): markdown is string => Boolean(markdown))
     .join("\n\n---\n\n");
   await writeFile(join(distDir, "llms-full.txt"), corpus, "utf8");
+  const sitemapEntries = [
+    "index.html",
+    "showcase.html",
+    ...allPages.map((page) => page.out),
+    "demo.html",
+  ]
+    .map((out) => `  <url><loc>${canonicalUrl(out)}</loc></url>`)
+    .join("\n");
+  await writeFile(
+    join(distDir, "sitemap.xml"),
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${sitemapEntries}\n</urlset>\n`,
+    "utf8",
+  );
+  await writeFile(
+    join(distDir, "robots.txt"),
+    `User-agent: *\nAllow: /\n\nSitemap: ${SITE_ORIGIN}/sitemap.xml\n`,
+    "utf8",
+  );
   console.log("  docs/local-first/*.md → dist/llms{,-full}.txt");
 
-  await buildDemo();
+  await buildDemo(assetVersion, versionedDemoCss);
 
-  console.log(`\nBuilt ${allPages.length} pages + demo → ${distDir}`);
+  console.log(`\nBuilt landing + showcase + ${allPages.length} docs pages + demo → ${distDir}`);
 }
 
 await build();

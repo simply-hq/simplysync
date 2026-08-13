@@ -2,6 +2,7 @@
   "name": "@simplysync/engine",
   "version": "0.0.1",
   "description": "Local-first SQLite sync engine with encrypted relay replication.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "repository": {
     "type": "git",

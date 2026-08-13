@@ -108,7 +108,7 @@ val deps = SyncEngineDeps(
 
 val engine = createSync(deps)(appSchema, SyncEngineConfig(
     name = "my-app",
-    transports = listOf(Transport("http://10.0.2.2:4100")), // optional relay
+    transports = emptyList(), // local-only until you add a relay in §7
     syncIntervalMs = 3000,                                    // poll cadence
     schemaVersion = 1,                                        // optional; default 1
 ))
@@ -304,8 +304,8 @@ for (s in engine.getRelayStatuses()) {  // suspend
 }
 ```
 
-> **For Android emulators** point the relay at `http://10.0.2.2:4100`; a device on
-> the LAN uses the host's IP.
+Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
+every platform.
 
 ## 8. Platform drivers
 

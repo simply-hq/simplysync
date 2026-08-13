@@ -50,8 +50,8 @@ Violating any of these produces silent data bugs, not errors.
    encrypted events; it cannot read or forge them. Never move validation,
    search, or authorization server-side.
 6. **Don't touch protocol constants.** `DERIVATION_SALT`, the envelope format,
-   canonical JSON, and the HLC format are wire constants shared with the Go,
-   Swift, and Kotlin implementations.
+   canonical JSON, and the HLC format are wire constants shared by every client
+   and relay implementation.
 
 ## A complete working app
 
@@ -94,7 +94,7 @@ export const engine = createSync({
   secureStorage: createEncryptedSecureStorage({ databaseName: "my-app" }),
 })(schema, {
   name: "my-app",
-  transports: [{ type: "Http", url: "http://localhost:4100" }], // optional
+  transports: [], // local-only; add the deployed Cloudflare relay URL when needed
 });
 
 await engine.ready;

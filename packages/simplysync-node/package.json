@@ -2,6 +2,7 @@
   "name": "@simplysync/node",
   "version": "0.0.1",
   "description": "Node.js SQLite and secure-storage adapters for the SimplySync local-first engine.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "repository": {
     "type": "git",

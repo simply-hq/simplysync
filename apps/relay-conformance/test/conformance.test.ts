@@ -22,7 +22,6 @@ import {
   isGoAvailable,
   launchRelay,
   type LaunchedRelay,
-  type RelayKind,
 } from "./conformance/launch-relay";
 import {
   createTestIdentity,
@@ -50,9 +49,7 @@ if (!isGoAvailable()) {
   throw new Error("[conformance] `go` was not found on PATH");
 }
 
-const kinds: RelayKind[] = ["go"];
-
-describe.each(kinds)("relay conformance — %s", (kind) => {
+describe("relay conformance — go", () => {
   let relay: LaunchedRelay;
   // Boots with ADMIN_TOKEN/ADMIN_PATH set (for the metric-label assertion)
   // and a tiny MAX_OWNER_BYTES (for the quota assertion) — kept separate from
@@ -63,8 +60,8 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
 
   beforeAll(async () => {
     [relay, specialRelay] = await Promise.all([
-      launchRelay(kind, { RATE_LIMIT_ENABLED: "false" }),
-      launchRelay(kind, {
+      launchRelay({ RATE_LIMIT_ENABLED: "false" }),
+      launchRelay({
         ADMIN_TOKEN,
         ADMIN_PATH,
         MAX_OWNER_BYTES: String(TINY_OWNER_QUOTA_BYTES),
@@ -381,11 +378,11 @@ describe.each(kinds)("relay conformance — %s", (kind) => {
   });
 });
 
-describe.each(kinds)("owner cap — %s", (kind) => {
+describe("owner cap — go", () => {
   let capped: LaunchedRelay;
 
   beforeAll(async () => {
-    capped = await launchRelay(kind, { MAX_OWNERS: "2" });
+    capped = await launchRelay({ MAX_OWNERS: "2" });
   }, 45_000);
 
   afterAll(async () => {
@@ -411,14 +408,14 @@ describe.each(kinds)("owner cap — %s", (kind) => {
   });
 });
 
-describe.each(kinds)("rate limiting — %s", (kind) => {
+describe("rate limiting — go", () => {
   let apiLimited: LaunchedRelay;
   let writeLimited: LaunchedRelay;
 
   beforeAll(async () => {
     [apiLimited, writeLimited] = await Promise.all([
-      launchRelay(kind, { RATE_LIMIT_API: "3" }),
-      launchRelay(kind, { RATE_LIMIT_WRITE: "2" }),
+      launchRelay({ RATE_LIMIT_API: "3" }),
+      launchRelay({ RATE_LIMIT_WRITE: "2" }),
     ]);
   }, 45_000);
 
@@ -450,10 +447,10 @@ describe.each(kinds)("rate limiting — %s", (kind) => {
   });
 });
 
-describe.each(kinds)("oversized body guard — %s", (kind) => {
+describe("oversized body guard — go", () => {
   let tiny: LaunchedRelay;
   beforeAll(async () => {
-    tiny = await launchRelay(kind, {
+    tiny = await launchRelay({
       MAX_EVENT_BYTES: "1024",
       MAX_EVENTS_PER_PUSH: "2",
     });
@@ -486,10 +483,10 @@ describe.each(kinds)("oversized body guard — %s", (kind) => {
 // event of those streams — winners and tombstones included.
 // ---------------------------------------------------------------------------
 
-describe.each(kinds)("stream compaction — %s", (kind) => {
+describe("stream compaction — go", () => {
   let relay: LaunchedRelay;
   beforeAll(async () => {
-    relay = await launchRelay(kind, { RATE_LIMIT_ENABLED: "false" });
+    relay = await launchRelay({ RATE_LIMIT_ENABLED: "false" });
   }, 45_000);
   afterAll(async () => {
     await relay?.kill();

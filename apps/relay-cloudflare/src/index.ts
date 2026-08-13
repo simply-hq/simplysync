@@ -292,8 +292,7 @@ async function handlePush(
   // `changes` isn't visible to us until the whole batch returns, so instead
   // the update recomputes its delta from the rows this push actually
   // inserted, identified by the seq range reserved above (duplicates never
-  // consume a row in that range, so the sum/count are exactly the accepted
-  // events).
+  // consume a row in that range, so the sum is exactly the accepted bytes).
   const insertStmt = env.DB.prepare(
     `insert or ignore into events
        (owner_id, event_id, device_id, envelope_json, stored_bytes, created_at, stream_id, seq)
@@ -304,13 +303,9 @@ async function handlePush(
        set stored_bytes = stored_bytes + (
              select coalesce(sum(stored_bytes), 0) from events
              where owner_id = ? and seq > ? and seq <= ?
-           ),
-           event_count = event_count + (
-             select count(*) from events
-             where owner_id = ? and seq > ? and seq <= ?
            )
      where owner_id = ?`,
-  ).bind(ownerId, seqBase, seqHigh, ownerId, seqBase, seqHigh, ownerId);
+  ).bind(ownerId, seqBase, seqHigh, ownerId);
 
   const results = await env.DB.batch([
     ...prepared.map((p, i) =>
@@ -779,8 +774,8 @@ async function ensureOwnerAuth(
 
     const inserted = await env.DB.prepare(
       `insert or ignore into owners
-         (owner_id, relay_auth_hash, stored_bytes, event_count, created_at)
-       values (?, ?, 0, 0, ?)`,
+         (owner_id, relay_auth_hash, stored_bytes, created_at)
+       values (?, ?, 0, ?)`,
     )
       .bind(ownerId, relayAuthHash, new Date().toISOString())
       .run();
@@ -823,9 +818,9 @@ function validateEnvelope(ownerId: string, event: SyncEnvelope): string | null {
   if (event.version !== 1) return "Unsupported event version";
   if (event.ownerId !== ownerId) return "Event owner mismatch";
   if (!isNonEmptyString(event.eventId)) return "Missing eventId";
-  const parsedHlc = parseHlc(event.eventId);
-  if (!parsedHlc) return "Invalid eventId";
-  if (parsedHlc.millis > Date.now() + HLC_MAX_FUTURE_DRIFT_MS) {
+  const hlcMillis = parseHlcMillis(event.eventId);
+  if (hlcMillis === null) return "Invalid eventId";
+  if (hlcMillis > Date.now() + HLC_MAX_FUTURE_DRIFT_MS) {
     return "Future eventId";
   }
   if (!isNonEmptyString(event.deviceId)) return "Missing deviceId";
@@ -838,9 +833,7 @@ function validateEnvelope(ownerId: string, event: SyncEnvelope): string | null {
   return null;
 }
 
-function parseHlc(
-  value: string,
-): { millis: number; counter: number; deviceId: string } | null {
+function parseHlcMillis(value: string): number | null {
   const match = CANONICAL_HLC.exec(value);
   if (!match) return null;
   const millis = Number.parseInt(match[1]!, 36);
@@ -848,7 +841,7 @@ function parseHlc(
   if (!Number.isSafeInteger(millis) || !Number.isSafeInteger(counter)) {
     return null;
   }
-  return { millis, counter, deviceId: match[3]! };
+  return millis;
 }
 
 function isNonEmptyString(value: unknown): value is string {

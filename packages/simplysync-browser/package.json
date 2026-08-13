@@ -2,6 +2,7 @@
   "name": "@simplysync/browser",
   "version": "0.0.1",
   "description": "Production browser persistence and encrypted storage adapters for SimplySync.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "repository": {
     "type": "git",

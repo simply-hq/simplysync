@@ -139,13 +139,13 @@ refetch wiring.
 ```sh
 bun install
 
-bun run test                       # turbo: all package tests
 bun run typecheck                  # turbo: all typechecks
-
-bun run protocol:demo              # raw envelope/HLC diagnostic
-bun run relay:go                   # canonical Go relay (needs Go 1.25+)
 bun run docs:dev                   # these docs + the browser Demo on :4200
-bun run --cwd tools/protocol-demo blob-demo       # encrypted image round-trip
+
+RELAY_URL=https://your-relay.workers.dev \
+  bun run --cwd tools/protocol-demo demo  # raw envelope/HLC diagnostic
+RELAY_URL=https://your-relay.workers.dev \
+  bun run --cwd tools/protocol-demo blob-demo  # encrypted image round-trip
 ```
 
 ---

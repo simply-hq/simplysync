@@ -26,7 +26,7 @@ export async function createTestIdentity(): Promise<TestIdentity> {
   return { identity, deviceId };
 }
 
-export interface MakeEnvelopeOptions {
+interface MakeEnvelopeOptions {
   readonly rowId?: string;
   readonly counter?: number;
   readonly table?: string;

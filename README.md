@@ -59,122 +59,64 @@ It is designed for one owner using several devices, not a shared team database.
 
 <!-- quickstart:react-native:start -->
 SimplySync is clone-only: the app owns the exact source it ships. This path
-needs Git, Bun, Go 1.25+, and either Xcode or Android Studio.
+needs Git, Bun, and either Xcode or Android Studio.
 
 ```sh
-# Only Expo/React Native, its source dependencies, and the local Go relay.
+# Clone only Expo/React Native and its source dependencies.
 curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
-  sh -s -- --with-relay react-native simplysync-mobile
+  sh -s -- react-native simplysync-mobile
 cd simplysync-mobile
 
-# Derive your app from the checked-in TodoList client; no template registry.
+# Derive your app from the checked-in TodoList client.
 sh scaffold-simplysync.sh react-native my-notes
 bun install --no-save
 bun run build
-```
 
-Start the included ciphertext-only relay in one terminal:
-
-```sh
-bun run relay:go
-```
-
-Build and launch the native development client in another terminal:
-
-```sh
 # iOS Simulator
-EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://127.0.0.1:4100 \
-  bun run --cwd apps/my-notes ios
+bun run --cwd apps/my-notes ios
 
 # Android Emulator (use this instead of the iOS command)
-EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://10.0.2.2:4100 \
-  bun run --cwd apps/my-notes android
+bun run --cwd apps/my-notes android
 ```
 
 If Expo reports that Metro port 8081 is already in use, rerun the same platform
 command with `--port 8082`.
 
-On the first device, save the recovery key and choose **I saved this key**.
-Launch the same development build on a second simulator or device, choose
-**Already have a key?**, and paste it. A todo added on either device then syncs
-through the relay. For a physical phone, replace the loopback URL with the
-development machine's reachable HTTPS or LAN address.
+The app now writes to its local SQLite database and keeps working offline. Save
+the recovery key and choose **I saved this key**.
 
 If you only want the canonical React Native example, skip the scaffold command
-and use `apps/todolist/expo` in the launch command. Omit `--with-relay` when you
-want an exact local-only client clone.
+and use `apps/todolist/expo` in the launch command.
 
-For a fast two-device proof without a native SDK:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
-  sh -s -- --with-relay cli simplysync-proof
-cd simplysync-proof
-bun install --no-save
-bun run todo:dev -- --once
-```
+When you are ready for device-to-device sync, [deploy the Cloudflare
+relay](https://simplysync.org/self-hosting). Paste the verified URL it
+prints into the app's **Relay URL** setting on each device, then restore the
+same recovery key on the second device. Changes will sync through the
+ciphertext-only relay.
 <!-- quickstart:react-native:end -->
 
-Use `web`, `cli`, `node`, `swift`, `kotlin`, `relay-go`,
-`relay-cloudflare`, or `core` in place of `react-native`. From a full checkout,
+Use `web`, `cli`, `node`, `swift`, `kotlin`, `relay-cloudflare`, or `core` in
+place of `react-native`. From a full checkout,
 run `bun run clone --list` to see every preset.
 
 ## Explore the complete repository
 
-In a complete repository checkout, you need [Bun](https://bun.sh/) and Go 1.25
-or newer.
+In a complete repository checkout, start with [Bun](https://bun.sh/):
 
 ```sh
 bun install
-bun run todo:dev
-```
-
-That starts a local relay, mints one owner, and shows two devices converge
-through it — then stays up so you can drive the same account from other
-terminals (`bun run todo list --device phone`). It's the canonical example app:
-one todo schema, implemented identically in TypeScript, Swift, Kotlin, and
-React Native.
-
-To check the three headless/native engine implementations really agree — one
-relay, one account, rows written on each platform and read back:
-
-```sh
-bun run todo:interop
-```
-
-Kotlin needs a JDK and Swift needs `swiftc`; a missing toolchain is reported as
-skipped, never as a pass.
-
-For the lower-level protocol diagnostic (raw envelopes, HLC, cursors):
-
-```sh
-bun run protocol:demo
-```
-
-It starts a relay, syncs two clients, shows their decrypted local state and an
-unreadable relay message, then shuts everything down.
-
-For a visual, two-device browser demo:
-
-```sh
-# Terminal 1
-bun run relay:go
-
-# Terminal 2
 bun run docs:dev
 ```
 
-Then open <http://localhost:4200> and choose **Demo**.
-
-For the React Native UI of that same todo app, keep the relay running and use
-`bun run todo:expo`.
+Open <http://localhost:4200> and choose **Demo**. Both browser devices work
+locally without a relay. Paste the URL from the [Cloudflare self-hosting
+guide](docs/local-first/self-hosting.md) when you want to test encrypted sync.
 
 ## Choose your next step
 
 | I want to… | Start here |
 | --- | --- |
 | Understand the idea and its limits | [What is SimplySync?](docs/local-first/README.md) |
-| Trace inputs through transformations to outputs | [SimplySync system pipelines](docs/simplysync-system/README.md) |
 | Point a coding agent at SimplySync | [SimplySync for coding agents](docs/local-first/agents.md) |
 | Add SimplySync to a TypeScript or React app | [Client API guide](docs/local-first/guide.md) |
 | See one app built for every platform | [TodoList](apps/todolist) |
@@ -220,14 +162,13 @@ core engine.
 Your schema, interface, React components, and relay configuration remain
 app-specific and can evolve independently.
 
-### Relays
+### Relay
 
-A relay is needed only for syncing between devices. Both implementations store
-encrypted data rather than readable app content.
+A relay is needed only for syncing between devices. The source-owned deployment
+stores encrypted data rather than readable app content.
 
 | Relay | Purpose |
 | --- | --- |
-| [Go relay](apps/relay-go) | Canonical self-hosted relay using Go and SQLite. |
 | [Cloudflare relay](apps/relay-cloudflare) | Serverless relay using Cloudflare Workers, D1, and R2. |
 
 ### Canonical example and tools
@@ -249,8 +190,8 @@ encryption key, or recovery phrase.
   required to sync them.
 - The relay stores a SHA-256 hash of its authentication token, not the token
   itself.
-- The Go and Cloudflare relays use the same protocol, so changing deployments
-  does not weaken encryption.
+- The Cloudflare relay implements the same ciphertext-only wire contract used
+  by every client.
 
 A relay can delay or delete encrypted updates, and it can see routing metadata.
 It cannot read valid payloads or silently alter them without clients rejecting

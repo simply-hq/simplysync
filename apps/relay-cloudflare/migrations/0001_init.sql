@@ -8,7 +8,6 @@ create table if not exists owners (
   owner_id        text primary key,
   relay_auth_hash text not null,
   stored_bytes    integer not null default 0,
-  event_count     integer not null default 0,
   created_at      text not null
 );
 

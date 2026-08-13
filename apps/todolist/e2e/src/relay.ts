@@ -5,5 +5,4 @@ export {
   launchRelay,
   isGoAvailable,
   cleanupGoBinary,
-  type LaunchedRelay,
 } from "../../../relay-conformance/test/conformance/launch-relay.ts";

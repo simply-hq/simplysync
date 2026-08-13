@@ -9,19 +9,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type RelayKind = "go";
-
 export interface LaunchedRelay {
-  readonly kind: RelayKind;
   readonly baseUrl: string;
-  readonly dataDir: string;
   /** Terminates the subprocess and removes its temp data dir. Idempotent. */
   kill(): Promise<void>;
 }
 
 const testDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(testDir, "../../../..");
-const goRelayRoot = resolve(repoRoot, "apps/relay-go");
+const goRelayRoot = resolve(testDir, "../../../relay-go");
 
 /** Whether `go` is on PATH. Cached — checked once per test run. */
 let goAvailableCache: boolean | null = null;
@@ -154,11 +149,10 @@ async function waitForHealth(
  * and waits for GET /health to return 200 before resolving.
  */
 export async function launchRelay(
-  kind: RelayKind,
   envOverrides: Record<string, string> = {},
 ): Promise<LaunchedRelay> {
   const port = await getFreePort();
-  const dataDir = mkdtempSync(join(tmpdir(), `simplysync-relay-${kind}-`));
+  const dataDir = mkdtempSync(join(tmpdir(), "simplysync-relay-go-"));
   const baseUrl = `http://localhost:${port}`;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
@@ -167,7 +161,6 @@ export async function launchRelay(
     ...envOverrides,
   };
 
-  let proc: import("bun").Subprocess;
   // Go's first build can take a little while; the boot poll timeout accounts
   // for that even though we pre-build the binary before spawning it.
   const bootTimeoutMs = 30_000;
@@ -176,7 +169,7 @@ export async function launchRelay(
     throw new Error("go is not on PATH — cannot launch the Go relay");
   }
   const bin = await goBinary();
-  proc = Bun.spawn([bin], {
+  const proc = Bun.spawn([bin], {
     cwd: goRelayRoot,
     env,
     stdout: "pipe",
@@ -199,9 +192,7 @@ export async function launchRelay(
 
   let killed = false;
   return {
-    kind,
     baseUrl,
-    dataDir,
     async kill(): Promise<void> {
       if (killed) return;
       killed = true;

@@ -14,7 +14,7 @@ import {
 } from "@simplysync/engine";
 import { createExpoSyncDeps } from "@simplysync/react-native";
 
-export const todoSchema = {
+const todoSchema = {
   todo: {
     id: id("todo"),
     title: NonEmptyString,

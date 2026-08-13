@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">SimplySync mark</title>
+  <desc id="desc">Two offset angular paths repeat the same sync rhythm.</desc>
+  <path d="M11.5 3.5L5.5 10L10.5 14.2L5.5 23.5M22.5 3.5L16.5 10L21.5 14.2L16.5 23.5" stroke="#2354c6" stroke-width="3.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

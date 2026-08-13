@@ -108,10 +108,9 @@ func (s *store) migrate() error {
 // --- Owner auth (trust-on-first-use) -----------------------------------------
 
 type authResult struct {
-	ok          bool
-	storedBytes int64
-	status      int
-	msg         string
+	ok     bool
+	status int
+	msg    string
 }
 
 // ensureOwnerAuth validates the bearer token against the owner's stored auth
@@ -119,7 +118,7 @@ type authResult struct {
 func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool) authResult {
 	hash := sha256B64([]byte(relayAuth))
 
-	storedHash, storedBytes, found, err := s.getOwner(ownerID)
+	storedHash, found, err := s.getOwner(ownerID)
 	if err != nil {
 		return authResult{status: 500, msg: "Internal error"}
 	}
@@ -130,7 +129,7 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 		}
 		s.writeMu.Lock()
 		// Re-check inside the lock to avoid a creation race.
-		storedHash, storedBytes, found, err = s.getOwner(ownerID)
+		storedHash, found, err = s.getOwner(ownerID)
 		if err != nil {
 			s.writeMu.Unlock()
 			return authResult{status: 500, msg: "Internal error"}
@@ -170,7 +169,7 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 				return authResult{status: 500, msg: "Internal error"}
 			}
 			s.writeMu.Unlock()
-			return authResult{ok: true, storedBytes: 0}
+			return authResult{ok: true}
 		}
 		s.writeMu.Unlock()
 	}
@@ -178,20 +177,20 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 	if storedHash != hash {
 		return authResult{status: 401, msg: "Invalid bearer token"}
 	}
-	return authResult{ok: true, storedBytes: storedBytes}
+	return authResult{ok: true}
 }
 
-func (s *store) getOwner(ownerID string) (hash string, storedBytes int64, found bool, err error) {
+func (s *store) getOwner(ownerID string) (hash string, found bool, err error) {
 	row := s.db.QueryRow(
-		`select relay_auth_hash, stored_bytes from owners where owner_id = ?`, ownerID)
-	err = row.Scan(&hash, &storedBytes)
+		`select relay_auth_hash from owners where owner_id = ?`, ownerID)
+	err = row.Scan(&hash)
 	if err == sql.ErrNoRows {
-		return "", 0, false, nil
+		return "", false, nil
 	}
 	if err != nil {
-		return "", 0, false, err
+		return "", false, err
 	}
-	return hash, storedBytes, true, nil
+	return hash, true, nil
 }
 
 func (s *store) ownerStoredBytes(ownerID string) (int64, error) {

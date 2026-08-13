@@ -152,7 +152,7 @@ export function closeDevice(engine: TodoEngine): void {
 }
 
 /** Live, non-deleted todos, newest edit first. Same SQL as Swift and Kotlin. */
-export const todosQuery = (engine: TodoEngine): Query<TodoRow> =>
+const todosQuery = (engine: TodoEngine): Query<TodoRow> =>
   engine.createQuery((db) =>
     db
       .selectFrom("todo")

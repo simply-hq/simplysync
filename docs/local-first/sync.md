@@ -166,8 +166,10 @@ workable on a phone.
 
 ## The relay wire protocol
 
-The relay exposes a tiny HTTP API. All responses are JSON with permissive CORS.
-Auth is a bearer token equal to `identity.relayAuth` (the owner's `writeKey`).
+The relay exposes a tiny HTTP API with permissive CORS. Control and event
+responses are JSON; blob downloads return encrypted binary bytes, and `HEAD`
+returns no body. Auth is a bearer token equal to `identity.relayAuth` (the
+owner's `writeKey`).
 
 ### `POST /v1/events` — push
 
@@ -184,8 +186,9 @@ Body: { "ownerId": string, "events": SyncEnvelope[] }
   Insert is `INSERT OR IGNORE` on `(owner_id, event_id)` → re-pushing is
   idempotent and counts as `duplicate`.
 - Limits: `> MAX_EVENTS_PER_PUSH` → `413`; an envelope over `MAX_EVENT_BYTES` →
-  `413`; exceeding `MAX_OWNER_BYTES` → `413`. The whole push is one SQLite
-  transaction; any limit error rolls it back.
+  `413`; exceeding `MAX_OWNER_BYTES` → `413`. The Cloudflare relay validates
+  the whole request before committing its D1 batch, so a limit error commits no
+  events and adds no usage charge.
 
 ### `GET /v1/events` — pull
 
@@ -260,98 +263,53 @@ checks only whether `nextCursor` differs from the previous string; it does not
 prove numeric forward progress. A custom relay that regresses or oscillates its
 cursor can cause replay or an indefinitely draining sync call.
 
-## Relay configuration
+## Cloudflare relay
 
-All limits are environment variables on the relay process. The defaults below are
-the ones that define the **per-owner storage ceiling** and what gets rejected at
-the edge:
+The public relay deployment lives in `apps/relay-cloudflare`. Your app only
+needs the HTTPS Worker URL printed by the [self-hosting setup](./self-hosting.md).
+The same URL works in browsers, simulators, emulators, and physical devices.
+
+Cloudflare stores event metadata and encrypted envelopes in D1. Encrypted,
+content-addressed blob chunks live in R2. Table names, row values, MIME types,
+and image contents remain inside ciphertext.
+
+### Limits
+
+The defaults in `apps/relay-cloudflare/wrangler.toml` bound storage and reject
+oversized requests before they become expensive:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `4100` | Listen port. |
-| `RELAY_DATA_DIR` | `data` | Where `relay.db` lives. Back this dir up to back up all owners. |
-| `MAX_OWNER_BYTES` | `1073741824` (1 GiB) | **Per-owner storage quota**, shared across the event log *and* blob chunks. Exceeding it → `413`. |
-| `MAX_EVENT_BYTES` | `262144` (256 KiB) | Max size of one envelope. Over → `413`. |
-| `MAX_BLOB_BYTES` | `8388608` (8 MiB) | Max size of one uploaded blob chunk. Over → `413`. |
-| `MAX_EVENTS_PER_PUSH` | `1000` | Max envelopes per push request. Over → `413`. |
-| `MAX_EVENTS_PER_PULL` | `5000` | Hard cap on pull page size. |
-| `DEFAULT_EVENTS_PER_PULL` | `1000` | Pull page size when the client omits `limit`. |
-| `COMPACTION_INTERVAL_MS` | `21600000` (6h) | How often the Go relay compacts the log (see below). |
+| `MAX_OWNER_BYTES` | `1073741824` (1 GiB) | Per-owner quota shared by events and blob chunks. |
+| `MAX_EVENT_BYTES` | `262144` (256 KiB) | Maximum encrypted envelope size. |
+| `MAX_BLOB_BYTES` | `8388608` (8 MiB) | Maximum encrypted blob-chunk size. |
+| `MAX_EVENTS_PER_PUSH` | `1000` | Maximum envelopes in one push. |
+| `MAX_EVENTS_PER_PULL` | `5000` | Hard cap for one pull page. |
+| `DEFAULT_EVENTS_PER_PULL` | `1000` | Pull size when the client omits `limit`. |
+| `MAX_OWNERS` | `100000` | Fleet-wide owner cap. |
+| `RELAY_DISABLED` | `false` | Emergency switch that rejects writes when enabled. |
 
-**Reaching the quota.** When an owner crosses `MAX_OWNER_BYTES`, the relay returns
-`413` on the next push or blob upload, and the engine surfaces a *terminal*
-`SyncStateIsNotSynced` (status `413`) and backs the poller off. To recover, in
-order of preference:
+At the per-owner quota, the relay returns `413` and the engine reports a
+terminal `SyncStateIsNotSynced`. Use `engine.getRelayStatuses()` to warn before
+that point. Scheduled compaction reclaims superseded events every six hours;
+you can also raise `MAX_OWNER_BYTES` in your deployment.
 
-1. **Run compaction** — it reclaims the dominant growth (the append-only log) and
-   decrements `stored_bytes`, so a stuck owner can drop back under the cap without
-   losing any current data. See [log compaction](#log-compaction).
-2. **Raise `MAX_OWNER_BYTES`** on your own relay — you self-host, so the only hard
-   ceiling is disk.
-3. **Watch usage before it's a problem** — `engine.getRelayStatuses()` (or a
-   direct `GET /v1/status`) reports `usedBytes` vs `quotaBytes` per relay, so
-   the app can warn the user or trigger compaction *before* writes start
-   failing.
+### Compaction
 
-Because chunks are stored as raw binary (not base64), 1 GiB of quota holds ≈1 GiB
-of real data. Blob-*chunk* GC is not automated, so heavy media use can leave
-orphaned chunks — see the note under [log compaction](#log-compaction).
+For each `(owner_id, stream_id)`, compaction keeps the event with the maximum
+`event_id` and removes older versions. This is safe because `eventId === hlc`,
+so the survivor is the same row state a fresh client would choose by LWW.
+Cloudflare runs the pass from a Cron-triggered Worker and updates the owner's
+stored-byte count afterward.
 
-## Storage model
+Blob-chunk garbage collection is separate and is not automated. A superseded
+manifest may leave orphaned encrypted chunks because only the client knows
+which chunks the manifest references.
 
-SQLite (`data/relay.db`, WAL mode):
-
-```sql
-owners(owner_id PK, relay_auth_hash, stored_bytes, created_at)
-events(owner_id, event_id, device_id, envelope_json, stored_bytes, created_at,
-       stream_id, seq, PRIMARY KEY (owner_id, event_id))
-blobs(owner_id, hash, bytes BLOB, size, created_at, PRIMARY KEY (owner_id, hash))
-relay_meta(key PK, value)  -- monotonic event_seq + global owner_count
-```
-
-The relay stores `envelope_json` verbatim (ciphertext + header) and blob chunks
-as raw encrypted `BLOB`s keyed by content hash. `stored_bytes` accumulates both
-per owner for one shared quota. Nothing in the schema reveals application
-semantics — table names, row values, mime types, and image contents are all
-inside the ciphertext.
-
-## Log compaction
-
-The event log is append-only, so a row edited *N* times leaves *N* events though
-only the last matters. Compaction reclaims that space, and it's only safe because
-of one property: **`eventId === hlc`**, a fixed-width lexicographically-sortable
-string, so the relay's `event_id` ordering is exactly the client's `compareHlc`
-(LWW) ordering.
-
-The rule: for each `(owner_id, stream_id)`, keep the row with the **maximum
-`event_id`** and delete the rest. The survivor is precisely what a client's apply
-loop would converge to, so a device pulling only survivors reconstructs identical
-state regardless of where its cursor sits.
-
-`stream_id` comes from the envelope header:
-`base64url(HMAC-SHA256(streamKey, table + " " + rowId)).slice(0, 22)`. The
-literal single ASCII space and 22-character output are part of the wire
-contract. The relay groups by it but can't reverse it to a table/row. The Go
-relay runs compaction on a timer (`COMPACTION_INTERVAL_MS`,
-default 6h) or on demand; the Cloudflare relay runs it from a Cron-triggered
-Worker. After compaction, per-owner `stored_bytes` is decremented so the quota
-reflects *current* footprint, not lifetime writes.
-
-> Blob *chunk* GC is separate and not yet automated: a superseded manifest may
-> leave orphaned chunks, since only the client knows which chunks a manifest
-> references. Compaction reclaims event-log space, which is the dominant growth.
-
-## Serverless deployment (Cloudflare)
-
-`apps/relay-cloudflare` is a wire-compatible deployment that swaps the substrate
-without touching the protocol: **events + owner metadata → D1**, **blob chunks →
-R2** (cheap storage, free egress, safe to serve from cache because chunks are
-encrypted and content-addressed). Because Workers/D1/R2 bill per use with no hard
-spend cap, it's hardened against **wallet-DDoS** with a cheapest-first defense
-stack: Cloudflare managed DDoS → zone WAF rate-limit → in-Worker rate-limit
-bindings → cheap-path rejection → hard quotas (`MAX_OWNER_BYTES`, a global
-`MAX_OWNERS` counter) and a `RELAY_DISABLED` kill switch. Full config is in
-[`apps/relay-cloudflare/README.md`](../../apps/relay-cloudflare/README.md).
+Workers, D1, and R2 bill per use. The deployment therefore combines Cloudflare
+DDoS protection, rate-limit bindings, cheap-path rejection, hard quotas, the
+global owner cap, and the write kill switch. Full configuration lives in the
+[`relay-cloudflare` README](../../apps/relay-cloudflare/README.md).
 
 ## Threat model
 

@@ -19,9 +19,10 @@ From this directory you can also run `bun run build`, `bun run serve`, or
 `build.ts` reads each page in `docs/local-first/`, renders it with `marked`
 (GFM), adds heading anchors + an on-this-page table of contents, rewrites links
 (inter-doc links → `.html`, cross-repo links → GitHub blob URLs), and wraps the
-result in a dark theme (`styles.css`). It also bundles the interactive **Demo**
-SPA (source in `../todolist/web/`) into `demo.{js,html,css}` with Bun's bundler.
-Output lands in `dist/` as plain static files plus a `404.html`.
+result in the shared light/dark theme (`styles.css`). The builder also emits the
+finite product landing page, the two-product Showcase, and the interactive
+**Demo** SPA (source in `../todolist/web/`) with Bun's bundler. Output lands in
+`dist/` as plain static files plus a `404.html`.
 
 ## Adding a page
 

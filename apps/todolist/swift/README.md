@@ -128,8 +128,8 @@ verify/                host-side checks (run with swiftc, no simulator needed)
    ```
 2. In the app: **Generate a new identity** (or paste an `sf1_` key / 24-word
    phrase). Add todos immediately; the first launch is local-only.
-3. To sync, run `bun run relay:go` from the repository root and enter
-   `http://localhost:4100` in the app's relay field.
+3. To sync, deploy the [Cloudflare relay](../../../docs/local-first/self-hosting.md)
+   and enter its HTTPS URL in the app's relay field.
 
 `SyncEngineConfig.schemaVersion` defaults to `1`. Keep it there for additive
 tables/columns; bump it only for an incompatible payload-meaning change. Older
@@ -159,14 +159,14 @@ swiftc ../../../Sources/SimplySync/Kit/*.swift verify/main.swift -o /tmp/ssverif
 
 # 2) live end-to-end against a running relay (push -> pull -> decrypt)
 swiftc ../../../Sources/SimplySync/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
-/tmp/ssintegration http://localhost:4100
+/tmp/ssintegration https://your-relay.workers.dev
 
 # 3) the engine: schema -> DDL, mutations, typed reactive queries, soft deletes,
 #    and (with a relay URL) a live two-device push/pull/apply round-trip
 swiftc ../../../Sources/SimplySync/Kit/*.swift ../../../Sources/SimplySync/Engine/*.swift \
   SimplySyncDemo/AppSchema.swift verify/engine/main.swift -o /tmp/ssengine
 /tmp/ssengine                       # local engine tests
-/tmp/ssengine http://localhost:4100 # + live two-device interop
+/tmp/ssengine https://your-relay.workers.dev # + live two-device interop
 ```
 
 Regenerate the Xcode project after adding/removing Swift files:

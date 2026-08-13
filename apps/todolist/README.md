@@ -16,27 +16,19 @@ same relay and wire protocol.
 The low-level envelope diagnostic is deliberately outside the app tree at
 [`tools/protocol-demo`](../../tools/protocol-demo).
 
-## Run the app
+## Run the browser demo
 
-One command, from a fresh clone — starts the relay, mints an owner, and proves
-two devices converge through it:
+From a fresh clone:
 
 ```sh
 bun install
-bun run todo:dev
+bun run docs:dev
 ```
 
-It stays up afterwards so you can drive the same account from other terminals:
-
-```sh
-bun run todo list --device phone
-bun run todo add "From a third device" --device tablet
-bun run todo toggle <id> --device laptop
-```
-
-Every `--device` name is a separate local database and outbox. The development
-runner writes one ignored owner file so other TodoList clients can join that
-same account.
+Open <http://localhost:4200/demo.html>. Alice and Bob are separate local
+databases and work without a network. To sync them, paste the URL from the
+[Cloudflare self-hosting guide](../../docs/local-first/self-hosting.md) into the
+demo's **Relay URL** field.
 
 The schema is declared identically in:
 
@@ -46,38 +38,16 @@ The schema is declared identically in:
 - [`swift/SimplySyncDemo/AppSchema.swift`](./swift/SimplySyncDemo/AppSchema.swift)
 - [`kotlin/src/test/kotlin/com/simplysync/kotlin/EngineTest.kt`](./kotlin/src/test/kotlin/com/simplysync/kotlin/EngineTest.kt)
 
-To check the three compiler-friendly implementations actually agree — one
-relay, one owner, rows written by TypeScript, Swift, and Kotlin and read back:
+Run the Expo client:
 
 ```sh
-bun run todo:interop
+bun run --cwd apps/todolist/expo ios
+# or: bun run --cwd apps/todolist/expo android
 ```
 
-It runs TypeScript always, Kotlin when a JDK is present, and Swift when `swiftc`
-is available. A missing toolchain is reported as **SKIPPED**, never as a pass.
-A compiler or test failure exits non-zero.
-
-Run the full scenario matrix against the local web, Swift, and Kotlin clients:
-
-```sh
-bun run todo:e2e
-```
-
-Run the browser face:
-
-```sh
-bun run relay:go
-bun run docs:dev
-```
-
-Then open <http://localhost:4200/demo.html>.
-
-Run the Expo face:
-
-```sh
-bun run relay:go
-bun run todo:expo
-```
+The [Expo](./expo), [Swift](./swift), and [Kotlin](./kotlin) READMEs cover their
+platform-specific build commands. Use the same Cloudflare relay URL and recovery
+key when you want the clients to converge as one owner.
 
 ## Development security
 

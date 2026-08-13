@@ -2,6 +2,7 @@
   "name": "@simplysync/react-native",
   "version": "0.0.1",
   "description": "React Native bindings and Expo persistence adapters for SimplySync.",
+  "homepage": "https://simplysync.org/",
   "license": "MIT",
   "repository": {
     "type": "git",

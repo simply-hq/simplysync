@@ -237,9 +237,9 @@ struct TodoView: View {
             case .initial: return ("idle", .gray)
             case .syncing: return ("syncing", .orange)
             case .synced: return ("synced", .green)
-            case .notSynced(let error, _, let status):
+            case .notSynced(_, _, let status):
                 if let status { return ("HTTP \(status)", .red) }
-                return (error?.isEmpty == false ? "offline" : "offline", .red)
+                return ("offline", .red)
             }
         }()
         return Text(label)

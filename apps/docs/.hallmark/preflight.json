@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "scannedAt": "2026-08-08",
+  "projectRoot": "apps/docs",
+  "sources": {
+    "package.json": 1785081892,
+    "tokens.css": 1785962732,
+    "styles.css": 1785962732,
+    "../todolist/web/styles.css": 1785962732
+  },
+  "findings": {
+    "fontStack": "Native system UI plus native system monospace",
+    "palette": "Light and dark CSS custom-property themes",
+    "motion": "Motion-cut; no animation library",
+    "spacing": "Named 4-point scale",
+    "framework": "Bun-built static HTML from Marked, with a bundled React demo"
+  },
+  "preserve": [
+    "system font requirement",
+    "dual theme",
+    "static Bun and Marked stack",
+    "canonical Markdown content",
+    "working TodoList demo behavior"
+  ],
+  "replace": [
+    "visual identity",
+    "macrostructure",
+    "logo",
+    "component voice",
+    "color system"
+  ]
+}

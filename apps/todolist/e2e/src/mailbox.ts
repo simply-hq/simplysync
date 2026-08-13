@@ -4,7 +4,7 @@ import { join } from "node:path";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pad = (n: number) => String(n).padStart(6, "0");
 
-export class RunnerError extends Error {
+class RunnerError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RunnerError";

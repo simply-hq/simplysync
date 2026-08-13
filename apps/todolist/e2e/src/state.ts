@@ -6,7 +6,7 @@
 // not accidentally become part of the wire contract.
 
 export type Row = Record<string, unknown>;
-export type TableState = Row[];
+type TableState = Row[];
 export type DeviceState = Record<string, TableState>;
 
 export interface Diff {

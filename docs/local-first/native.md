@@ -112,10 +112,10 @@ for env in pulled.events {
 Above `Kit/`, `Sources/SimplySync/Engine/` ports `@simplysync/engine`: a typed schema, a real SQLite
 store, typed mutations, and reactive `LiveQuery` results — so the example above is
 the *low-level* path, and most app code uses the engine instead (see the
-[Client API → Swift](./guide.swift.md) guide). Run the demo from Xcode against a
-local relay (`bun run relay:go`), then **⋯ → Show recovery key** and paste the
-same key into a second simulator, the TodoList web client, or the Expo app to watch them
-converge. Full run/verify steps are in the
+[Client API → Swift](./guide.swift.md) guide). Run the demo from Xcode against
+your deployed Cloudflare relay, then **⋯ → Show recovery key** and paste the same
+key into a second simulator, the TodoList web client, or the Expo app to watch
+them converge. Full run/verify steps are in the
 [Swift README](../../apps/todolist/swift/README.md).
 
 **Not ported (by design):** binary blobs, the encrypted DB export/import (snapshot)
@@ -244,7 +244,7 @@ cd apps/todolist/swift
 swiftc ../../../Sources/SimplySync/Kit/*.swift verify/main.swift -o /tmp/ssverify && /tmp/ssverify
 # 2) live end-to-end against a running relay (push → pull → decrypt)
 swiftc ../../../Sources/SimplySync/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
-/tmp/ssintegration http://localhost:4100
+/tmp/ssintegration https://your-relay.workers.dev
 ```
 
 **Kotlin** — the JUnit suite covers the canonical BIP39 zero-entropy vector, the

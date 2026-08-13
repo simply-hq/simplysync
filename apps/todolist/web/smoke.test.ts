@@ -12,6 +12,7 @@ import {
   type SnapshotStore,
 } from "@simplysync/browser";
 import { schema, type TodoSchema } from "./schema";
+import { createTodoListQuery } from "./todo-query";
 
 const WASM_PATH = Bun.resolveSync("sql.js/dist/sql-wasm.wasm", import.meta.dir);
 
@@ -52,15 +53,6 @@ function makeEngine(
     reloadApp: () => undefined,
   })(schema, { name: "todolist-web-smoke" });
 }
-
-const todosQuery = (engine: SyncEngine<TodoSchema>) =>
-  engine.createQuery((db) =>
-    db
-      .selectFrom("todo")
-      .select(["id", "title", "done"])
-      .where("isDeleted", "=", 0)
-      .orderBy("updatedAt", "desc"),
-  );
 
 function readOutbox(): string[] {
   const db = getActiveDb();
@@ -107,7 +99,7 @@ test("insert is reactive, encrypted, and persists across a reload", async () => 
   expect(result.ok).toBe(true);
 
   // Reactive read reflects the write.
-  const rows = engine.getQueryRows(todosQuery(engine));
+  const rows = engine.getQueryRows(createTodoListQuery(engine));
   expect(rows).toHaveLength(1);
   expect(rows[0]?.title).toBe("Buy milk");
   expect(rows[0]?.done).toBe(0);
@@ -135,7 +127,7 @@ test("insert is reactive, encrypted, and persists across a reload", async () => 
 
   const reloaded = makeEngine(store, secureStorage);
   await reloaded.ready;
-  const afterReload = reloaded.getQueryRows(todosQuery(reloaded));
+  const afterReload = reloaded.getQueryRows(createTodoListQuery(reloaded));
   expect(afterReload).toHaveLength(1);
   expect(afterReload[0]?.title).toBe("Buy milk");
   expect(afterReload[0]?.done).toBe(0);

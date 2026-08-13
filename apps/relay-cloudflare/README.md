@@ -1,10 +1,9 @@
 # Cloudflare relay (`@sbt/relay-cloudflare`)
 
 A serverless deployment of the local-first sync relay on **Cloudflare Workers +
-D1 + R2**. It is wire-compatible with the canonical Go relay
-(`apps/relay-go`): same endpoints, same request/response shapes, same
-end-to-end-encrypted threat model. Point the app's relay URL at your Worker and
-nothing else changes.
+D1 + R2**. It implements SimplySync's ciphertext-only endpoints and
+request/response shapes. Point the app's relay URL at your Worker and nothing
+else changes.
 
 ## Ask an AI agent (recommended)
 
@@ -27,7 +26,7 @@ also limits new owners, requests, writes, and stored bytes.
 
 | Concern | Where it lives | Why |
 | --- | --- | --- |
-| Owner metadata + event log | **D1** | Small rows, keyset-paginated, indexed. Stays well under D1's size ceiling. |
+| Owner metadata + event log | **D1** | Small metadata and encrypted event rows, keyset-paginated and indexed. |
 | Encrypted blob chunks | **R2** | Large binary; cheap storage and **free egress**. D1 is the wrong store for 8 MiB chunks. |
 | Per-IP / per-owner limits | **Rate-limit bindings** | In-colo, in-memory, effectively free. |
 

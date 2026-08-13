@@ -1,121 +1,133 @@
-/* Hallmark · genre: modern-minimal · macrostructure: Long Document · design-system: design.md · designed-as-app
- * Portable token layer for the SimplySync docs + demo. Light is the default
- * (:root); [data-theme="dark"] flips it. The no-flash script in each page's
- * <head> sets data-theme before first paint. Every colour/font/space value the
- * site uses is named here — page CSS references tokens, never raw values.
- */
-
 :root {
   color-scheme: light;
 
-  /* Surfaces — warm near-white */
-  --color-paper:    oklch(98.6% 0.006 75);
-  --color-paper-2:  oklch(96.3% 0.008 74);
-  --color-paper-3:  oklch(93.4% 0.011 72);
+  /* Page Zero: quiet paper, blue-black type, one deliberate cobalt. */
+  --color-paper: #f7f8f6;
+  --color-paper-2: #f0f2f1;
+  --color-paper-3: #e7eae9;
+  --color-ink: #182231;
+  --color-ink-2: #465363;
+  --color-ink-3: #667385;
+  --color-rule: #d8dde1;
+  --color-rule-2: #aeb8c2;
 
-  /* Ink — warm near-black */
-  --color-ink:      oklch(24% 0.014 58);
-  --color-ink-2:    oklch(43% 0.012 58);
-  --color-ink-3:    oklch(56% 0.010 58);
+  --color-accent: #2354c6;
+  --color-accent-2: #1745ad;
+  --color-accent-soft: #e5ebfb;
+  --color-accent-ink: #fafcff;
+  --color-focus: #4c70b5;
+  --color-scrim: #101722;
 
-  /* Rules */
-  --color-rule:     oklch(89.5% 0.012 70);
-  --color-rule-2:   oklch(83% 0.015 68);
+  --color-pos: #167252;
+  --color-pos-soft: #dfefe8;
+  --color-neg: #b53b34;
+  --color-neg-soft: #f6e4e1;
+  --color-warn: #835b16;
+  --color-warn-soft: #f3ead6;
+  --color-info: #2354c6;
 
-  /* Accent — rust/amber, the single chromatic note (<5% per viewport) */
-  --color-accent:      oklch(52% 0.158 48);
-  --color-accent-2:    oklch(45% 0.150 45);   /* hover / link-pressed */
-  --color-accent-soft: oklch(52% 0.158 48 / 0.12);
-  --color-accent-ink:  oklch(99% 0.004 75);   /* text on an accent fill */
-  --color-focus:       oklch(52% 0.158 48);
-  --color-scrim:       oklch(0% 0 0 / 0.5);    /* mobile nav backdrop */
+  /* Backwards-compatible surface aliases used by the bundled demo. */
+  --color-hero: var(--color-paper);
+  --color-hero-2: var(--color-paper-2);
+  --color-hero-ink: var(--color-ink);
+  --color-hero-muted: var(--color-ink-2);
+  --color-hero-rule: var(--color-rule);
+  --color-hero-accent: var(--color-accent);
 
-  /* Code — dark panel even in light mode (classic docs contrast) */
-  --code-bg:          oklch(22.5% 0.018 58);
-  --code-ink:         oklch(90% 0.012 75);
-  --code-rule:        oklch(33% 0.016 56);
-  --code-inline-bg:   oklch(95% 0.013 68);
-  --code-inline-ink:  oklch(42% 0.130 44);
+  --code-bg: #111925;
+  --code-ink: #edf1f7;
+  --code-rule: #344152;
+  --code-inline-bg: #e9edf2;
+  --code-inline-ink: #173f99;
 
-  /* Status (demo) */
-  --color-pos:    oklch(52% 0.130 155);
-  --color-neg:    oklch(54% 0.180 25);
-  --color-info:   oklch(52% 0.158 48);
+  /* The product brief explicitly calls for the native system face. */
+  --font-display: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-body: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas,
+               "Liberation Mono", monospace;
 
-  /* Type */
-  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
-  --font-body:    "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system,
-                  "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono:    "IBM Plex Mono", ui-monospace, "SF Mono", "JetBrains Mono",
-                  Menlo, Consolas, monospace;
+  --text-micro: 0.75rem;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.75rem;
+  --text-2xl: 2.25rem;
+  --text-display: clamp(2.55rem, 1.8rem + 3.1vw, 4.75rem);
+  --text-hero: clamp(2.55rem, 1.8rem + 3.1vw, 4.75rem);
 
-  --text-xs:    0.75rem;
-  --text-sm:    0.8125rem;
-  --text-base:  1.0625rem;
-  --text-md:    1.1875rem;
-  --text-lg:    1.375rem;
-  --text-xl:    1.75rem;
-  --text-2xl:   2.1rem;
-  --text-display: clamp(2.4rem, 1.7rem + 2.7vw, 3.35rem);
-
-  /* Space — 4pt scale */
   --space-3xs: 0.25rem;
   --space-2xs: 0.5rem;
-  --space-xs:  0.75rem;
-  --space-sm:  1rem;
-  --space-md:  1.5rem;
-  --space-lg:  2rem;
-  --space-xl:  3rem;
+  --space-xs: 0.75rem;
+  --space-sm: 1rem;
+  --space-md: 1.5rem;
+  --space-lg: 2rem;
+  --space-xl: 3rem;
   --space-2xl: 4.5rem;
   --space-3xl: 7rem;
 
-  /* Motion */
-  --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-fast: 120ms;
-  --dur:      200ms;
+  --dur-micro: 120ms;
+  --dur-short: 200ms;
+  --dur-long: 300ms;
 
-  /* Shape */
-  --radius-sm:   6px;
-  --radius:      10px;
-  --radius-lg:   14px;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
   --radius-pill: 999px;
 
-  /* Layout */
-  --sidebar-w:   252px;
-  --toc-w:       220px;
-  --content-max: 744px;
-  --shell-max:   1340px;
-  --topbar-h:    60px;
+  --shadow-sticky: 0 1px 0 color-mix(in srgb, var(--color-ink) 8%, transparent);
+  --shadow-drawer: 14px 0 38px color-mix(in srgb, var(--color-scrim) 20%, transparent);
+  --shadow-code: none;
+
+  --sidebar-w: 13.5rem;
+  --toc-w: 14rem;
+  --content-max: 46rem;
+  --shell-max: 80rem;
+  --topbar-h: 3.75rem;
+  --control-h: 2.75rem;
+
+  --z-base: 1;
+  --z-raised: 10;
+  --z-sticky: 200;
+  --z-modal: 400;
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
 
-  --color-paper:    oklch(17.5% 0.012 58);
-  --color-paper-2:  oklch(21.5% 0.013 56);
-  --color-paper-3:  oklch(26.5% 0.014 55);
+  --color-paper: #111720;
+  --color-paper-2: #171f2a;
+  --color-paper-3: #202a37;
+  --color-ink: #f1f3f6;
+  --color-ink-2: #c1c8d1;
+  --color-ink-3: #929dab;
+  --color-rule: #2d3948;
+  --color-rule-2: #566477;
 
-  --color-ink:      oklch(92% 0.013 75);
-  --color-ink-2:    oklch(73% 0.012 66);
-  --color-ink-3:    oklch(60% 0.011 60);
+  --color-accent: #89a9ff;
+  --color-accent-2: #a9bdff;
+  --color-accent-soft: #1d2b50;
+  --color-accent-ink: #111720;
+  --color-focus: #4c70b5;
 
-  --color-rule:     oklch(31% 0.013 56);
-  --color-rule-2:   oklch(38% 0.014 56);
+  --color-pos: #67c89f;
+  --color-pos-soft: #18372e;
+  --color-neg: #f08a82;
+  --color-neg-soft: #3b2425;
+  --color-warn: #e5bc6d;
+  --color-warn-soft: #392f20;
+  --color-info: #89a9ff;
 
-  --color-accent:      oklch(80% 0.130 68);
-  --color-accent-2:    oklch(86% 0.115 70);
-  --color-accent-soft: oklch(80% 0.130 68 / 0.15);
-  --color-accent-ink:  oklch(20% 0.020 58);
-  --color-focus:       oklch(80% 0.130 68);
+  --code-bg: #0b1119;
+  --code-ink: #edf1f7;
+  --code-rule: #344152;
+  --code-inline-bg: #202b39;
+  --code-inline-ink: #b6c8ff;
 
-  --code-bg:          oklch(13.5% 0.011 58);
-  --code-ink:         oklch(88% 0.013 75);
-  --code-rule:        oklch(28% 0.013 55);
-  --code-inline-bg:   oklch(26% 0.014 56);
-  --code-inline-ink:  oklch(85% 0.100 70);
-
-  --color-pos:    oklch(78% 0.150 158);
-  --color-neg:    oklch(74% 0.150 28);
-  --color-info:   oklch(80% 0.130 68);
+  --shadow-sticky: 0 1px 0 color-mix(in srgb, var(--color-rule) 86%, transparent);
+  --shadow-drawer: 14px 0 38px rgb(0 0 0 / 38%);
 }

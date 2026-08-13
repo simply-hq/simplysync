@@ -9,9 +9,11 @@ on the device before uploading it, and the relay never receives the owner's
 decryption key. Each owner is also protected by a private write capability
 derived from the recovery key.
 
-SimplySync does not operate a hosted relay service. The source in this
-repository is the product boundary: the agent or command below deploys that
-source into your Cloudflare account.
+The source in this repository remains the product boundary for self-hosting:
+the agent or command below deploys it into your Cloudflare account. Optional
+managed hosting is provided separately by
+[SimplySync Cloud](https://cloud.simplysync.org/), whose site shows current
+plans and checkout availability.
 
 ## Easiest setup: ask an AI agent
 
@@ -88,34 +90,6 @@ requirements.
 
 For implementation details and advanced controls, see the
 [`relay-cloudflare` README](../../apps/relay-cloudflare/README.md).
-
-## Advanced: host the Go relay on your own machine
-
-This route is for people who already manage a VPS, NAS, or server. It is not
-required for ordinary self-hosting.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
-  sh -s -- relay-go simplysync-relay
-cd simplysync-relay
-docker compose -f apps/relay-go/docker-compose.yml up -d --build
-curl http://127.0.0.1:4100/health
-```
-
-The Compose project builds the Go relay and runs it with persistent Docker
-storage. The health request should report `ok: true`. Before adding it to a
-phone, expose it at a normal public `https://` address with a reverse proxy such
-as Caddy:
-
-```caddyfile
-relay.example.com {
-    reverse_proxy 127.0.0.1:4100
-}
-```
-
-Then paste `https://relay.example.com` into the app's **Relay URL** field. See the
-[`relay-go` deployment guide](../../apps/relay-go/deploy/DEPLOY.md) for backups,
-systemd, and production operations.
 
 ## Moving existing data to your relay
 

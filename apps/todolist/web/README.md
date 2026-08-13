@@ -13,6 +13,11 @@ bun run --cwd apps/todolist/web dev
 Open <http://localhost:4200>. Enter a relay URL in the app only when you want
 the two browser devices to sync beyond local IndexedDB.
 
+This proof keeps relay transports detached between the explicit **Sync Alice**
+and **Sync Bob** actions so each hop is observable. SimplySync clients normally
+sync automatically and opportunistically; the manual sequence is specific to
+the teaching demo.
+
 The documentation site also bundles this directory as its interactive demo at
 <http://localhost:4200/demo.html> when you run `bun run docs:dev`.
 

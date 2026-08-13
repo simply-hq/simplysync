@@ -1,4 +1,4 @@
-export type PlatformRef = "swift" | "kotlin" | "web" | "$P1" | "$P2";
+type PlatformRef = "swift" | "kotlin" | "web" | "$P1" | "$P2";
 
 export interface Scenario {
   name: string;

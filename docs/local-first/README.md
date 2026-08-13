@@ -39,68 +39,48 @@ and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
 
 <!-- quickstart:react-native:start -->
 SimplySync is clone-only: the app owns the exact source it ships. This path
-needs Git, Bun, Go 1.25+, and either Xcode or Android Studio.
+needs Git, Bun, and either Xcode or Android Studio.
 
 ```sh
-# Only Expo/React Native, its source dependencies, and the local Go relay.
+# Clone only Expo/React Native and its source dependencies.
 curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
-  sh -s -- --with-relay react-native simplysync-mobile
+  sh -s -- react-native simplysync-mobile
 cd simplysync-mobile
 
-# Derive your app from the checked-in TodoList client; no template registry.
+# Derive your app from the checked-in TodoList client.
 sh scaffold-simplysync.sh react-native my-notes
 bun install --no-save
 bun run build
-```
 
-Start the included ciphertext-only relay in one terminal:
-
-```sh
-bun run relay:go
-```
-
-Build and launch the native development client in another terminal:
-
-```sh
 # iOS Simulator
-EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://127.0.0.1:4100 \
-  bun run --cwd apps/my-notes ios
+bun run --cwd apps/my-notes ios
 
 # Android Emulator (use this instead of the iOS command)
-EXPO_PUBLIC_SIMPLYSYNC_RELAY_URL=http://10.0.2.2:4100 \
-  bun run --cwd apps/my-notes android
+bun run --cwd apps/my-notes android
 ```
 
 If Expo reports that Metro port 8081 is already in use, rerun the same platform
 command with `--port 8082`.
 
-On the first device, save the recovery key and choose **I saved this key**.
-Launch the same development build on a second simulator or device, choose
-**Already have a key?**, and paste it. A todo added on either device then syncs
-through the relay. For a physical phone, replace the loopback URL with the
-development machine's reachable HTTPS or LAN address.
+The app now writes to its local SQLite database and keeps working offline. Save
+the recovery key and choose **I saved this key**.
 
 If you only want the canonical React Native example, skip the scaffold command
-and use `apps/todolist/expo` in the launch command. Omit `--with-relay` when you
-want an exact local-only client clone.
+and use `apps/todolist/expo` in the launch command.
 
-For a fast two-device proof without a native SDK:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/simply-hq/simplysync/main/clone-simplysync.sh |
-  sh -s -- --with-relay cli simplysync-proof
-cd simplysync-proof
-bun install --no-save
-bun run todo:dev -- --once
-```
+When you are ready for device-to-device sync, [deploy the Cloudflare
+relay](https://simplysync.org/self-hosting). Paste the verified URL it
+prints into the app's **Relay URL** setting on each device, then restore the
+same recovery key on the second device. Changes will sync through the
+ciphertext-only relay.
 <!-- quickstart:react-native:end -->
 
 ## Why use this
 
 - **Local-first & fast** — writes hit local SQLite; the network is never on the critical path.
 - **End-to-end encrypted** — AES-256-GCM on-device; the relay only ever holds ciphertext + routing metadata.
-- **No lock-in** — choose the small Go + SQLite relay or the wire-compatible
-  Cloudflare Workers + D1/R2 deployment.
+- **No lock-in** — deploy the Cloudflare Workers + D1/R2 relay in your own
+  account and keep the source.
 - **No accounts to phish** — identity derives from one secret (a recovery key or a BIP39 phrase).
 - **A real database** — typed schema, [Kysely](https://kysely.dev) queries (joins, filters, ordering), and a reactive `useQuery` for React.
 - **Scales past memory** — keyset-paginated, resumable sync; images sync as tiny manifests with lazily fetched encrypted chunks.
@@ -116,12 +96,11 @@ bun run todo:dev -- --once
 ## Read next
 
 1. **[Client API](./guide.md)** — schema, mutations, reactive queries, React hooks, identity & relays.
-2. **[Inputs → transformations → outputs](../simplysync-system/README.md)** — four views of the complete SimplySync pipeline.
-3. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
-4. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
-5. **[Native clients](./native.md)** — the Swift & Kotlin ports: what's shared, the API surface, and the identity interop boundary.
-6. **[For agents](./agents.md)** — the dense contract for coding agents: invariants first, then a complete app and the whole API surface.
-7. **[Demo](./demo.html)** — a two-device sync demo in your browser.
+2. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
+3. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
+4. **[Native clients](./native.md)** — the Swift & Kotlin ports: what's shared, the API surface, and the identity interop boundary.
+5. **[For agents](./agents.md)** — the dense contract for coding agents: invariants first, then a complete app and the whole API surface.
+6. **[Demo](./demo.html)** — a two-device sync demo in your browser.
 
 Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat model](../../SECURITY.md)**.
 
@@ -138,13 +117,11 @@ Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat mode
 | `@simplysync/protocol` | The crypto/wire primitives the engine builds on: identity, key derivation, AES-GCM envelopes, HLC, blobs. |
 
 **The relay — optional.** Without one, the app is purely local-first and every
-edit stays on-device. Add one to sync across devices. It's a dumb, opaque event
-store (ciphertext only), and both implementations are wire-identical — pick
-one or [self-host](./self-hosting.md):
+edit stays on-device. Add the source-owned Cloudflare relay to sync across
+devices; it is a dumb, opaque event store that only receives ciphertext:
 
 | Relay | Stack |
 | --- | --- |
-| `apps/relay-go` | Go + SQLite — canonical self-hosted relay. |
 | `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
 
 **Canonical example:** [`apps/todolist`](../../apps/todolist) groups its CLI,
@@ -168,9 +145,8 @@ We built our own because we wanted a few specific things:
   copied into your app and owned, so you can audit every line. (Evolu is a fuller,
   more featureful platform with a larger surface.)
 - **A deliberately dumb relay over plain HTTP** (keyset-paginated pull + cursor),
-  shipped as two wire-compatible deployments — Go + SQLite and Cloudflare
-  Workers + D1/R2 — so you can self-host on what fits. (Evolu syncs over WebSocket;
-  also self-hostable, just more to reimplement.)
+  deployed in your Cloudflare account with Workers + D1/R2. (Evolu syncs over
+  WebSocket; also self-hostable, just more to reimplement.)
 - **First-class encrypted binary blobs** — lazy, content-addressed, chunked — for
   image-heavy apps.
 

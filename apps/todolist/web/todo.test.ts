@@ -10,6 +10,7 @@ import {
   type SnapshotStore,
 } from "@simplysync/browser";
 import { schema, type TodoSchema } from "./schema";
+import { createTodoListQuery } from "./todo-query";
 
 const WASM_PATH = Bun.resolveSync("sql.js/dist/sql-wasm.wasm", import.meta.dir);
 
@@ -46,15 +47,6 @@ function makeEngine(): SyncEngine<TodoSchema> {
   })(schema, { name: "todolist-web-contract" });
 }
 
-const todoQuery = (engine: SyncEngine<TodoSchema>) =>
-  engine.createQuery((db) =>
-    db
-      .selectFrom("todo")
-      .select(["id", "title", "done"])
-      .where("isDeleted", "=", 0)
-      .orderBy("updatedAt", "desc"),
-  );
-
 test("todo insert, toggle, and soft delete use the canonical schema", async () => {
   const engine = makeEngine();
   await engine.ready;
@@ -63,17 +55,50 @@ test("todo insert, toggle, and soft delete use the canonical schema", async () =
   expect(inserted.ok).toBe(true);
   if (!inserted.ok) return;
 
-  expect(engine.getQueryRows(todoQuery(engine))).toEqual([
+  const query = createTodoListQuery(engine);
+
+  expect(engine.getQueryRows(query)).toEqual([
     { id: inserted.value.id, title: "Buy milk", done: 0 },
   ]);
 
   const toggled = engine.update("todo", { id: inserted.value.id, done: 1 });
   expect(toggled.ok).toBe(true);
-  expect(engine.getQueryRows(todoQuery(engine))[0]?.done).toBe(1);
+  expect(engine.getQueryRows(query)[0]?.done).toBe(1);
 
   const removed = engine.delete("todo", inserted.value.id);
   expect(removed.ok).toBe(true);
-  expect(engine.getQueryRows(todoQuery(engine))).toEqual([]);
+  expect(engine.getQueryRows(query)).toEqual([]);
+
+  await closeSqlJsDatabases("todolist-web-contract");
+});
+
+test("toggle and title edits keep todos in creation order", async () => {
+  const engine = makeEngine();
+  await engine.ready;
+
+  const oldest = engine.insert("todo", {
+    title: "Oldest",
+    done: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  });
+  const newest = engine.insert("todo", {
+    title: "Newest",
+    done: 0,
+    createdAt: "2026-01-02T00:00:00.000Z",
+  });
+  expect(oldest.ok).toBe(true);
+  expect(newest.ok).toBe(true);
+  if (!oldest.ok || !newest.ok) return;
+
+  const query = createTodoListQuery(engine);
+  const initialOrder = engine.getQueryRows(query).map((row) => row.id);
+  expect(initialOrder).toEqual([newest.value.id, oldest.value.id]);
+
+  expect(engine.update("todo", { id: oldest.value.id, done: 1 }).ok).toBe(true);
+  expect(engine.getQueryRows(query).map((row) => row.id)).toEqual(initialOrder);
+
+  expect(engine.update("todo", { id: oldest.value.id, title: "Still oldest" }).ok).toBe(true);
+  expect(engine.getQueryRows(query).map((row) => row.id)).toEqual(initialOrder);
 
   await closeSqlJsDatabases("todolist-web-contract");
 });

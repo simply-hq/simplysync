@@ -25,6 +25,11 @@ expo-env.d.ts
 # Metro
 .metro-health-check*
 
+# Local browser and agent scratch work
+.playwright-mcp/
+.claude/worktrees/
+.wrangler/
+
 # debug
 npm-debug.*
 yarn-debug.*
