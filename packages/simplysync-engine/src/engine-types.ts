@@ -409,6 +409,15 @@ export interface RelayStatus {
   readonly streams?: number;
   /** Raw stored event count (shrinks when the relay compacts). */
   readonly events?: number;
+  /**
+   * True while this device is re-uploading the owner's rows because the relay
+   * lost its data (wiped volume, fresh deploy, or a restore from an older
+   * backup). Detected from a pull 404 on an owner we had already pulled, or a
+   * reported `headSeq` behind our pull cursor. Pair with
+   * `SyncStateIsSyncing.progress.pendingPush` for a "re-uploading N events"
+   * banner: a plain "synced" would be a lie until the copy is rebuilt.
+   */
+  readonly reseeding?: boolean;
 }
 
 /** One persisted row of the sync diagnostics log. */
@@ -526,7 +535,19 @@ export interface SyncEngine<S extends SchemaDefinition> {
     recoveryKey: string,
     options?: { force?: boolean },
   ): Promise<void>;
-  resetAppOwner(): Promise<void>;
+  /**
+   * Mint a brand-new owner and REPLACE all local data with an empty database —
+   * "erase everything". The most destructive call in the engine: anything not
+   * already on a relay is unrecoverable afterwards.
+   *
+   * By default it refuses unless a relay is verified to hold a copy of the
+   * current owner's data, and throws a message describing which condition
+   * failed (unpushed changes, no relay reachable, no relay holding data, no
+   * relay configured) so the app can offer the right next step — wait for sync,
+   * or take an {@link SyncEngine.exportDatabase} backup first. Pass
+   * `{ force: true }` once the user has confirmed.
+   */
+  resetAppOwner(options?: { force?: boolean }): Promise<void>;
   /**
    * Build an encrypted, portable full-database snapshot (every table + the
    * recovery key/phrase + sync cursors) — the file a user carries to a new main

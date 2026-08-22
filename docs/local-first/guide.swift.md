@@ -236,11 +236,25 @@ try await engine.restoreAppOwner(recoveryKey)
 try await engine.restoreAppOwner(recoveryKey, force: true) // intentional switch
 ```
 
-**Reset** mints a brand-new owner and wipes local data:
+**Reset** mints a brand-new owner and wipes local data. It is the most
+destructive call in the engine — the new owner has never synced anywhere, so no
+relay can give the old data back. It refuses unless a relay is confirmed to hold
+a copy, throwing `EngineError.resetUnsafe` with the condition that failed
+(unpushed changes, offline, no relay configured, relay holds nothing):
 
 ```swift
-await engine.resetAppOwner()
+do {
+    try await engine.resetAppOwner()
+} catch {
+    // Show the reason (`error.localizedDescription`), let the user copy their
+    // recovery phrase or otherwise save the data, and only then force it.
+    try await engine.resetAppOwner(force: true)
+}
 ```
+
+This port has no `exportDatabase` yet, so the backup step is the app's: the
+refusal message is the prompt, and the app decides what "back up first" means on
+that platform.
 
 Both call your `reloadApp` afterward so the UI re-evaluates against the new owner.
 
@@ -334,7 +348,7 @@ protocol SecureStorage: AnyObject {
 | `engine.subscribeQuery` | `(Query<Row>, () -> Void) -> () -> Void` | Low-level reactive primitive. |
 | `engine.appOwner` | `await -> AppOwner?` | `{ id, recoveryKey, writeKey, mnemonic? }`. |
 | `engine.restoreAppOwner` | `(String, force: Bool) async throws` | Restore from a key/phrase. |
-| `engine.resetAppOwner` | `() async` | New owner, wipes local data. |
+| `engine.resetAppOwner` | `(force: Bool) async throws` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
 | `engine.setTransports` | `([Transport]) -> Void` | Set relays; triggers sync + polling. |
 | `engine.sync` | `() async` | Push outbox, pull + apply. |
 | `engine.syncState` / `getSyncState()` | `SyncState` | Reactive + synchronous status. |

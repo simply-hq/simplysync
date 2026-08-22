@@ -251,11 +251,25 @@ engine.restoreAppOwner(
 )
 ```
 
-**Reset** mints a brand-new owner and wipes local data:
+**Reset** mints a brand-new owner and wipes local data. It is the most
+destructive call in the engine — the new owner has never synced anywhere, so no
+relay can give the old data back. It refuses unless a relay is confirmed to hold
+a copy, throwing `IllegalStateException` with the condition that failed
+(unpushed changes, offline, no relay configured, relay holds nothing):
 
 ```kotlin
-engine.resetAppOwner()
+try {
+    engine.resetAppOwner()
+} catch (e: IllegalStateException) {
+    // Show e.message, let the user copy their recovery phrase or otherwise save
+    // the data, and only then force it.
+    engine.resetAppOwner(force = true)
+}
 ```
+
+This port has no `exportDatabase` yet, so the backup step is the app's: the
+refusal message is the prompt, and the app decides what "back up first" means on
+that platform.
 
 Both call your `reloadApp` afterward so the UI re-evaluates against the new owner.
 
@@ -344,7 +358,7 @@ Android, back it with the Keystore / `EncryptedSharedPreferences`.
 | `engine.liveQuery` | `(Query<T>) -> StateFlow<List<T>>` | Reactive result (`useQuery` analog). |
 | `engine.appOwner` | `suspend () -> AppOwner?` | `{ id, recoveryKey, writeKey, mnemonic? }`. |
 | `engine.restoreAppOwner` | `suspend (String, force: Boolean)` or `(String, MnemonicIdentityProfile, force: Boolean)` | Restore from a key/phrase; mnemonic restore can auto-detect or explicitly select a profile. |
-| `engine.resetAppOwner` | `suspend ()` | New owner, wipes local data. |
+| `engine.resetAppOwner` | `suspend (force: Boolean)` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
 | `engine.setTransports` | `(List<Transport>)` | Set relays; triggers sync + polling. |
 | `engine.sync` | `suspend ()` | Push outbox, pull + apply. |
 | `engine.syncState` | `StateFlow<SyncState>` | Reactive status. |

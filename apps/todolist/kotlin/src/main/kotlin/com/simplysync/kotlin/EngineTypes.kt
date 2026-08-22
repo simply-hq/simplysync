@@ -80,6 +80,12 @@ data class RelayStatus(
     val streams: Long? = null,
     /** Raw stored event count (shrinks when the relay compacts). */
     val events: Long? = null,
+    /**
+     * True while this device is re-uploading the owner's rows because the relay
+     * lost its data (wiped volume, fresh deploy, or a restore from an older
+     * backup). Until it clears, peers are not receiving this device's edits.
+     */
+    val reseeding: Boolean = false,
 )
 
 /** A secondary index to create on boot (the `indexes` config analog). */

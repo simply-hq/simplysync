@@ -190,7 +190,7 @@ Modern browsers, Node 20+, and Bun have them; React Native does not by default.
 **Reads** — `createQuery(fn, opts?)`, `loadQuery(q)` (async one-shot),
 `getQueryRows(q)` (sync snapshot), `subscribeQuery(q)`.
 
-**Identity** — `appOwner`, `restoreAppOwner(key, {force?})`, `resetAppOwner()`,
+**Identity** — `appOwner`, `restoreAppOwner(key, {force?})`, `resetAppOwner({force?})`,
 `useOwner({transports})`, `exportDatabase({passphrase?})`,
 `importDatabase(file, {recoveryKey|passphrase})`, `importLegacy(name)`.
 

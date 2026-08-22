@@ -6,6 +6,11 @@ export const SYNC_OUTBOX_TABLE = "_sync_outbox";
 // high-water marks and cannot prove that a lower-sorting cross-tab straggler
 // reached a relay after its cursor advanced.
 export const SYNC_OUTBOX_RELAY_TABLE = "_sync_outbox_relay";
+// Events per push request. The Store bounds a claimed batch by this and the
+// sync loop keeps pushing while it gets a full one, so the two must agree: if
+// the claim is smaller than the drain's idea of "full", the outbox trickles one
+// batch per poll instead of draining.
+export const OUTBOX_PUSH_BATCH = 1000;
 export const SYNC_META_TABLE = "_sync_meta";
 export const SYNC_SEEN_TABLE = "_sync_seen";
 // Decrypted events for tables that this app version does not know yet. The

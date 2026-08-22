@@ -104,6 +104,10 @@ public struct RelayStatus: Equatable {
     public var streams: Int64?
     /// Raw stored event count (shrinks when the relay compacts).
     public var events: Int64?
+    /// True while this device is re-uploading the owner's rows because the relay
+    /// lost its data (wiped volume, fresh deploy, or a restore from an older
+    /// backup). Until it clears, peers are not receiving this device's edits.
+    public var reseeding: Bool = false
 }
 
 /// A secondary index to create on boot (the `indexes` config analog).

@@ -361,6 +361,97 @@ in [SECURITY.md](../../SECURITY.md).
 - **New crypto stays in the core, on WebCrypto.** That's what keeps it portable
   across Node/Bun/web/RN.
 
+## What happens if…
+
+### …the relay's data is reset or lost?
+
+**No user data is lost — every device still holds the whole database locally.**
+The relay is a delivery buffer, not a backup. In most cases the fleet also
+repairs itself automatically, because the engine detects a reset explicitly.
+
+**The repair path.** A pull that 404s is normally "this owner hasn't pushed yet",
+which is why a fresh install doesn't report an error. But a 404 on a relay this
+device has *already pulled from* (a non-empty stored cursor) means the account is
+gone, not merely absent. That triggers `handleWipedRelay`, which forgets the
+relay entirely — the `(eventId, relay)` acknowledgements, the `cursor:`, `push:`,
+and `backfill:` keys — and rebuilds the outbox with one canonical upsert per
+current row. The device re-uploads its state, and `getRelayStatuses()` reports
+`reseeding` so a UI can say "re-uploading" rather than "synced".
+
+Note what the re-seed carries: **current rows, not history**. A relay holding
+42 events over 2 rows comes back with 2. Older revisions are gone for good —
+they were never a backup.
+
+**The gap: a peer that never sees the 404.** Detection is per device, and it
+needs that device to pull while the account is still missing. If another device
+syncs first, its re-seed recreates the owner, and every peer that pulls
+afterwards gets a normal `200` with an empty page — no 404, no repair. Those
+peers keep a cursor from before the wipe, while the relay's `seq` counter
+restarted from 0 and the re-seed only pushed it back up to the current-row count.
+`where seq > cursor` matches nothing, so **the peer silently stops receiving —
+reporting "synced" the whole time.** It resumes only once the relay has issued
+more `seq` than it ever had before the wipe, and everything in the gap is lost to
+that device. Its own writes still push normally, so the divergence is one-way:
+the re-seeded device sees the stale one, not the reverse.
+
+The `/v1/status` backstop doesn't cover this. It re-seeds on `headSeq` behind the
+local cursor, but only when `account.events` is `0` — and a re-seeded relay has
+events. (That guard is deliberate: stream compaction can legitimately lower
+`headSeq`, and treating it as loss would re-seed healthy relays.) It is also
+reached only through `getRelayStatuses()`, which is a UI call, not part of the
+sync loop.
+
+**Recovery for a stranded device: give the relay a new base URL** — a new
+hostname, or just a path prefix like `https://relay.example.com/v2`. Every key
+in `_sync_meta` is scoped by base URL, so a new one starts from an empty cursor
+and re-seeds. Treat the URL as an opaque key: even a trailing-slash difference
+counts as a different relay.
+
+Two resets that are **safe**: deleting event rows while keeping `relay_meta`
+(the `seq` counter keeps climbing, so no cursor can be stranded), and the relay's
+own [compaction](#compaction), which never reuses a `seq`. Only discarding the
+counter — a deleted database file, a fresh deploy, a restore from an older
+backup — can strand a peer.
+
+### …I lose my recovery phrase?
+
+Every key derives deterministically from that phrase
+(`packages/simplysync-protocol/src/crypto.ts`), so there is no reset and no
+operator who can help — without it the relay's copy stays unreadable ciphertext
+forever. It is not lost while you still have one working device, though: each
+device keeps the phrase in platform secure storage and can display it again
+(in the TodoList clients, **⋯ → Show recovery key**). Losing the phrase *and*
+every device is the one unrecoverable case.
+
+### …I lose every device, but the relay is intact?
+
+Nothing is lost — that's [Restore on a new device](#restore-on-a-new-device).
+Note the asymmetry with the case above: the relay alone can restore you, the
+phrase alone can restore you, and losing both at once cannot be recovered from.
+
+### …two devices edit the same row while offline?
+
+Last write wins by HLC, and the unit is the **whole row**, not the field. If one
+device edits a note's title and the other edits its body, the row with the
+greater HLC replaces the other outright — the losing device's edit to the *other*
+column is gone. `compareHlc` is the only tiebreaker; there is no merge.
+
+### …a device's clock is wrong?
+
+Each pull absorbs the physical time of the HLCs it sees, so a later local write
+can never sort below an edit already applied. That absorption is bounded by
+`HLC_MAX_FUTURE_DRIFT_MS` (5 minutes), which stops one device with a far-future
+clock from dragging the whole fleet forward. Events stamped beyond the bound are
+held in `_sync_deferred` with a retry time and applied once wall time catches
+up — deferred, never dropped.
+
+### …the relay operator turns hostile?
+
+They cannot read anything ([threat model](#threat-model)). They *can* delete or
+withhold — which lands you in the relay-reset case above, detected and re-seeded
+but with blobs gone. Confidentiality is
+what the design guarantees; availability is what self-hosting is for.
+
 ## Known limitations / roadmap hooks
 
 - Row-level LWW only; no field-level merge or richer CRDTs.

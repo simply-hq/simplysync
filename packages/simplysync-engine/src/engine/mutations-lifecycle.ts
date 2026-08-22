@@ -705,7 +705,48 @@ export function createLifecycle(
     reloadApp();
   };
 
-  const resetAppOwner = async (reloadApp: () => void): Promise<void> => {
+  const resetAppOwner = async (
+    options: { force?: boolean } | undefined,
+    reloadApp: () => void,
+  ): Promise<void> => {
+    // Reset is strictly more destructive than restore: it wipes local data AND
+    // adopts an owner nothing has ever synced, so there is no relay to pull the
+    // data back from. It gets at least restoreAppOwner's care. Each refusal
+    // names its own condition so the app can offer the matching next step
+    // (wait for sync vs. exportDatabase first) rather than one vague warning.
+    if (!options?.force) {
+      const pending = store.pendingOutboxCount();
+      if (pending > 0) {
+        throw new Error(
+          `${pending} change(s) haven't reached a sync relay yet. ` +
+            "Back up your data first, or wait for sync to finish. " +
+            "Nothing was changed.",
+        );
+      }
+      if (relay.relayBaseUrls().length === 0) {
+        throw new Error(
+          "No sync relay is configured, so this data exists only on this " +
+            "device. Back up your data first. Nothing was changed.",
+        );
+      }
+      // `events > 0` (not merely `reachable`) is the check that matters: a
+      // relay that answers but holds nothing for this owner is no safer than an
+      // unreachable one.
+      const statuses = await relay.getRelayStatuses();
+      if (!statuses.some((status) => status.reachable)) {
+        throw new Error(
+          "The sync service could not be reached, so this data can't be " +
+            "confirmed as backed up. Back up your data first. " +
+            "Nothing was changed.",
+        );
+      }
+      if (!statuses.some((status) => (status.events ?? 0) > 0)) {
+        throw new Error(
+          "No sync relay holds a copy of this data yet. Back up your data " +
+            "first. Nothing was changed.",
+        );
+      }
+    }
     await deps.tabSync?.acquireExclusive();
     const mnemonic = createMnemonic();
     await switchOwner(await deriveIdentity(mnemonic));

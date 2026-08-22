@@ -83,6 +83,11 @@ final class Store {
             [.text(key), .text(value)])
     }
 
+    func deleteMeta(_ key: String) {
+        try? driver?.exec(
+            "delete from \"\(Self.metaTable)\" where key = ?", [.text(key)])
+    }
+
     func hasRelayHistory() -> Bool {
         guard let rows = try? driver?.select(
             "select 1 from \"\(Self.metaTable)\" "

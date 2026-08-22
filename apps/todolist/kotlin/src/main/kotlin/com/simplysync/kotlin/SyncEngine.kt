@@ -79,6 +79,13 @@ class SyncEngine(
     // state. Guarded by `lock`.
     private val relayHealth = HashMap<String, RelayHealth>()
 
+    // Relays that lost their data and are being re-seeded from this device. Kept
+    // out of relayHealth because that entry is replaced wholesale on every
+    // contact, while a re-seed deliberately spans passes: the wipe is detected
+    // during pull, the rebuilt outbox drains on the following pass. Guarded by
+    // `lock`.
+    private val reseedingRelays = HashSet<String>()
+
     private val mnemonicKey = "${config.name}:mnemonic"
     private val deviceKey = "${config.name}:deviceId"
     private val mnemonicProfileKey = "${config.name}:mnemonicIdentityProfile"
@@ -283,8 +290,39 @@ class SyncEngine(
         deps.reloadApp?.invoke()
     }
 
-    /** Mint a brand-new owner and wipe local data — the `resetAppOwner` analog. */
-    suspend fun resetAppOwner() {
+    /**
+     * Mint a brand-new owner and wipe local data — the `resetAppOwner` analog.
+     *
+     * Strictly more destructive than [restoreAppOwner]: it wipes local data AND
+     * adopts an owner nothing has ever synced, so there is no relay to pull the
+     * data back from. It therefore refuses unless a relay is confirmed to hold a
+     * copy, throwing [IllegalStateException] with the condition that failed so
+     * the app can offer the right next step (wait for sync, or export a backup).
+     * Pass [force] once the user has confirmed.
+     */
+    suspend fun resetAppOwner(force: Boolean = false) {
+        if (!force) {
+            val pending = lock.withLock { pendingOutboxCount() }
+            check(pending == 0) {
+                "$pending change(s) haven't reached a sync relay yet. Back up your " +
+                    "data first, or wait for sync to finish. Nothing was changed."
+            }
+            check(lock.withLock { transports }.isNotEmpty()) {
+                "No sync relay is configured, so this data exists only on this " +
+                    "device. Back up your data first. Nothing was changed."
+            }
+            val statuses = getRelayStatuses()
+            check(statuses.any { it.reachable }) {
+                "The sync service could not be reached, so this data can't be " +
+                    "confirmed as backed up. Back up your data first. Nothing was changed."
+            }
+            // `events > 0`, not merely `reachable`: a relay that answers but holds
+            // nothing for this owner is no safer than an unreachable one.
+            check(statuses.any { (it.events ?: 0L) > 0L }) {
+                "No sync relay holds a copy of this data yet. Back up your data " +
+                    "first. Nothing was changed."
+            }
+        }
         val key = IdentityDeriver.createRecoveryKey()
         switchOwner(
             key,
@@ -292,6 +330,33 @@ class SyncEngine(
             MnemonicIdentityProfile.SIMPLYSYNC_V1,
         )
         deps.reloadApp?.invoke()
+    }
+
+    /** Outbox events that have not reached any relay yet. Caller holds [lock]. */
+    private fun pendingOutboxCount(): Int {
+        val rows = store.driver?.select(
+            "select count(*) as c from \"${Store.OUTBOX}\" where pushed_at is null",
+        ) ?: return 0
+        return ((rows.firstOrNull()?.get("c") as? SqliteValue.Integer)?.value ?: 0L).toInt()
+    }
+
+    /**
+     * A relay whose event log is behind our pull cursor has lost data (wiped
+     * volume, fresh deploy, restored from an older backup). Its `seq` counter
+     * restarted, so `where seq > cursor` would match nothing and this device
+     * would report "synced" forever while diverging from every peer. Forget the
+     * relay and rebuild the outbox now, and flag it so a UI can say
+     * "re-uploading" instead of lying.
+     */
+    private fun handleWipedRelay(base: String) {
+        val fresh = lock.withLock {
+            if (!reseedingRelays.add(base)) return@withLock false
+            store.setMeta("cursor:$base", "")
+            store.deleteMeta("push:$base")
+            store.deleteMeta("backfill:$base")
+            true
+        }
+        if (fresh) backfillOutboxForNewRelay(base)
     }
 
     private fun switchOwner(
@@ -724,9 +789,17 @@ class SyncEngine(
                 backfillOutboxForNewRelay(base)
                 // Drain the complete local backlog before reporting Synced. A
                 // full batch means another page may remain.
-                while (pushOutbox(base, id) == 1000) {
-                    // Continue until a partial/empty batch proves the outbox is drained.
+                var pushed = 0
+                while (true) {
+                    val batch = pushOutbox(base, id)
+                    pushed += batch
+                    if (batch < 1000) break
                 }
+                // Nothing left to send means the post-wipe re-seed has landed and
+                // this relay holds a full copy again. Checked after the drain, so
+                // the pass that detects the wipe (push runs before pull) can't
+                // clear it.
+                if (pushed == 0) lock.withLock { reseedingRelays.remove(base) }
                 // Likewise, pull until the relay returns an empty page. Guard
                 // against a buggy relay returning data without advancing its
                 // cursor so one sync call cannot spin forever.
@@ -852,7 +925,15 @@ class SyncEngine(
                 identity.relayAuth,
             ).pull(after)
         } catch (e: RelayClient.RelayException) {
-            if (e.status == 404) return PullPage(emptySet(), 0) else throw e
+            if (e.status == 404) {
+                // A 404 for an owner we have ALREADY pulled from is different in
+                // kind: the relay didn't miss our first push, it lost the account.
+                // Repair, or the stale cursor stalls sync permanently once the
+                // relay's seq counter restarts below it.
+                if (after.isNotEmpty()) handleWipedRelay(base)
+                return PullPage(emptySet(), 0)
+            }
+            throw e
         }
         return lock.withLock {
             val changed = HashSet<String>()
@@ -1100,6 +1181,7 @@ class SyncEngine(
             reachable = false,
             lastSyncedAt = health?.lastSyncedAt,
             lastFailure = health?.lastFailure,
+            reseeding = lock.withLock { base in reseedingRelays },
         )
         if (identity == null) return bare
         val client = RelayTransportFactory.create(base, identity.ownerId, identity.relayAuth)
@@ -1118,6 +1200,17 @@ class SyncEngine(
                     bare
                 }
             }
+            // The relay still knows the owner but holds nothing for it while we
+            // have pulled from it before: truncated, or restored from an older
+            // backup, which the pull 404 can't see because the owner row survived.
+            // `events == 0` is required as well as a `headSeq` behind our cursor —
+            // stream compaction legitimately lowers `max(seq)` over surviving rows
+            // and must not look like data loss.
+            val localCursor = lock.withLock { store.getMeta("cursor:$base") }?.toLongOrNull() ?: 0L
+            val headSeq = status.account?.headSeq
+            if (headSeq != null && headSeq < localCursor && (status.account?.events ?: 0L) == 0L) {
+                handleWipedRelay(base)
+            }
             bare.copy(
                 reachable = true,
                 lastFailure = null,
@@ -1128,6 +1221,7 @@ class SyncEngine(
                 headSeq = status.account?.headSeq,
                 streams = status.account?.streams,
                 events = status.account?.events,
+                reseeding = lock.withLock { base in reseedingRelays },
             )
         } catch (e: Exception) {
             val failure = classifyError(e)

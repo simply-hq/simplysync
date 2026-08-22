@@ -505,7 +505,9 @@ describe("engine", () => {
     await engine.ready;
 
     expect((await engine.importLegacy("legacy")).imported).toBe(1);
-    await engine.resetAppOwner(); // erase (reloadApp is a no-op in tests)
+    // Local-only erase with unpushed rows: exactly what the default guard
+    // blocks, so this intentional wipe opts in.
+    await engine.resetAppOwner({ force: true });
 
     // The import must NOT run again and bring the old data back.
     expect((await engine.importLegacy("legacy")).imported).toBe(0);

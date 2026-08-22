@@ -267,8 +267,8 @@ export const createSync =
           instance.reloadApp,
         );
       },
-      resetAppOwner() {
-        return lifecycle.resetAppOwner(instance.reloadApp);
+      resetAppOwner(options?: { force?: boolean }) {
+        return lifecycle.resetAppOwner(options, instance.reloadApp);
       },
       async exportDatabase(options) {
         await ready;

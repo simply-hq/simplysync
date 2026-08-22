@@ -14,6 +14,7 @@ import type {
 } from "../engine-types.js";
 import {
   LEGACY_IMPORT_VERSION,
+  OUTBOX_PUSH_BATCH,
   SYNC_DEFERRED_TABLE,
   SYNC_LOG_CAP,
   SYNC_LOG_TABLE,
@@ -552,6 +553,122 @@ export function createStore(
     );
   };
 
+  // The Outbox's five states — pending, sealed, pushed, acknowledged per relay,
+  // pruned — all live in this file. relay.ts supplies only the two things the
+  // Store cannot: the AES-GCM seal (async, and it needs the owner's identity)
+  // and the HTTP round trip. So the `envelope_json = ''` sentinel that divides
+  // pending from sealed never has to be understood outside this file.
+
+  /** Rows still holding the plaintext-pending marker, oldest event id first. */
+  const listUnsealedOutbox = (): readonly {
+    eventId: string;
+    payloadJson: string;
+  }[] => {
+    const { driver } = state;
+    if (!driver) return [];
+    return driver
+      .select<{ event_id: string; payload_json: string }>(
+        `select event_id, payload_json from "${SYNC_OUTBOX_TABLE}" ` +
+          `where envelope_json = '' and payload_json is not null ` +
+          `order by event_id asc`,
+      )
+      .map((row) => ({ eventId: row.event_id, payloadJson: row.payload_json }));
+  };
+
+  // Idempotent via `and envelope_json = ''`: a row a concurrent pass already
+  // sealed is skipped rather than re-encrypted under a second nonce.
+  const sealOutboxEvent = (eventId: string, envelopeJson: string): void => {
+    state.driver?.exec(
+      `update "${SYNC_OUTBOX_TABLE}" set envelope_json = ? ` +
+        `where event_id = ? and envelope_json = ''`,
+      [envelopeJson, eventId],
+    );
+  };
+
+  /**
+   * The next push batch for one relay: sealed events that relay has not
+   * acknowledged, oldest first, bounded by {@link OUTBOX_PUSH_BATCH}. A caller
+   * handed a full batch must ask again — a full batch never means "drained".
+   *
+   * Selecting on the acknowledgement rows rather than a cursor is what lets a
+   * lower-sorting cross-tab straggler still be delivered after the cursor moved
+   * past it.
+   */
+  const claimPushBatch = (
+    relay: string,
+  ): readonly { eventId: string; envelopeJson: string }[] => {
+    const { driver } = state;
+    if (!driver) return [];
+    return driver
+      .select<{ event_id: string; envelope_json: string }>(
+        `select outbox.event_id, outbox.envelope_json ` +
+          `from "${SYNC_OUTBOX_TABLE}" as outbox ` +
+          `where outbox.envelope_json != '' and not exists (` +
+          `select 1 from "${SYNC_OUTBOX_RELAY_TABLE}" as delivery ` +
+          `where delivery.event_id = outbox.event_id and delivery.relay = ?` +
+          `) order by outbox.event_id asc limit ${OUTBOX_PUSH_BATCH}`,
+        [relay],
+      )
+      .map((row) => ({
+        eventId: row.event_id,
+        envelopeJson: row.envelope_json,
+      }));
+  };
+
+  /**
+   * Record a whole batch as delivered to one relay, atomically: the per-relay
+   * acknowledgements (the only delivery proof `pruneOutbox` trusts), the
+   * `pushed_at` stamp, and that relay's push cursor.
+   *
+   * `pushed_at` means "reached at least one relay" — it drives the pending
+   * count and the purge guard — so `coalesce` keeps the earliest and a re-push
+   * to a second relay never resets it. The cursor advance is monotonic: a
+   * straggler-only batch can end below the stored high-water mark.
+   */
+  const markBatchDelivered = (
+    eventIds: readonly string[],
+    relay: string,
+    pushedAt: string,
+  ): void => {
+    const { driver } = state;
+    if (!driver || eventIds.length === 0) return;
+    driver.transaction(() => {
+      for (const eventId of eventIds) {
+        driver.exec(
+          `update "${SYNC_OUTBOX_TABLE}" set pushed_at = coalesce(pushed_at, ?) where event_id = ?`,
+          [pushedAt, eventId],
+        );
+        markOutboxDelivered(eventId, relay);
+      }
+      const cursorKey = `push:${relay}`;
+      const last = eventIds[eventIds.length - 1]!;
+      if (last > (getMeta(cursorKey) ?? "")) setMeta(cursorKey, last);
+    });
+  };
+
+  // Forget everything this device knows about one relay. Used when a relay has
+  // lost its data (wiped volume, fresh deploy, restored from an older backup):
+  // its event `seq` counter restarts, so a stale pull cursor matches nothing and
+  // sync stalls silently and permanently. Clearing `cursor:` re-pulls from zero
+  // (the seen-set dedupes), and clearing `push:`/`backfill:` re-arms
+  // `backfillOutboxForNewRelay` so this device re-seeds the owner's rows. The
+  // delivery rows must go too, or `pushOutbox` skips every event it already
+  // acknowledged for that relay and the re-seed pushes nothing.
+  const resetRelaySyncState = (base: string): void => {
+    const { driver } = state;
+    if (!driver) return;
+    driver.transaction(() => {
+      driver.exec(
+        `delete from "${SYNC_OUTBOX_RELAY_TABLE}" where relay = ?`,
+        [base],
+      );
+      driver.exec(
+        `delete from "${SYNC_META_TABLE}" where key in (?, ?, ?)`,
+        [`cursor:${base}`, `push:${base}`, `backfill:${base}`],
+      );
+    });
+  };
+
   // Bound the outbox (a send queue, not an archive): drop an event only after
   // every currently configured relay has an exact acknowledgement for it.
   // Push cursors remain useful high-water marks and new-relay markers, but are
@@ -936,6 +1053,11 @@ export function createStore(
     ackPurgeBase,
     dropPurgeEntry,
     markOutboxDelivered,
+    listUnsealedOutbox,
+    sealOutboxEvent,
+    claimPushBatch,
+    markBatchDelivered,
+    resetRelaySyncState,
     pruneOutbox,
     backfillOutboxForNewRelay,
     insertPendingOutboxEvent,

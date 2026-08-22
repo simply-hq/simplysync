@@ -6,6 +6,10 @@ public enum EngineError: Error, CustomStringConvertible {
     case databaseNotReady
     case identityNotReady
     case outboxEncodingFailed
+    /// `resetAppOwner` refused because this data can't be confirmed to exist
+    /// anywhere else. The payload names the condition so the app can offer the
+    /// matching next step (wait for sync, or export a backup first).
+    case resetUnsafe(String)
 
     public var description: String {
         switch self {
@@ -17,6 +21,8 @@ public enum EngineError: Error, CustomStringConvertible {
             return "Identity not ready."
         case .outboxEncodingFailed:
             return "Could not encode the sync outbox event."
+        case .resetUnsafe(let reason):
+            return reason
         }
     }
 }
@@ -62,6 +68,11 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
         var lastFailure: RelayStatus.Failure?
     }
     private var relayHealth: [String: RelayHealth] = [:]
+    /// Relays that lost their data and are being re-seeded from this device.
+    /// Kept out of `relayHealth` because that entry is replaced wholesale on
+    /// every contact, while a re-seed deliberately spans passes: the wipe is
+    /// detected during pull, the rebuilt outbox drains on the following pass.
+    private var reseedingRelays: Set<String> = []
 
     private var pollTask: Task<Void, Never>?
     private let defaultPollMs: Int
@@ -187,12 +198,73 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
     }
 
     /// Mint a brand-new owner and wipe local data — the `resetAppOwner` analog.
-    public func resetAppOwner() async {
+    ///
+    /// Strictly more destructive than `restoreAppOwner`: it wipes local data AND
+    /// adopts an owner nothing has ever synced, so there is no relay to pull the
+    /// data back from. It therefore refuses unless a relay is confirmed to hold a
+    /// copy, throwing `EngineError.resetUnsafe` with the condition that failed so
+    /// the app can offer the right next step (wait for sync, or export a backup).
+    /// Pass `force: true` once the user has confirmed.
+    public func resetAppOwner(force: Bool = false) async throws {
+        if !force {
+            let pending = lock.withLock { pendingOutboxCount() }
+            if pending > 0 {
+                throw EngineError.resetUnsafe(
+                    "\(pending) change(s) haven't reached a sync relay yet. Back up your data first, or wait for sync to finish. Nothing was changed.")
+            }
+            if lock.withLock({ transports }).isEmpty {
+                throw EngineError.resetUnsafe(
+                    "No sync relay is configured, so this data exists only on this device. Back up your data first. Nothing was changed.")
+            }
+            let statuses = await getRelayStatuses()
+            if !statuses.contains(where: { $0.reachable }) {
+                throw EngineError.resetUnsafe(
+                    "The sync service could not be reached, so this data can't be confirmed as backed up. Back up your data first. Nothing was changed.")
+            }
+            // `events > 0`, not merely `reachable`: a relay that answers but
+            // holds nothing for this owner is no safer than an unreachable one.
+            if !statuses.contains(where: { ($0.events ?? 0) > 0 }) {
+                throw EngineError.resetUnsafe(
+                    "No sync relay holds a copy of this data yet. Back up your data first. Nothing was changed.")
+            }
+        }
         let key = IdentityDeriver.createRecoveryKey()
         if let derived = try? IdentityDeriver.derive(from: key) {
             switchOwner(recoveryKey: key, identity: derived)
         }
         deps.reloadApp?()
+    }
+
+    /// Outbox events that have not reached any relay yet. Caller holds the lock.
+    private func pendingOutboxCount() -> Int {
+        guard let rows = try? store.driver?.select(
+            "select count(*) as c from \"\(Store.outboxTable)\" where pushed_at is null"),
+              case .integer(let n)? = rows.first?["c"] else { return 0 }
+        return Int(n)
+    }
+
+    /// Forget everything this device knows about one relay, so the next pass
+    /// re-pulls from zero and `backfillOutboxForNewRelay` re-seeds the owner's
+    /// rows. Caller holds the lock.
+    private func resetRelaySyncState(base: String) {
+        store.setMeta("cursor:\(base)", "")
+        store.deleteMeta("push:\(base)")
+        store.deleteMeta("backfill:\(base)")
+    }
+
+    /// A relay whose event log is behind our pull cursor has lost data (wiped
+    /// volume, fresh deploy, restored from an older backup). Its `seq` counter
+    /// restarted, so `where seq > cursor` would match nothing and this device
+    /// would report "synced" forever while diverging from every peer. Forget the
+    /// relay and rebuild the outbox now, and flag it so a UI can say
+    /// "re-uploading" instead of lying.
+    private func handleWipedRelay(base: String) {
+        lock.withLock {
+            guard !reseedingRelays.contains(base) else { return }
+            reseedingRelays.insert(base)
+            resetRelaySyncState(base: base)
+        }
+        backfillOutboxForNewRelay(base: base)
     }
 
     private func switchOwner(recoveryKey: String, identity: Identity) {
@@ -667,7 +739,17 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                 backfillOutboxForNewRelay(base: base)
                 // A full batch means more local events may remain. Drain them in
                 // this sync pass so `.synced` never means "up to 1000 pushed."
-                while try await pushOutbox(base: base, identity: identity) == 1000 {}
+                var pushed = 0
+                while true {
+                    let batch = try await pushOutbox(base: base, identity: identity)
+                    pushed += batch
+                    if batch < 1000 { break }
+                }
+                // Nothing left to send means the post-wipe re-seed has landed and
+                // this relay holds a full copy again. Checked after the drain, so
+                // the pass that detects the wipe (push runs before pull) can't
+                // clear it.
+                if pushed == 0 { lock.withLock { reseedingRelays.remove(base) } }
                 // Pull every relay page as well. A non-empty page that does not
                 // advance its cursor is a relay bug/replay; stop rather than
                 // spinning forever and retry it on the next sync.
@@ -823,6 +905,11 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             result = try await relay.pull(after: after)
         } catch let error as RelayClient.RelayError {
             if case .http(let status, _) = error, status == 404 {
+                // A 404 for an owner we have ALREADY pulled from is different in
+                // kind: the relay didn't miss our first push, it lost the
+                // account. Repair, or the stale cursor stalls sync permanently
+                // once the relay's seq counter restarts below it.
+                if !after.isEmpty { handleWipedRelay(base: base) }
                 return PullPage(changed: [], pulled: 0)
             }
             throw error
@@ -1059,6 +1146,7 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
         var status = RelayStatus(url: base, reachable: false,
                                  lastSyncedAt: health?.lastSyncedAt,
                                  lastFailure: health?.lastFailure)
+        status.reseeding = lock.withLock { reseedingRelays.contains(base) }
         guard let identity, let url = URL(string: base) else { return status }
         let relay = RelayClient(baseURL: url, ownerId: identity.ownerId,
                                 relayAuth: identity.relayAuth, session: deps.urlSession)
@@ -1073,6 +1161,17 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             status.headSeq = body.account.headSeq
             status.streams = body.account.streams
             status.events = body.account.events
+            // The relay still knows the owner but holds nothing for it while we
+            // have pulled from it before: truncated, or restored from an older
+            // backup, which the pull 404 can't see because the owner row
+            // survived. `events == 0` is required as well as a `headSeq` behind
+            // our cursor — stream compaction legitimately lowers `max(seq)` over
+            // surviving rows and must not look like data loss.
+            let localCursor = Int64(lock.withLock { store.getMeta("cursor:\(base)") ?? "" }) ?? 0
+            if body.account.headSeq < localCursor, body.account.events == 0 {
+                handleWipedRelay(base: base)
+            }
+            status.reseeding = lock.withLock { reseedingRelays.contains(base) }
         } catch {
             if let e = error as? RelayClient.RelayError, case .http(let code, _) = e, code == 404 {
                 // Relay alive, owner has no account yet (never pushed here).

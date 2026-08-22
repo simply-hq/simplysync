@@ -74,6 +74,10 @@ class Store(private val schema: Schema, private val config: SyncEngineConfig) {
         )
     }
 
+    fun deleteMeta(key: String) {
+        driver?.exec("delete from \"$META\" where key = ?", listOf(SqliteValue.Text(key)))
+    }
+
     fun hasRelayHistory(): Boolean =
         driver?.select(
             "select 1 from \"$META\" " +

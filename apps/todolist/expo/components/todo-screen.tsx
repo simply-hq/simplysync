@@ -166,6 +166,27 @@ export function TodoScreen() {
     }
   }, [refreshOwner, restoreDraft]);
 
+  const doReset = useCallback(
+    async (force: boolean) => {
+      await SecureStore.deleteItemAsync(ONBOARDING_COMPLETE_KEY);
+      await todoEngine.resetAppOwner(force ? { force: true } : undefined);
+      await refreshOwner();
+      setOnboardingComplete(false);
+      setSettingsOpen(false);
+    },
+    [refreshOwner],
+  );
+
+  // The backup half of the reset flow: hand the user the encrypted snapshot
+  // BEFORE wiping. The file is keyed by the recovery phrase, so it needs no
+  // extra secret and is useless to anyone without that phrase. Clipboard keeps
+  // this example dependency-free; a real app writes it out with
+  // expo-file-system and offers the share sheet.
+  const backupToClipboard = useCallback(async () => {
+    const envelope = await todoEngine.exportDatabase();
+    await Clipboard.setStringAsync(JSON.stringify(envelope));
+  }, []);
+
   const resetOwner = useCallback(() => {
     Alert.alert(
       "Start with a new owner?",
@@ -176,19 +197,39 @@ export function TodoScreen() {
           text: "Reset",
           style: "destructive",
           onPress: () => {
-            void SecureStore.deleteItemAsync(ONBOARDING_COMPLETE_KEY)
-              .then(() => todoEngine.resetAppOwner())
-              .then(async () => {
-                await refreshOwner();
-                setOnboardingComplete(false);
-                setSettingsOpen(false);
-              })
-              .catch((error) => setActionError(messageOf(error)));
+            // Two-step by design: the engine refuses the first, unforced call
+            // whenever it can't confirm a relay holds this data (unpushed
+            // edits, offline, empty relay) and explains which. Show that reason
+            // and make the user opt in again — and offer the backup right here,
+            // because "back up first" is useless advice if the only way to act
+            // on it is to cancel and go hunting through settings.
+            void doReset(false).catch((error) =>
+              Alert.alert("This data may only exist here", messageOf(error), [
+                { text: "Cancel", style: "cancel" },
+                {
+                  text: "Back up, then reset",
+                  onPress: () => {
+                    void backupToClipboard()
+                      .then(() => doReset(true))
+                      .catch((failed) => setActionError(messageOf(failed)));
+                  },
+                },
+                {
+                  text: "Reset anyway",
+                  style: "destructive",
+                  onPress: () => {
+                    void doReset(true).catch((forced) =>
+                      setActionError(messageOf(forced)),
+                    );
+                  },
+                },
+              ]),
+            );
           },
         },
       ],
     );
-  }, [refreshOwner]);
+  }, [backupToClipboard, doReset]);
 
   const copyRecoveryKey = useCallback(async () => {
     if (!owner?.recoveryKey) return;

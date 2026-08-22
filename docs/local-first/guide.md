@@ -330,10 +330,21 @@ await engine.restoreAppOwner(recoveryKey);
 await engine.restoreAppOwner(recoveryKey, { force: true });
 ```
 
-**Reset** mints a brand-new owner and wipes local data:
+**Reset** mints a brand-new owner and wipes local data. It is the most
+destructive call in the engine — the new owner has never synced anywhere, so
+there is no relay to pull the old data back from. It therefore refuses by
+default unless a relay is verified to hold a copy, and the error says which
+condition failed so you can offer the right next step:
 
 ```ts
-await engine.resetAppOwner();
+try {
+  await engine.resetAppOwner();
+} catch (error) {
+  // Unpushed changes / offline / no relay configured / relay holds nothing.
+  // Show `error.message`, offer a backup, and only then reset for real.
+  await engine.exportDatabase(); // hand the user the file first
+  await engine.resetAppOwner({ force: true });
+}
 ```
 
 Both `restoreAppOwner` and `resetAppOwner` call your `reloadApp` afterward so the
@@ -415,6 +426,16 @@ and the relay `version`. A relay that has never seen this owner reports
 `reachable: true` with no account block. In React, `useRelayStatuses()` polls it
 for you (default every 30 s) — right-sized for a diagnostics or settings screen.
 
+`reseeding: true` means that relay **lost its data** — a wiped volume, a fresh
+deploy, or a restore from an older backup — and this device is re-uploading the
+owner's rows to rebuild it. The engine detects it two ways (a pull `404` for an
+owner it had already pulled, or a reported `headSeq` behind its own pull cursor),
+resets its cursor, and re-seeds automatically; without that, the relay's restarted
+`seq` counter would sit below the cursor and every later pull would match nothing
+while the app still showed "synced". Surface it with
+`SyncStateIsSyncing.progress.pendingPush` as a "re-uploading N changes" banner —
+until it clears, other devices are not receiving your edits.
+
 Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
 every platform.
 
@@ -492,7 +513,7 @@ incompatible, or already imported.
 | `engine.subscribeQuery` | `(query) => (listener) => unsubscribe` | Low-level reactive primitive (`useQuery` wraps it). |
 | `engine.appOwner` | `Promise<AppOwner \| null>` | `{ id, recoveryKey, mnemonic?, writeKey }`. |
 | `engine.restoreAppOwner` | `(recoveryKey, { force? }) => Promise<void>` | Restore from an `sf1_` key or BIP39 phrase. |
-| `engine.resetAppOwner` | `() => Promise<void>` | New owner, wipes local data. |
+| `engine.resetAppOwner` | `({ force? }) => Promise<void>` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
 | `engine.setTransports` | `(transports) => void` | Set relays; triggers sync + polling. `[]` stops the poller. |
 | `engine.useOwner` | `({ transports }) => () => void` | Set relays and get a disposer that stops syncing. |
 | `engine.sync` | `() => Promise<void>` | Push outbox, pull + apply; resolves after a pass covering your writes. |

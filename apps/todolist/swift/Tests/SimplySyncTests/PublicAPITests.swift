@@ -27,6 +27,34 @@ final class PublicAPITests: XCTestCase {
         XCTAssertTrue(inserted.isOk)
     }
 
+    // `resetAppOwner` wipes local data AND adopts an owner nothing has ever
+    // synced, so with no relay to confirm a copy it must refuse rather than
+    // destroy the only copy — force stays the app's "the user confirmed" path.
+    func testResetRefusesWithoutARelayAndSucceedsUnderForce() async throws {
+        let schema = Schema(["note": ["id": .id("note"), "body": .nonEmptyString]])
+        let engine = createSync(
+            SyncEngineDeps(
+                makeDriver: { _ in try SQLite3Driver(path: ":memory:") },
+                secureStorage: InMemorySecureStorage()
+            )
+        )(schema, SyncEngineConfig(name: "swift-reset-guard"))
+        await engine.ready
+
+        do {
+            try await engine.resetAppOwner()
+            XCTFail("expected a refusal on a relay-less device")
+        } catch let error as EngineError {
+            guard case .resetUnsafe(let reason) = error else {
+                return XCTFail("expected resetUnsafe, got \(error)")
+            }
+            XCTAssertTrue(reason.contains("Back up your data first"))
+        }
+
+        let before = engine.currentOwner?.id
+        try await engine.resetAppOwner(force: true)
+        XCTAssertNotEqual(before, engine.currentOwner?.id)
+    }
+
     func testProtocolPrimitivesArePublicAndRoundTrip() throws {
         let identity = try IdentityDeriver.derive(
             from: "sf1_AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o"

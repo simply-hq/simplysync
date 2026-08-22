@@ -18,8 +18,7 @@ import type {
   Transport,
 } from "../engine-types.js";
 import {
-  SYNC_OUTBOX_RELAY_TABLE,
-  SYNC_OUTBOX_TABLE,
+  OUTBOX_PUSH_BATCH,
   SYNC_SEEN_TABLE,
 } from "./constants.js";
 import type { QueryCache } from "./query-cache.js";
@@ -108,6 +107,31 @@ export function createRelaySync(
     string,
     { lastSyncedAt?: string; lastFailure?: RelayStatus["lastFailure"] }
   >();
+  // Relays that lost their data and are being re-seeded from this device. Kept
+  // out of relayHealth because that entry is replaced wholesale on every
+  // contact, while a re-seed deliberately spans passes: the wipe is detected
+  // during pull, the rebuilt outbox drains on the following pass.
+  const reseedingRelays = new Set<string>();
+
+  // A relay whose event log is behind our pull cursor has lost data (wiped
+  // volume, fresh deploy, restored from an older backup). Its `seq` counter
+  // restarted, so `where seq > cursor` would match nothing and this device
+  // would report "synced" forever while diverging from every peer. Forget the
+  // relay, rebuild the outbox now so pendingOutboxCount reflects the re-upload
+  // immediately, and flag it so a UI can say "re-uploading" instead of lying.
+  const handleWipedRelay = (base: string): void => {
+    if (reseedingRelays.has(base)) return;
+    reseedingRelays.add(base);
+    store.resetRelaySyncState(base);
+    store.backfillOutboxForNewRelay(base);
+    store.appendSyncLog({
+      relay: base,
+      phase: "pull",
+      result: "fail",
+      kind: "serverError",
+      message: "relay lost its data - re-uploading from this device",
+    });
+  };
 
   const httpError = (op: string, status: number): Error => {
     const err = new Error(`${op} failed: ${status}`) as Error & {
@@ -167,21 +191,15 @@ export function createRelaySync(
   const sealPendingOutbox = async (): Promise<void> => {
     const { identity, driver } = state;
     if (!identity || !driver) return;
-    const pending = driver.select<{ event_id: string; payload_json: string }>(
-      `select event_id, payload_json from "${SYNC_OUTBOX_TABLE}" where envelope_json = '' and payload_json is not null order by event_id asc`,
-    );
-    for (const row of pending) {
+    for (const row of store.listUnsealedOutbox()) {
       try {
-        const payload = JSON.parse(row.payload_json) as RuntimeSyncPayload;
+        const payload = JSON.parse(row.payloadJson) as RuntimeSyncPayload;
         const envelope = await encryptPayload(
           identity,
-          { eventId: row.event_id, deviceId: state.deviceId },
+          { eventId: row.eventId, deviceId: state.deviceId },
           payload,
         );
-        driver.exec(
-          `update "${SYNC_OUTBOX_TABLE}" set envelope_json = ? where event_id = ? and envelope_json = ''`,
-          [JSON.stringify(envelope), row.event_id],
-        );
+        store.sealOutboxEvent(row.eventId, JSON.stringify(envelope));
       } catch (caught) {
         state.setError({
           type: "SealError",
@@ -194,26 +212,7 @@ export function createRelaySync(
   const pushOutbox = async (baseUrl: string): Promise<number> => {
     const { identity, driver } = state;
     if (!identity || !driver) return 0;
-    // Exact per-relay acknowledgements ensure EVERY configured relay receives a
-    // full copy. A high-water cursor alone is insufficient: another tab can
-    // publish a lower-sorting HLC after this relay's cursor has advanced past
-    // it. Existing outbox rows from before this table existed are safely sent
-    // once to each relay; the relay deduplicates event ids.
-    // `envelope_json != ''` is a safety net: sealPendingOutbox runs before
-    // this at the start of every sync(), so by the time we get here nearly
-    // everything is already sealed — this just guarantees a relay never
-    // receives an unsealed (plaintext-pending) marker.
-    const cursorKey = `push:${baseUrl}`;
-    const after = store.getMeta(cursorKey) ?? "";
-    const events = driver.select<{ event_id: string; envelope_json: string }>(
-      `select outbox.event_id, outbox.envelope_json ` +
-        `from "${SYNC_OUTBOX_TABLE}" as outbox ` +
-        `where outbox.envelope_json != '' and not exists (` +
-        `select 1 from "${SYNC_OUTBOX_RELAY_TABLE}" as delivery ` +
-        `where delivery.event_id = outbox.event_id and delivery.relay = ?` +
-        `) order by outbox.event_id asc limit 1000`,
-      [baseUrl],
-    );
+    const events = store.claimPushBatch(baseUrl);
     if (events.length === 0) return 0;
     const response = await fetchImpl(`${baseUrl}/v1/events`, {
       method: "POST",
@@ -223,28 +222,15 @@ export function createRelaySync(
       },
       body: JSON.stringify({
         ownerId: identity.ownerId,
-        events: events.map((e) => JSON.parse(e.envelope_json)),
+        events: events.map((e) => JSON.parse(e.envelopeJson)),
       }),
     });
     if (!response.ok) throw httpError("push", response.status);
-    const pushedAt = new Date().toISOString();
-    // One transaction for the whole batch's pushed_at updates instead of one
-    // auto-commit per event — same effect, far fewer commits for a big batch.
-    driver.transaction(() => {
-      for (const event of events) {
-        // `pushed_at` means "reached at least one relay" — it drives the
-        // pending-outbox count and the purge guard. Keep the earliest via
-        // coalesce so re-pushes to other relays don't reset it.
-        driver.exec(
-          `update "${SYNC_OUTBOX_TABLE}" set pushed_at = coalesce(pushed_at, ?) where event_id = ?`,
-          [pushedAt, event.event_id],
-        );
-        store.markOutboxDelivered(event.event_id, baseUrl);
-      }
-    });
-    // Monotonic: a straggler-only batch can end below the stored cursor.
-    const last = events[events.length - 1]!.event_id;
-    if (last > after) store.setMeta(cursorKey, last);
+    store.markBatchDelivered(
+      events.map((e) => e.eventId),
+      baseUrl,
+      new Date().toISOString(),
+    );
     return events.length;
   };
 
@@ -490,7 +476,14 @@ export function createRelaySync(
     // instead made every fresh install report a TERMINAL sync error and back the
     // poller off to 5 minutes until its first write. A wrong base URL still
     // surfaces: push creates the owner, so it 404s there and stays terminal.
-    if (response.status === 404) return result;
+    // A 404 for an owner we have ALREADY pulled from is different in kind: the
+    // relay didn't just miss our first push, it lost the account. Repair rather
+    // than treat it as "nothing to pull yet", or the stale cursor stalls sync
+    // permanently once the relay's seq counter restarts below it.
+    if (response.status === 404) {
+      if (after !== "") handleWipedRelay(baseUrl);
+      return result;
+    }
     if (!response.ok) throw httpError("pull", response.status);
     const body = (await response.json()) as {
       events: SyncEnvelope[];
@@ -733,8 +726,13 @@ export function createRelaySync(
             const batch = await pushOutbox(base);
             pushed += batch;
             if (batch > 0) emitProgress();
-            if (batch < 1000) break; // partial batch = outbox drained
+            // Partial batch = outbox drained. Full means the Store capped it.
+            if (batch < OUTBOX_PUSH_BATCH) break;
           }
+          // Nothing left to send means the post-wipe re-seed has landed and
+          // this relay holds a full copy again. Checked after the drain, so the
+          // pass that detects the wipe (push runs before pull) can't clear it.
+          if (pushed === 0) reseedingRelays.delete(base);
           const r: PullResult = {
             changed,
             pulled: 0,
@@ -941,7 +939,12 @@ export function createRelaySync(
   const fetchRelayStatus = async (base: string): Promise<RelayStatus> => {
     const { identity } = state;
     const health = relayHealth.get(base);
-    const bare: RelayStatus = { url: base, reachable: false, ...health };
+    const bare: RelayStatus = {
+      url: base,
+      reachable: false,
+      ...health,
+      reseeding: reseedingRelays.has(base) || undefined,
+    };
     if (!identity) return bare;
     try {
       const url = new URL(`${base}/v1/status`);
@@ -958,10 +961,29 @@ export function createRelaySync(
       }
       if (!response.ok) throw httpError("status", response.status);
       const body = (await response.json()) as StatusResponse;
+      // The relay still knows the owner but holds nothing for it while we have
+      // pulled from it before: it was truncated or restored from an older
+      // backup, which the pull 404 above can't see because the owner row
+      // survived. `events === 0` is required as well as a `headSeq` behind our
+      // cursor — stream compaction legitimately lowers `max(seq)` over
+      // surviving rows, and treating that as data loss would trigger a pointless
+      // full re-seed on every healthy relay that compacts. The cost is that a
+      // PARTIAL restore (some events left) isn't detected here; a legacy HLC
+      // cursor parses to NaN and is correctly ignored.
+      const localCursor = Number(store.getMeta(`cursor:${base}`) ?? "0");
+      if (
+        body.account?.headSeq !== undefined &&
+        Number.isFinite(localCursor) &&
+        body.account.headSeq < localCursor &&
+        (body.account.events ?? 0) === 0
+      ) {
+        handleWipedRelay(base);
+      }
       return {
         ...bare,
         reachable: true,
         lastFailure: undefined,
+        reseeding: reseedingRelays.has(base) || undefined,
         version: body.server?.version,
         usedBytes: body.account?.usedBytes,
         quotaBytes: body.account?.quotaBytes,
@@ -1010,6 +1032,9 @@ export function createRelaySync(
     const active = new Set(relayBaseUrls());
     for (const base of relayHealth.keys()) {
       if (!active.has(base)) relayHealth.delete(base);
+    }
+    for (const base of reseedingRelays) {
+      if (!active.has(base)) reseedingRelays.delete(base);
     }
     if (state.transports.length > 0) {
       void sync().catch(() => undefined);
