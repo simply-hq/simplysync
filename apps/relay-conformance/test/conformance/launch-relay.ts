@@ -66,7 +66,7 @@ export function cleanupGoBinary(): void {
   }
 }
 
-async function getFreePort(): Promise<number> {
+export async function getFreePort(): Promise<number> {
   return new Promise((resolvePort, reject) => {
     const srv = createServer();
     srv.unref();
@@ -90,7 +90,7 @@ function sleep(ms: number): Promise<void> {
 
 // Keeps only the tail of a stream so a hung boot's error message is useful
 // without buffering unbounded output.
-function tailCollector(stream: ReadableStream<Uint8Array> | null): {
+export function tailCollector(stream: ReadableStream<Uint8Array> | null): {
   tail(): string;
 } {
   const lines: string[] = [];
@@ -121,7 +121,7 @@ function tailCollector(stream: ReadableStream<Uint8Array> | null): {
   return { tail: () => lines.join("\n") };
 }
 
-async function waitForHealth(
+export async function waitForHealth(
   baseUrl: string,
   describeProcess: () => string,
   timeoutMs: number,

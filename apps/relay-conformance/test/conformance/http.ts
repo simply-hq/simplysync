@@ -7,17 +7,36 @@
 import type { SyncEnvelope } from "@simplysync/protocol";
 import type { TestIdentity } from "./envelopes";
 
+/**
+ * Cloudflare keys its per-IP limiters on CF-Connecting-IP, which a local
+ * `wrangler dev` never sets — so every request in a run shares one budget and
+ * the owner-creation limit (5/min) trips partway through a suite. Passing `ip`
+ * lets a test present itself as the distinct client it actually is. Omitted,
+ * the request is byte-for-byte what it was before.
+ */
+function authHeaders(
+  test: TestIdentity,
+  bearer?: string,
+  ip?: string,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${bearer ?? test.identity.relayAuth}`,
+  };
+  if (ip) headers["CF-Connecting-IP"] = ip;
+  return headers;
+}
+
 export async function pushEvents(
   baseUrl: string,
   test: TestIdentity,
   events: SyncEnvelope[],
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   return fetch(`${baseUrl}/v1/events`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${bearer ?? test.identity.relayAuth}`,
+      ...authHeaders(test, bearer, ip),
     },
     body: JSON.stringify({ ownerId: test.identity.ownerId, events }),
   });
@@ -27,7 +46,7 @@ export async function pullEvents(
   baseUrl: string,
   test: TestIdentity,
   after: string,
-  { limit, bearer }: { limit?: number; bearer?: string } = {},
+  { limit, bearer, ip }: { limit?: number; bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({
     ownerId: test.identity.ownerId,
@@ -35,7 +54,7 @@ export async function pullEvents(
   });
   if (limit !== undefined) params.set("limit", String(limit));
   return fetch(`${baseUrl}/v1/events?${params.toString()}`, {
-    headers: { Authorization: `Bearer ${bearer ?? test.identity.relayAuth}` },
+    headers: authHeaders(test, bearer, ip),
   });
 }
 
@@ -58,22 +77,22 @@ export async function compactStreams(
 export async function getUsage(
   baseUrl: string,
   test: TestIdentity,
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({ ownerId: test.identity.ownerId });
   return fetch(`${baseUrl}/v1/usage?${params.toString()}`, {
-    headers: { Authorization: `Bearer ${bearer ?? test.identity.relayAuth}` },
+    headers: authHeaders(test, bearer, ip),
   });
 }
 
 export async function getStatus(
   baseUrl: string,
   test: TestIdentity,
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({ ownerId: test.identity.ownerId });
   return fetch(`${baseUrl}/v1/status?${params.toString()}`, {
-    headers: { Authorization: `Bearer ${bearer ?? test.identity.relayAuth}` },
+    headers: authHeaders(test, bearer, ip),
   });
 }
 
