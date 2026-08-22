@@ -4,8 +4,9 @@ A small, app-owned **local-first sync engine**. Your app writes to a local SQLit
 database first — instant, fully offline-capable — and those writes sync between a
 user's devices through a relay that only ever sees ciphertext.
 
-> Think of it like **iCloud or Google Drive for your app's data — except the
-> server can't read any of it.**
+> The relay does the job iCloud or Google Drive does for files — moving your
+> data between devices — **except it only ever holds ciphertext it can't
+> read.**
 
 Open source and MIT-licensed: **clone it, [run your own relay](./self-hosting.md),
 and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
