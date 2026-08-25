@@ -75,6 +75,39 @@ func routeHandler(cfg Config, st *store) http.Handler {
 	})
 }
 
+// authDeniedStatus maps a store-level denial to its status code and body
+// message. The store deals in reasons; this is the only place they become HTTP,
+// so a change to the wire contract can't hide inside a storage decision.
+func authDeniedStatus(denial authDenial) (int, string) {
+	switch denial {
+	case authUnknownOwner:
+		return http.StatusNotFound, "Unknown owner"
+	case authInvalidToken:
+		return http.StatusUnauthorized, "Invalid bearer token"
+	case authAtCapacity:
+		return http.StatusServiceUnavailable, "Relay is at capacity"
+	default:
+		return http.StatusInternalServerError, "Internal error"
+	}
+}
+
+func writeAuthDenied(w http.ResponseWriter, auth authResult) {
+	status, msg := authDeniedStatus(auth.denial)
+	writeJSON(w, status, errBody(msg))
+}
+
+// pushRejectionStatus is the same mapping for the push path's refusals.
+func pushRejectionStatus(rejected pushRejection) (int, string) {
+	switch rejected {
+	case pushEventTooLarge:
+		return http.StatusRequestEntityTooLarge, "Event is too large"
+	case pushOwnerQuotaExceeded:
+		return http.StatusRequestEntityTooLarge, "Owner quota exceeded"
+	default:
+		return http.StatusInternalServerError, "Failed to store events"
+	}
+}
+
 func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 	relayAuth := bearerToken(r)
 	if relayAuth == "" {
@@ -124,7 +157,7 @@ func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 
 	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, true)
 	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+		writeAuthDenied(w, auth)
 		return
 	}
 
@@ -134,8 +167,9 @@ func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := st.pushEvents(cfg, body.OwnerID, events)
-	if out.status != 0 {
-		writeJSON(w, out.status, errBody(out.msg))
+	if out.rejected != pushStored {
+		status, msg := pushRejectionStatus(out.rejected)
+		writeJSON(w, status, errBody(msg))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"accepted": out.accepted, "duplicate": out.duplicate})
@@ -192,7 +226,7 @@ func handleCompactStreams(cfg Config, st *store, w http.ResponseWriter, r *http.
 	// Same gate as push, but never create an owner on a purge call.
 	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, false)
 	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+		writeAuthDenied(w, auth)
 		return
 	}
 
@@ -234,7 +268,7 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 
 	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
 	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+		writeAuthDenied(w, auth)
 		return
 	}
 
@@ -261,7 +295,7 @@ func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {
 	}
 	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
 	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+		writeAuthDenied(w, auth)
 		return
 	}
 	n, _ := st.ownerStoredBytes(ownerID)
@@ -281,7 +315,7 @@ func handleStatus(cfg Config, st *store, w http.ResponseWriter, r *http.Request)
 	}
 	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
 	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+		writeAuthDenied(w, auth)
 		return
 	}
 	status, err := st.ownerStatus(ownerID)
@@ -337,14 +371,18 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, true)
-	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+	// Size before auth, because auth here is also the trust-on-first-use owner
+	// CREATE path: checking it first let a chunk that can only ever be rejected
+	// mint an owner row and spend the relay's global MAX_OWNERS budget. The
+	// Cloudflare relay orders it the same way.
+	if contentLengthExceeds(r, cfg.MaxBlobBytes) {
+		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Blob chunk is too large"))
 		return
 	}
 
-	if contentLengthExceeds(r, cfg.MaxBlobBytes) {
-		writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Blob chunk is too large"))
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, true)
+	if !auth.ok {
+		writeAuthDenied(w, auth)
 		return
 	}
 
@@ -403,7 +441,7 @@ func handleBlobGet(st *store, w http.ResponseWriter, r *http.Request, hash strin
 	}
 	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
 	if !auth.ok {
-		writeJSON(w, auth.status, errBody(auth.msg))
+		writeAuthDenied(w, auth)
 		return
 	}
 	bytes, ok, err := st.getBlob(ownerID, hash)
@@ -433,7 +471,8 @@ func handleBlobHead(st *store, w http.ResponseWriter, r *http.Request, hash stri
 	}
 	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
 	if !auth.ok {
-		w.WriteHeader(auth.status)
+		status, _ := authDeniedStatus(auth.denial)
+		w.WriteHeader(status)
 		return
 	}
 	exists, _ := st.blobExists(ownerID, hash)

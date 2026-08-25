@@ -152,3 +152,39 @@ describe("presence channel", () => {
     worker.stop();
   });
 });
+
+describe("presence channel (hostile input)", () => {
+  test("garbage and foreign messages on a shared transport are ignored", () => {
+    // One transport commonly carries several channels, and on the web that
+    // transport is a BroadcastChannel any script on the origin can post to.
+    // Presence is a read surface for the UI: a message it can't parse must be
+    // dropped, never thrown from inside a subscriber callback.
+    const hub = createMemoryTransportHub();
+    const c = clock();
+    const mine = hub.connect();
+    const theirs = hub.connect();
+    const channel = createPresenceChannel<{ name: string }>("presence", {
+      transport: mine,
+      selfId: "me",
+      now: c.now,
+    });
+
+    channel.publish({ name: "me" });
+    expect(names(channel.list())).toBe("me");
+
+    theirs.send("not json at all");
+    theirs.send("null");
+    theirs.send(JSON.stringify({ t: "typing", s: "peer", v: { name: "wrong-topic" } }));
+    theirs.send(JSON.stringify({ t: "presence", s: "me", v: { name: "spoofed" } }));
+
+    // Unparseable, another topic, and an impersonation of this client's own id
+    // all leave the view untouched.
+    expect(names(channel.list())).toBe("me");
+
+    // A well-formed peer on the right topic still lands.
+    theirs.send(JSON.stringify({ t: "presence", s: "peer", v: { name: "peer" } }));
+    expect(names(channel.list())).toBe("me,peer");
+
+    channel.stop();
+  });
+});

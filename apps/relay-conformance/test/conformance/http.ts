@@ -9,21 +9,31 @@ import type { TestIdentity } from "./envelopes";
 
 /**
  * Cloudflare keys its per-IP limiters on CF-Connecting-IP, which a local
- * `wrangler dev` never sets — so every request in a run shares one budget and
- * the owner-creation limit (5/min) trips partway through a suite. Passing `ip`
- * lets a test present itself as the distinct client it actually is. Omitted,
- * the request is byte-for-byte what it was before.
+ * `wrangler dev` never sets — so without this every request in a run shares one
+ * budget and the owner-creation limit (5/min) trips partway through a suite.
+ * Each test owner is a different client, so each gets its own address, derived
+ * from the owner id and stable across the requests of one test. Go reads the
+ * same header for its per-IP limiter, so both relays see the same clients.
+ *
+ * Pass `ip` explicitly only to say something about addresses — that several
+ * owners share one, or that one owner moved.
  */
+export function ipFor(test: TestIdentity): string {
+  const id = test.identity.ownerId;
+  let h = 0;
+  for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return `10.${(h >>> 16) & 255}.${(h >>> 8) & 255}.${h & 255}`;
+}
+
 function authHeaders(
   test: TestIdentity,
   bearer?: string,
   ip?: string,
 ): Record<string, string> {
-  const headers: Record<string, string> = {
+  return {
     Authorization: `Bearer ${bearer ?? test.identity.relayAuth}`,
+    "CF-Connecting-IP": ip ?? ipFor(test),
   };
-  if (ip) headers["CF-Connecting-IP"] = ip;
-  return headers;
 }
 
 export async function pushEvents(
@@ -62,13 +72,13 @@ export async function compactStreams(
   baseUrl: string,
   test: TestIdentity,
   streamIds: string[],
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   return fetch(`${baseUrl}/v1/streams/compact`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${bearer ?? test.identity.relayAuth}`,
+      ...authHeaders(test, bearer, ip),
     },
     body: JSON.stringify({ ownerId: test.identity.ownerId, streamIds }),
   });
@@ -101,14 +111,14 @@ export async function putBlob(
   test: TestIdentity,
   hash: string,
   bytes: Uint8Array,
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({ ownerId: test.identity.ownerId });
   return fetch(
     `${baseUrl}/v1/blobs/${encodeURIComponent(hash)}?${params.toString()}`,
     {
       method: "PUT",
-      headers: { Authorization: `Bearer ${bearer ?? test.identity.relayAuth}` },
+      headers: authHeaders(test, bearer, ip),
       // Same conversion tools/protocol-demo/src/client.ts uses when
       // uploading blob chunks — TS's DOM BodyInit type doesn't line up with
       // bun-types' Uint8Array<ArrayBufferLike> directly.
@@ -124,12 +134,12 @@ export async function getBlob(
   baseUrl: string,
   test: TestIdentity,
   hash: string,
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({ ownerId: test.identity.ownerId });
   return fetch(
     `${baseUrl}/v1/blobs/${encodeURIComponent(hash)}?${params.toString()}`,
-    { headers: { Authorization: `Bearer ${bearer ?? test.identity.relayAuth}` } },
+    { headers: authHeaders(test, bearer, ip) },
   );
 }
 
@@ -137,14 +147,11 @@ export async function headBlob(
   baseUrl: string,
   test: TestIdentity,
   hash: string,
-  { bearer }: { bearer?: string } = {},
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({ ownerId: test.identity.ownerId });
   return fetch(
     `${baseUrl}/v1/blobs/${encodeURIComponent(hash)}?${params.toString()}`,
-    {
-      method: "HEAD",
-      headers: { Authorization: `Bearer ${bearer ?? test.identity.relayAuth}` },
-    },
+    { method: "HEAD", headers: authHeaders(test, bearer, ip) },
   );
 }

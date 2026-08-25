@@ -6,7 +6,10 @@
       "outputs": ["dist/**"]
     },
     "test": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build"],
+      // Whether the relay conformance suite may skip the Cloudflare relay or
+      // must fail without it (apps/relay-conformance/test/conformance/adapters.ts).
+      "env": ["RELAY_REQUIRE_CLOUDFLARE"]
     },
     "typecheck": {
       "dependsOn": ["^build"]

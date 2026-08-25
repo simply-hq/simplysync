@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
@@ -8,37 +7,8 @@ import {
   NonEmptyString,
   searchFilter,
   String as Str,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage } from "./support";
 
 const schema = {
   message: { id: id("Message"), author: NonEmptyString, body: Str },
@@ -46,7 +16,7 @@ const schema = {
 
 function makeEngine() {
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
   })(schema, { name: "search-test" });
 }

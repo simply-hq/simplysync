@@ -5,43 +5,11 @@ import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
 import { createEngineState } from "../src/engine/state";
 import { createStore } from "../src/engine/store";
 import { SYNC_OUTBOX_TABLE } from "../src/engine/constants";
-
-function makeDriver(): { driver: SqliteDriver; db: Database } {
-  const db = new Database(":memory:");
-  return {
-    db,
-    driver: {
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
 const outboxCount = (db: Database) =>
@@ -59,7 +27,7 @@ function enqueueFakeEvent(db: Database, eventId: string) {
 
 describe("pruneOutbox (store)", () => {
   function makeStore(bases: string[]) {
-    const { driver, db } = makeDriver();
+    const { driver, db } = memoryDriver();
     const state = createEngineState({ name: "prune" });
     state.driver = driver;
     state.transports = bases.map((url) => ({ type: "Http" as const, url }));
@@ -118,7 +86,7 @@ describe("sync prunes the outbox automatically", () => {
 
     const engine = createSync({
       createSqliteDriver: () => {
-        const made = makeDriver();
+        const made = memoryDriver();
         handle = made;
         return made.driver;
       },

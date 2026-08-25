@@ -143,6 +143,18 @@ public enum Envelope {
         payloadObject(payload).canonical()
     }
 
+    /// The exact AAD string `seal` binds a ciphertext to. Exposed so the
+    /// conformance corpus can assert the header canonicalization directly: a
+    /// drift here otherwise surfaces only as a ciphertext mismatch, which names
+    /// neither the field order nor the key sort that actually moved.
+    public static func encodeHeader(
+        version: Int, ownerId: String, eventId: String,
+        deviceId: String, createdAt: String, streamId: String?
+    ) -> String {
+        headerObject(version: version, ownerId: ownerId, eventId: eventId,
+                     deviceId: deviceId, createdAt: createdAt, streamId: streamId).canonical()
+    }
+
     public static func decodePayload(_ json: String) throws -> SyncPayload {
         try parsePayload(Data(json.utf8))
     }

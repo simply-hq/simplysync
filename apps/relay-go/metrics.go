@@ -94,6 +94,8 @@ func routeLabel(cfg Config, method, path string) string {
 		return method + " /health"
 	case "/v1/events":
 		return method + " /v1/events"
+	case "/v1/streams/compact":
+		return method + " /v1/streams/compact"
 	case "/v1/usage":
 		return method + " /v1/usage"
 	case "/v1/status":

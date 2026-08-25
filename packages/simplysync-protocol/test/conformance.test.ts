@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
+import { canonicalJson } from "../src/crypto.ts";
 import {
   base64UrlDecode,
   base64UrlEncode,
+  compareHlc,
   decryptEnvelope,
   deriveIdentity,
   deriveIdentityFromMnemonic,
@@ -38,8 +40,36 @@ const DERIVERS = {
 } as const;
 
 describe("cross-language crypto conformance corpus", () => {
-  for (const [name, entry] of Object.entries(vectors)) {
+  for (const [name, entry] of Object.entries(vectors.identities)) {
     describe(name, () => {
+      // Asserted separately from the ciphertext because these are what a
+      // ciphertext mismatch is usually *caused* by. Without them a drifted key
+      // sort or a changed header shape both surface as "ciphertext differs",
+      // which names neither.
+      test("canonicalizes the header and payload byte-for-byte", async () => {
+        const derive = DERIVERS[name as keyof typeof DERIVERS];
+        const identity = await derive(entry.input);
+        const nonce = base64UrlDecode(entry.nonceB64);
+        const envelope = await sealPayload(
+          identity,
+          { eventId: EVENT_ID, deviceId: DEVICE_ID, createdAt: CREATED_AT },
+          PAYLOAD,
+          nonce,
+        );
+
+        expect(
+          canonicalJson({
+            version: envelope.version,
+            ownerId: envelope.ownerId,
+            eventId: envelope.eventId,
+            deviceId: envelope.deviceId,
+            createdAt: envelope.createdAt,
+            ...(envelope.streamId ? { streamId: envelope.streamId } : {}),
+          }),
+        ).toBe(entry.headerCanonical);
+        expect(canonicalJson(PAYLOAD)).toBe(entry.payloadCanonical);
+      });
+
       test("derives the locked identity", async () => {
         const derive = DERIVERS[name as keyof typeof DERIVERS];
         const identity = await derive(entry.input);
@@ -87,4 +117,18 @@ describe("cross-language crypto conformance corpus", () => {
       });
     });
   }
+
+  // compareHlc is the sole last-write-wins tiebreaker, so a port that orders
+  // two events differently hands its device a different winner and the two
+  // stop converging. hlc-compare.test.ts pins the same rule against
+  // localeCompare specifically; these cases are the ones every port asserts.
+  describe("hlc ordering", () => {
+    for (const testCase of vectors.hlcOrder) {
+      test(`${testCase.name}: ${testCase.expect}`, () => {
+        const actual = compareHlc(testCase.left, testCase.right);
+        const sign = actual < 0 ? "lt" : actual > 0 ? "gt" : "eq";
+        expect(sign).toBe(testCase.expect);
+      });
+    }
+  });
 });

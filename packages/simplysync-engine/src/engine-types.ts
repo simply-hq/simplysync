@@ -318,6 +318,18 @@ export interface SyncEngineConfig {
   /** Poll interval (ms) for pulling remote changes. Default 60000. */
   readonly syncIntervalMs?: number;
   /**
+   * Set `false` to stop the engine scheduling sync for itself: no poll timer,
+   * and no opportunistic pass after a local write, at boot, when transports
+   * are attached, on web focus/online, or on promotion to Leader.
+   * `engine.sync()` still runs a full pass, so the host decides exactly when
+   * this Device talks to a Relay.
+   *
+   * For anything that wants one observable sync instead of a background loop:
+   * a CLI that syncs once and exits, a diagnostic that reports what a single
+   * pass did, a test that needs the Outbox to sit still. Default: on.
+   */
+  readonly autoSync?: boolean;
+  /**
    * Reserved retention setting kept for source compatibility.
    *
    * Automatic hard deletion is disabled until the protocol has a durable
@@ -416,6 +428,11 @@ export interface RelayStatus {
    * reported `headSeq` behind our pull cursor. Pair with
    * `SyncStateIsSyncing.progress.pendingPush` for a "re-uploading N events"
    * banner: a plain "synced" would be a lie until the copy is rebuilt.
+   *
+   * Session-scoped: this flag is held in memory, not on disk, so a restart
+   * part-way through a re-seed reports a healthy relay until the next probe
+   * detects the loss again. The re-seed itself resumes from the durable
+   * outbox, so no data is at risk — only the banner is briefly wrong.
    */
   readonly reseeding?: boolean;
 }
@@ -595,6 +612,13 @@ export interface SyncEngine<S extends SchemaDefinition> {
    * storage snapshot (used vs quota, stream/event counts) fetched live from
    * `GET /v1/status`. Network I/O on every call — poll at UI cadence (e.g. a
    * diagnostics screen), not per frame.
+   *
+   * NOT a pure read. This is also where relay data loss is detected, so a
+   * status probe can decide the relay was wiped and re-seed it: clearing this
+   * device's cursors and delivery rows for that relay and re-queueing every
+   * row it holds. That is deliberate — recovery should be eager, and a caller
+   * choosing a poll interval is choosing how promptly data loss is noticed —
+   * but it means a "refresh" button can start a full re-upload.
    */
   getRelayStatuses(): Promise<RelayStatus[]>;
   setTransports(transports: readonly Transport[]): void;

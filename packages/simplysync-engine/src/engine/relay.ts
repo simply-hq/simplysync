@@ -19,15 +19,13 @@ import type {
 } from "../engine-types.js";
 import {
   OUTBOX_PUSH_BATCH,
-  SYNC_SEEN_TABLE,
 } from "./constants.js";
 import type { QueryCache } from "./query-cache.js";
 import type { EngineState } from "./state.js";
 import type { Clock, Store } from "./store.js";
 import type { TabBridge } from "./tab-sync.js";
+import type { EventAdmission } from "./admission.js";
 import {
-  classifySyncPayload,
-  type ClassifiedSyncPayload,
   type RuntimeSyncPayload,
 } from "./schema-version.js";
 
@@ -47,6 +45,7 @@ export function createRelaySync(
   state: EngineState,
   store: Store,
   clock: Clock,
+  admission: EventAdmission,
   queryCache: QueryCache,
   bridge: TabBridge,
   schema: SchemaDefinition,
@@ -59,6 +58,12 @@ export function createRelaySync(
     typeof config.syncIntervalMs === "number" && config.syncIntervalMs > 0
       ? config.syncIntervalMs
       : 60_000;
+  // Explicit-only mode (config.autoSync === false). Every automatic trigger —
+  // the poll tick here, and a local write, boot, focus/online, promotion to
+  // Leader from mutations-lifecycle — reaches this module through the one
+  // `sync` it publishes, so suppressing that single entry covers all of them;
+  // `syncNow` stays the explicit entry `engine.sync()` is bound to.
+  const autoSyncEnabled = config.autoSync !== false;
   // Backoff poll interval after a terminal failure so we don't re-push a
   // rejected batch every normal poll forever (battery/network drain). focus/online and
   // local writes still trigger an immediate retry.
@@ -85,10 +90,6 @@ export function createRelaySync(
           ]),
       ]),
   ]);
-  const DEFERRED_SCAN_ACTIVE_KEY = "deferred:opaque:activeSchema";
-  const DEFERRED_SCAN_COMPLETE_KEY = "deferred:opaque:completeSchema";
-  const DEFERRED_SCAN_CURSOR_KEY = "deferred:opaque:cursor";
-
   // Single-owner mutable state (never touched outside this module).
   let syncTimer: number | null = null;
   let pollIntervalMs = DEFAULT_POLL_MS;
@@ -319,12 +320,6 @@ export function createRelaySync(
     }
   };
 
-  const futureRetryAfter = (eventId: string, payloadHlc: string): number => {
-    const eventMillis = parseHlc(eventId)?.millis ?? 0;
-    const payloadMillis = parseHlc(payloadHlc)?.millis ?? 0;
-    return Math.max(eventMillis, payloadMillis) - HLC_MAX_FUTURE_DRIFT_MS;
-  };
-
   type DeferredRow = { eventId: string; payloadJson: string };
 
   // Apply one bounded page. Opaque schema/table rows stay marked with a NULL
@@ -345,57 +340,10 @@ export function createRelaySync(
           store.dropDeferredEvent(row.eventId);
           continue;
         }
-        const classified = classifySyncPayload(rawPayload, schemaVersion);
-        if (classified.kind === "future") {
-          store.deferRemoteEvent(row.eventId, row.payloadJson, null);
-          continue;
-        }
-        if (classified.kind === "invalid") {
-          store.dropDeferredEvent(row.eventId);
-          continue;
-        }
-        const payload = classified.payload;
-        const eventHlc = getHlcAdmissibility(row.eventId);
-        const payloadHlc = getHlcAdmissibility(payload.hlc);
-        if (eventHlc === "future" || payloadHlc === "future") {
-          store.deferRemoteEvent(
-            row.eventId,
-            row.payloadJson,
-            futureRetryAfter(row.eventId, payload.hlc),
-          );
-          continue;
-        }
-        if (
-          eventHlc === "malformed"
-          || payloadHlc === "malformed"
-          || payload.hlc !== row.eventId
-        ) {
-          store.dropDeferredEvent(row.eventId);
-          continue;
-        }
-        if (!(payload.table in schema)) {
-          store.deferRemoteEvent(row.eventId, row.payloadJson, null);
-          continue;
-        }
-        try {
-          if (!clock.observeHlc(payload.hlc)) {
-            store.deferRemoteEvent(
-              row.eventId,
-              row.payloadJson,
-              Math.max(Date.now() + 1_000, futureRetryAfter(row.eventId, payload.hlc)),
-            );
-            continue;
-          }
-          if (store.applyLwwRow(payload)) {
-            changed.add(payload.table);
-            applied.push({ eventId: row.eventId, payloadJson: row.payloadJson });
-          }
-          store.dropDeferredEvent(row.eventId);
-        } catch {
-          // A structurally valid row may need a later compatible local schema.
-          // Reclassify it as opaque so it cannot occupy the front of every due
-          // page and starve later future-clock rows.
-          store.deferRemoteEvent(row.eventId, row.payloadJson, null);
+        const outcome = admission.admit(row.eventId, rawPayload, row.payloadJson);
+        if (outcome.kind === "applied") {
+          changed.add(outcome.table);
+          applied.push({ eventId: row.eventId, payloadJson: row.payloadJson });
         }
       }
     });
@@ -411,22 +359,19 @@ export function createRelaySync(
   // syncs without launch-long work, while a completed schema never rescans
   // permanently opaque rows on later launches or polls.
   const replayEligibleOpaquePage = (): Set<string> => {
-    if (store.getMeta(DEFERRED_SCAN_COMPLETE_KEY) === DEFERRED_SCHEMA_TOKEN) {
-      return new Set<string>();
+    const scan = store.opaqueScanState();
+    if (scan.completedToken === DEFERRED_SCHEMA_TOKEN) return new Set<string>();
+    if (scan.activeToken !== DEFERRED_SCHEMA_TOKEN) {
+      store.startOpaqueScan(DEFERRED_SCHEMA_TOKEN);
     }
-    if (store.getMeta(DEFERRED_SCAN_ACTIVE_KEY) !== DEFERRED_SCHEMA_TOKEN) {
-      store.setMeta(DEFERRED_SCAN_ACTIVE_KEY, DEFERRED_SCHEMA_TOKEN);
-      store.setMeta(DEFERRED_SCAN_CURSOR_KEY, "");
-    }
-    const cursor = store.getMeta(DEFERRED_SCAN_CURSOR_KEY) || null;
+    const cursor =
+      scan.activeToken === DEFERRED_SCHEMA_TOKEN ? scan.cursor : null;
     const page = store.listOpaqueDeferredEvents(cursor, DEFERRED_REPLAY_LIMIT);
     const changed = replayDeferredRows(page);
     if (page.length < DEFERRED_REPLAY_LIMIT) {
-      store.setMeta(DEFERRED_SCAN_COMPLETE_KEY, DEFERRED_SCHEMA_TOKEN);
-      store.setMeta(DEFERRED_SCAN_ACTIVE_KEY, "");
-      store.setMeta(DEFERRED_SCAN_CURSOR_KEY, "");
+      store.finishOpaqueScan(DEFERRED_SCHEMA_TOKEN);
     } else {
-      store.setMeta(DEFERRED_SCAN_CURSOR_KEY, page[page.length - 1]!.eventId);
+      store.advanceOpaqueScan(page[page.length - 1]!.eventId);
     }
     return changed;
   };
@@ -460,8 +405,7 @@ export function createRelaySync(
     };
     const { identity, driver } = state;
     if (!identity || !driver) return result;
-    const cursorKey = `cursor:${baseUrl}`;
-    const after = store.getMeta(cursorKey) ?? "";
+    const after = store.pullCursor(baseUrl) ?? "";
     const url = new URL(`${baseUrl}/v1/events`);
     url.searchParams.set("ownerId", identity.ownerId);
     url.searchParams.set("after", after);
@@ -498,18 +442,10 @@ export function createRelaySync(
     const decrypted: Array<{
       eventId: string;
       payloadJson: string;
-      classified: ClassifiedSyncPayload;
-      eventHlc: HlcAdmissibility;
-      payloadHlc?: HlcAdmissibility;
-      hlcMatchesEvent?: boolean;
-      acceptableHlc?: boolean;
+      rawPayload: unknown;
     }> = [];
     for (const envelope of body.events) {
-      const seen = driver.select(
-        `select 1 from "${SYNC_SEEN_TABLE}" where event_id = ?`,
-        [envelope.eventId],
-      );
-      if (seen.length > 0) continue;
+      if (store.hasSeenEvent(envelope.eventId)) continue;
       let rawPayload: unknown;
       try {
         rawPayload = await decryptEnvelope<unknown, number>(
@@ -521,43 +457,15 @@ export function createRelaySync(
         result.decryptFailures += 1;
         continue;
       }
-      const classified = classifySyncPayload(rawPayload, schemaVersion);
-      const eventHlc = getHlcAdmissibility(envelope.eventId);
-      const payloadHlc = classified.kind === "supported"
-        ? getHlcAdmissibility(classified.payload.hlc)
-        : undefined;
-      const hlcMatchesEvent = classified.kind === "supported"
-        ? classified.payload.hlc === envelope.eventId
-        : undefined;
-      // Absorb every supported event's time into our clock (even tables we
-      // don't apply) so future local writes always sort above what we've
-      // already seen. Future-version payloads stay opaque until an upgraded
-      // app declares support; an older engine must not interpret their fields.
-      // observeHlc is itself synchronous (in-memory update + a couple of plain
-      // setMeta writes), so doing it here rather than inside the transaction
-      // below is a style choice, not a correctness requirement — it must run
-      // for every supported event regardless of apply outcome, which this
-      // preserves. Future-version payload fields remain intentionally opaque.
-      const acceptableHlc =
-        classified.kind === "supported"
-        && eventHlc === "admissible"
-        && payloadHlc === "admissible"
-        && hlcMatchesEvent
-        ? clock.observeHlc(classified.payload.hlc)
-        : undefined;
-      // Collect for the batched sync phase below. The apply itself (via
-      // applyRemoteRow, which projects onto the local schema per plan 004) and
-      // the seen-insert happen inside ONE transaction there (plan 008). A
-      // genuine write error is caught there, counted as applyFailures, and the
-      // event is still marked seen (terminal) so it can't wedge the cursor.
+      // Decryption is the only asynchronous step, so it is the only one that
+      // has to happen out here. Every decision about the event — classifying
+      // it, ordering it, absorbing its clock, applying or deferring it — runs
+      // inside the transaction below, through the same admission ladder the
+      // replay and cross-tab paths use.
       decrypted.push({
         eventId: envelope.eventId,
         payloadJson: JSON.stringify(rawPayload),
-        classified,
-        eventHlc,
-        payloadHlc,
-        hlcMatchesEvent,
-        acceptableHlc,
+        rawPayload,
       });
     }
 
@@ -568,67 +476,31 @@ export function createRelaySync(
     if (decrypted.length > 0) {
       const appliedEvents: Array<{ eventId: string; payloadJson: string }> = [];
       driver.transaction(() => {
-        for (
-          const {
-            eventId,
-            payloadJson,
-            classified,
-            eventHlc,
-            payloadHlc,
-            hlcMatchesEvent,
-            acceptableHlc,
-          } of decrypted
-        ) {
+        for (const { eventId, payloadJson, rawPayload } of decrypted) {
           // Re-check "seen" here (not just in the async phase above): a
           // duplicate eventId within the same page — which a relay shouldn't
           // send, but we stay defensive — would otherwise be applied twice.
-          const stillUnseen =
-            driver.select(
-              `select 1 from "${SYNC_SEEN_TABLE}" where event_id = ?`,
-              [eventId],
-            ).length === 0;
-          if (!stillUnseen) continue;
-          if (
-            eventHlc === "malformed"
-            || classified.kind === "invalid"
-          ) {
-            result.applyFailures += 1;
-          } else if (classified.kind === "future") {
-            store.deferRemoteEvent(eventId, payloadJson);
-          } else if (payloadHlc === "malformed" || !hlcMatchesEvent) {
-            result.applyFailures += 1;
-          } else if (eventHlc === "future" || payloadHlc === "future") {
-            // Keep authenticated, structurally valid future events until wall
-            // time enters the admissible window. Discarding them would replace
-            // clock poisoning with silent data loss.
-            store.deferRemoteEvent(
-              eventId,
-              payloadJson,
-              futureRetryAfter(eventId, classified.payload.hlc),
-            );
-          } else if (!acceptableHlc) {
-            result.applyFailures += 1;
-          } else if (classified.payload.table in schema) {
-            const payload = classified.payload;
-            try {
-              if (store.applyLwwRow(payload)) {
-                result.applied += 1;
-                appliedEvents.push({
-                  eventId,
-                  payloadJson: JSON.stringify(payload),
-                });
-              }
-              result.changed.add(payload.table);
-            } catch {
-              result.applyFailures += 1;
+          if (store.hasSeenEvent(eventId)) continue;
+          const outcome = admission.admit(eventId, rawPayload, payloadJson);
+          if (outcome.kind === "applied" || outcome.kind === "unchanged") {
+            result.changed.add(outcome.table);
+            if (outcome.kind === "applied") {
+              result.applied += 1;
+              appliedEvents.push({ eventId, payloadJson });
             }
-          } else {
-            store.deferRemoteEvent(eventId, payloadJson);
+          } else if (
+            outcome.kind === "rejected"
+            || outcome.reason === "applyFailed"
+          ) {
+            // Rejected events are unorderable or not payloads at all, and are
+            // gone. An `applyFailed` deferral is retained, not lost — but it
+            // still means a row this build could not write, so it stays
+            // visible in the sync log rather than being retained silently.
+            result.applyFailures += 1;
           }
-          driver.exec(
-            `insert or ignore into "${SYNC_SEEN_TABLE}" (event_id) values (?)`,
-            [eventId],
-          );
+          // A deferred event is retained in its own queue and replayed later;
+          // marking it seen only stops the relay re-delivering it.
+          store.markEventSeen(eventId);
         }
       });
       // Relay-pulled rows reach follower tabs here (only the leader pulls).
@@ -642,25 +514,12 @@ export function createRelaySync(
     // An idle poll commonly returns the cursor we already have. Avoid turning
     // that no-op into a database write (and, in browsers, a whole-db snapshot).
     if (body.nextCursor !== after) {
-      store.setMeta(cursorKey, body.nextCursor);
+      store.setPullCursor(baseUrl, body.nextCursor);
     }
     return result;
   };
 
-  const pruneSeen = () => {
-    const { driver } = state;
-    if (!driver) return;
-    const n =
-      driver.select<{ c: number }>(
-        `select count(*) as c from "${SYNC_SEEN_TABLE}"`,
-      )[0]?.c ?? 0;
-    if (n > SEEN_CAP) {
-      driver.exec(
-        `delete from "${SYNC_SEEN_TABLE}" where event_id not in (select event_id from "${SYNC_SEEN_TABLE}" order by event_id desc limit ?)`,
-        [SEEN_CAP],
-      );
-    }
-  };
+  const pruneSeen = () => store.pruneSeen(SEEN_CAP);
 
   const runSyncPass = async (): Promise<void> => {
     // Followers don't seal or push: their in-memory copy is never at rest, and
@@ -701,10 +560,14 @@ export function createRelaySync(
       // (per-relay log entries, not collapsed to the first failure).
       for (const base of bases) {
         try {
-		  // If this relay was added after the bounded outbox was pruned, rebuild
-		  // the current row state before its first push.
-		  store.backfillOutboxForNewRelay(base);
-		  await sealPendingOutbox();
+          // If this relay was added after the bounded outbox was pruned, rebuild
+          // the current row state before its first push.
+          store.backfillOutboxForNewRelay(base);
+          // Seals what that backfill just queued. The pass-level seal above
+          // ran before these rows existed, and a backfilled row must be sealed
+          // before it can be pushed — so this is a no-op on every relay that
+          // was not just re-seeded, not a redundant second pass.
+          await sealPendingOutbox();
           // Drain within THIS sync (plan 008 step 2): a big backlog (e.g. a
           // new-relay backfill) must not trickle out one batch per poll cycle,
           // flashing a misleading "synced" between batches while thousands of
@@ -740,13 +603,11 @@ export function createRelaySync(
             decryptFailures: 0,
             applyFailures: 0,
           };
-          const pullCursorKey = `cursor:${base}`;
           let firstPage = true;
           while (true) {
-            const cursorBefore = store.getMeta(pullCursorKey) ?? "";
+            const cursorBefore = store.pullCursor(base) ?? "";
             const page = await pullAndApply(base);
-            const advanced =
-              (store.getMeta(pullCursorKey) ?? "") !== cursorBefore;
+            const advanced = (store.pullCursor(base) ?? "") !== cursorBefore;
             // Forward-progress guard: a non-empty page that didn't advance the
             // cursor is the relay re-serving events we already have. The FIRST
             // page of a sync still counts (a resend is real pull traffic and
@@ -970,7 +831,7 @@ export function createRelaySync(
       // full re-seed on every healthy relay that compacts. The cost is that a
       // PARTIAL restore (some events left) isn't detected here; a legacy HLC
       // cursor parses to NaN and is correctly ignored.
-      const localCursor = Number(store.getMeta(`cursor:${base}`) ?? "0");
+      const localCursor = Number(store.pullCursor(base) ?? "0");
       if (
         body.account?.headSeq !== undefined &&
         Number.isFinite(localCursor) &&
@@ -1013,6 +874,7 @@ export function createRelaySync(
   // changes while transports are configured. Also synced opportunistically after
   // local writes and on web focus/online.
   const startPolling = () => {
+    if (!autoSyncEnabled) return;
     if (deps.tabSync && !deps.tabSync.isLeader()) return;
     if (syncTimer !== null || state.transports.length === 0) return;
     syncTimer = setInterval(() => {
@@ -1026,6 +888,9 @@ export function createRelaySync(
     }
   };
 
+  const autoSync = (): Promise<void> =>
+    autoSyncEnabled ? sync() : Promise.resolve();
+
   const setTransports = (next: readonly Transport[]) => {
     state.transports = [...next];
     // Drop health for relays no longer configured so statuses don't linger.
@@ -1037,7 +902,7 @@ export function createRelaySync(
       if (!active.has(base)) reseedingRelays.delete(base);
     }
     if (state.transports.length > 0) {
-      void sync().catch(() => undefined);
+      void autoSync().catch(() => undefined);
       startPolling();
     } else {
       stopPolling();
@@ -1045,7 +910,11 @@ export function createRelaySync(
   };
 
   return {
-    sync,
+    // What every automatic trigger calls, and the one place explicit-only mode
+    // has to switch off.
+    sync: autoSync,
+    /** The explicit entry: `engine.sync()` runs a pass whatever the mode. */
+    syncNow: sync,
     startPolling,
     stopPolling,
     setTransports,

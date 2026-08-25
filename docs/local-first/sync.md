@@ -56,6 +56,13 @@ while still retrying immediately on focus/online/write. A `429` also uses the
 five-minute backoff but remains nonterminal; network and 5xx failures retry at
 the normal cadence.
 
+Set `autoSync: false` to switch all of that off — no poll timer, and no
+opportunistic pass after a write, at boot, when transports are attached, on
+focus/online, or on promotion to leader. `engine.sync()` still runs a full
+pass, so the host decides exactly when the device talks to a relay. Useful for
+a CLI that syncs once and exits, or a diagnostic that wants to report what one
+observable pass did.
+
 ## Restore on a new device
 
 Restore is just "boot with the user's recovery phrase, then sync from an empty
@@ -204,6 +211,30 @@ Body: { "ownerId": string, "events": SyncEnvelope[] }
 - `limit` is clamped to `[1, MAX_EVENTS_PER_PULL]`, defaulting to
   `DEFAULT_EVENTS_PER_PULL`.
 - Pull requires an *existing* owner (`404` if unknown) and a matching auth hash.
+
+### `POST /v1/streams/compact` — client-driven tombstone GC
+
+```
+Authorization: Bearer <relayAuth>
+Body: { "ownerId": string, "streamIds": string[] }
+→ 200 { "deletedEvents": number, "reclaimedBytes": number }
+```
+
+- The client names streams it has already hard-purged locally; the relay drops
+  *every* event of those streams, tombstone included, and credits the freed
+  bytes back to the owner's usage. This is the only way an owner's tombstones
+  leave the relay — log [compaction](#compaction) alone always keeps the newest
+  event per stream.
+- A `streamId` is an opaque HMAC id only the key holder can compute (see
+  `deriveStreamId`), so naming a stream leaks no table, row, or content — and
+  the bearer token still has to match the owner's stored hash. Unlike push,
+  this never registers an owner: unknown `ownerId` → `404`.
+- Idempotent — unknown or already-compacted `streamIds` are a no-op. Each id
+  must match the sealed form (base64url, 22 chars) or the request is `400`;
+  more than `MAX_STREAMS_PER_COMPACT` ids → `413`.
+- The engine calls this from its durable purge queue after `purgeDeleted()` /
+  `purgeRows()`, batching ids and retrying every relay that hasn't acked, so a
+  relay that was down still gets the purge on a later sync.
 
 ### `PUT` / `GET` / `HEAD /v1/blobs/:hash` — blob chunks
 

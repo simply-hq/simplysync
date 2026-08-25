@@ -209,17 +209,6 @@ export function createMutations(
       value: row.merged,
     });
 
-  // Kick a sync so any pending outbox rows get sealed (encrypted) and pushed
-  // promptly. Skipped entirely for local-only writes (see
-  // MutationOptions.local). Always attempted — even with no relay configured
-  // yet — so a pending row doesn't sit unencrypted at rest indefinitely;
-  // `relay.sync()` itself no-ops the network push/pull when there's nothing to
-  // push to, but still runs the seal step (see relay.ts `sealPendingOutbox`).
-  const replicate = (rows: readonly PreparedRow[], local?: boolean): void => {
-    if (local || rows.length === 0) return;
-    void relay.sync().catch(() => undefined);
-  };
-
   const mutate = (
     table: string,
     values: Record<string, unknown>,
@@ -267,7 +256,13 @@ export function createMutations(
     // events. The row is already persisted above and queries refresh below, so
     // the local UI is fully up to date — only replication waits for a normal
     // (committing) write to the same row.
-    replicate([prep.prepared], options?.local);
+    //
+    // Otherwise kick a sync so the pending outbox row gets sealed (encrypted)
+    // and pushed promptly. Attempted even with no relay configured yet, so the
+    // row doesn't sit unencrypted at rest indefinitely; `relay.sync()` itself
+    // no-ops the network push/pull when there's nothing to push to, but still
+    // runs the seal step (see relay.ts `sealPendingOutbox`).
+    if (!local) void relay.sync().catch(() => undefined);
     // Other tabs see even `local` writes live; they just don't stage them.
     bridge.publish([
       { eventId: prep.prepared.hlc, payloadJson, outbox: !local },
@@ -334,7 +329,8 @@ export function createMutations(
       };
     }
 
-    replicate(prepared, options?.local);
+    // One sync for the whole batch, same fire-and-forget seal+push as `mutate`.
+    if (!local && prepared.length > 0) void relay.sync().catch(() => undefined);
     bridge.publish(
       prepared.map((row, i) => ({
         eventId: row.hlc,
@@ -465,7 +461,7 @@ export function createLifecycle(
   const switchOwner = async (derived: LocalFirstIdentity): Promise<void> => {
     await deps.secureStorage.setItem(mnemonicKey, derived.recoveryKey);
     store.wipeLocalData();
-    store.setMeta("legacyImported", String(LEGACY_IMPORT_VERSION));
+    store.setLegacyImportVersion(LEGACY_IMPORT_VERSION);
     state.identity = derived;
     state.appOwnerValue = appOwnerFromIdentity(derived);
     state.appOwnerPromise = Promise.resolve(state.appOwnerValue);
@@ -486,8 +482,8 @@ export function createLifecycle(
       state.schemaReady = true;
       // Seed the HLC clock from its persisted high-water mark so it stays
       // monotonic across restarts (see createClock).
-      state.hlcTime = Number(store.getMeta("hlc:time") ?? "0") || 0;
-      state.hlcCounter = Number(store.getMeta("hlc:counter") ?? "0") || 0;
+      ({ time: state.hlcTime, counter: state.hlcCounter } =
+        store.clockHighWaterMark());
       // hydrate any active queries created before init finished
       queryCache.refreshQueries(Object.keys(schema));
       // Cross-tab events buffered while the snapshot was loading apply now;
@@ -545,7 +541,7 @@ export function createLifecycle(
     // LOG rows we can't import (required non-boolean column NULL/invalid in
     // legacy data) instead of dropping them silently.
     const IMPORT_VERSION = LEGACY_IMPORT_VERSION;
-    const done = Number(store.getMeta("legacyImported") ?? "0") || 0;
+    const done = store.legacyImportVersion();
     if (!state.driver || done >= IMPORT_VERSION)
       return { imported: 0, skipped: 0 };
     let imported = 0;
@@ -604,7 +600,7 @@ export function createLifecycle(
       // No legacy database, or incompatible — leave the new db untouched.
       console.warn("importLegacy: legacy db unreadable", caught);
     }
-    store.setMeta("legacyImported", String(IMPORT_VERSION));
+    store.setLegacyImportVersion(IMPORT_VERSION);
     if (imported > 0) queryCache.refreshQueries(Object.keys(schema));
     if (skipped > 0) {
       // Visible, not silent: a column was NULL/invalid for a required field we
@@ -862,8 +858,8 @@ export function createLifecycle(
     state.appOwnerPromise = Promise.resolve(state.appOwnerValue);
     // Re-seed the in-memory HLC high-water mark from the restored metadata so
     // the clock stays monotonic (see createClock).
-    state.hlcTime = Number(store.getMeta("hlc:time") ?? "0") || 0;
-    state.hlcCounter = Number(store.getMeta("hlc:counter") ?? "0") || 0;
+    ({ time: state.hlcTime, counter: state.hlcCounter } =
+      store.clockHighWaterMark());
     queryCache.refreshQueries(Object.keys(schema));
     if (state.transports.length > 0) void relay.sync().catch(() => undefined);
     reloadApp();

@@ -106,7 +106,15 @@ function main() {
     console.error(`  expected ${tree.sha256} (${tree.fileCount} files)`);
     console.error(`  actual   ${current.hash} (${current.fileCount} files)`);
   }
-  console.error("\nReview/port the sync change into both apps, then refresh the baseline with:");
+  // Order matters. This check knows only that a tree's hash moved, never which
+  // file or in which direction; `sync:diff` does, and it already strips the
+  // mechanical Swift/Kotlin rewrites so what it prints is real divergence.
+  // Naming the baseline refresh first is what turns this into a reflex —
+  // refresh, move on — which is how an unported change gets waved through.
+  console.error("\nSee what actually diverged (read-only):");
+  console.error("  bun run sync:diff");
+  console.error("\nThen review/port the change into both apps. Once — and only once —");
+  console.error("the ports agree, record the new baseline with:");
   console.error("  bun run app-port:update");
   process.exitCode = 1;
 }

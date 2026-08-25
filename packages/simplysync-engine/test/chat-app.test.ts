@@ -5,7 +5,6 @@
 // living documentation that the API fits this use case.
 
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   counterColumns,
@@ -22,37 +21,8 @@ import {
   JsonText,
   searchFilter,
   String as Str,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = {
   message: {
@@ -67,7 +37,7 @@ const schema = {
 
 function makeApp() {
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
   })(schema, { name: "chat-app" });
 }
@@ -86,7 +56,6 @@ const transcript = (engine: Engine) =>
     ),
   );
 
-const settle = () => new Promise((r) => setTimeout(r, 25));
 
 const lastOrder = async (engine: Engine): Promise<string | null> => {
   const rows = await transcript(engine);
@@ -106,7 +75,7 @@ describe("chat app", () => {
     // User asks a question.
     const q = await send(engine, "user", "What's the capital of France?");
     expect(q.ok).toBe(true);
-    await settle();
+    await settle(engine);
     const afterUser = engine.getPendingOutboxCount();
 
     // Assistant message is created empty, then streamed token-by-token with
@@ -122,13 +91,13 @@ describe("chat app", () => {
       streamed += tok;
       engine.update("message", { id: reply.value.id, body: streamed }, { local: true });
     }
-    await settle();
+    await settle(engine);
     // Streaming added NO sync events beyond the user message + the empty reply.
     expect(engine.getPendingOutboxCount()).toBe(afterUser + 1);
 
     // Commit the finished reply -> exactly one replicated event.
     engine.update("message", { id: reply.value.id, body: streamed });
-    await settle();
+    await settle(engine);
     expect(engine.getPendingOutboxCount()).toBe(afterUser + 2);
 
     // Transcript is in order and shows the full streamed text.

@@ -11,44 +11,11 @@ import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
 import { createEngineState } from "../src/engine/state";
 import { createStore } from "../src/engine/store";
 import { SYNC_OUTBOX_TABLE, SYNC_PURGE_TABLE } from "../src/engine/constants";
-
-function makeDriverFromDb(db: Database): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function makeDriver(): { driver: SqliteDriver; db: Database } {
-  const db = new Database(":memory:");
-  return { db, driver: makeDriverFromDb(db) };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = { todo: { id: id("Todo"), title: NonEmptyString } };
 
@@ -62,7 +29,7 @@ describe("purgeDeleted (engine, no relays)", () => {
     let handle!: { db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        const made = makeDriver();
+        const made = memoryDriver();
         handle = made;
         return made.driver;
       },
@@ -109,7 +76,7 @@ describe("purge queue (_sync_purge)", () => {
       let handle!: { db: Database };
       const engine = createSync({
         createSqliteDriver: () => {
-          const made = makeDriver();
+          const made = memoryDriver();
           handle = made;
           return made.driver;
         },
@@ -132,7 +99,7 @@ describe("purge queue (_sync_purge)", () => {
   });
 
   test("store ackPurgeBase accumulates bases; dropPurgeEntry removes the row", () => {
-    const { driver, db } = makeDriver();
+    const { driver, db } = memoryDriver();
     const state = createEngineState({ name: "queue" });
     state.driver = driver;
     const store = createStore(state, schema, { name: "queue" });
@@ -161,7 +128,7 @@ describe("purge queue (_sync_purge)", () => {
 
 describe("purgeRows (manual permanent delete)", () => {
   test("hard-deletes only pushed tombstones; live rows and unpushed deletes are skipped", () => {
-    const { driver, db } = makeDriver();
+    const { driver, db } = memoryDriver();
     const state = createEngineState({ name: "manual" });
     state.driver = driver;
     state.transports = [{ url: "http://relay.example" }];
@@ -220,7 +187,6 @@ describe("purgeRows (manual permanent delete)", () => {
 });
 
 describe("purge drain (relay stream compaction)", () => {
-  const settle = () => new Promise((r) => setTimeout(r, 25));
 
   test("a device returning after the legacy retention window still receives the tombstone", async () => {
     const events: SyncEnvelope[] = [];
@@ -273,7 +239,7 @@ describe("purge drain (relay stream compaction)", () => {
     const makeDevice = (name: string) => {
       const db = new Database(":memory:");
       const engine = createSync({
-        createSqliteDriver: () => makeDriverFromDb(db),
+        createSqliteDriver: () => memoryDriver(db).driver,
         secureStorage: memoryStorage(),
         fetch: fetchStub,
       })(schema, {
@@ -295,13 +261,13 @@ describe("purge drain (relay stream compaction)", () => {
     online.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
     for (let i = 0; i < 40 && events.length < 1; i++) {
       await online.engine.sync();
-      await settle();
+      await settle(online.engine);
     }
 
     returning.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
     for (let i = 0; i < 40 && rowCount(returning.db) < 1; i++) {
       await returning.engine.sync();
-      await settle();
+      await settle(returning.engine);
     }
     expect(
       returning.db.prepare(`select isDeleted from todo`).get(),
@@ -311,7 +277,7 @@ describe("purge drain (relay stream compaction)", () => {
     online.engine.delete("todo", inserted.value.id);
     for (let i = 0; i < 40 && events.length < 2; i++) {
       await online.engine.sync();
-      await settle();
+      await settle(online.engine);
     }
     expect(events).toHaveLength(2);
     expect(compactCalls).toBe(0);
@@ -323,7 +289,7 @@ describe("purge drain (relay stream compaction)", () => {
         .prepare(`select isDeleted from todo where id = ?`)
         .get(inserted.value.id) as { isDeleted: number } | null;
       if (row?.isDeleted === 1) break;
-      await settle();
+      await settle(returning.engine);
     }
     expect(
       returning.db
@@ -355,7 +321,7 @@ describe("purge drain (relay stream compaction)", () => {
     let handle!: { db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        const made = makeDriver();
+        const made = memoryDriver();
         handle = made;
         return made.driver;
       },
@@ -374,7 +340,7 @@ describe("purge drain (relay stream compaction)", () => {
 
     for (let i = 0; i < 40 && engine.getPendingOutboxCount() > 0; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
 
     expect(engine.getPendingOutboxCount()).toBe(0);
@@ -430,7 +396,7 @@ describe("purge drain (relay stream compaction)", () => {
     let handle!: { db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        const made = makeDriver();
+        const made = memoryDriver();
         handle = made;
         return made.driver;
       },
@@ -443,7 +409,7 @@ describe("purge drain (relay stream compaction)", () => {
     if (!a.ok) throw new Error("insert failed");
     engine.delete("todo", a.value.id);
     for (let i = 0; i < 40 && engine.getPendingOutboxCount() < 2; i++) {
-      await settle();
+      await settle(engine);
     }
 
     engine.setTransports([
@@ -456,7 +422,7 @@ describe("purge drain (relay stream compaction)", () => {
     // not on any single sync() call.
     for (let i = 0; i < 40 && engine.getPendingOutboxCount() > 0; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(engine.getPendingOutboxCount()).toBe(0);
 
@@ -477,7 +443,7 @@ describe("purge drain (relay stream compaction)", () => {
     // the queue entry must survive with only relay-a recorded.
     for (let i = 0; i < 40 && compacted.a.length === 0; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(compacted.a.length).toBeGreaterThan(0);
 
@@ -492,7 +458,7 @@ describe("purge drain (relay stream compaction)", () => {
     // Keep syncing until relay-b acks too; then the queue must be empty.
     for (let i = 0; i < 40 && compacted.b.length === 0; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(compacted.b.length).toBeGreaterThan(0);
     expect(
@@ -510,7 +476,7 @@ describe("purge drain (relay stream compaction)", () => {
 
 describe("purgeDeleted (store, pending-push guard)", () => {
   test("keeps a tombstone whose delete hasn't been pushed when relays are set", () => {
-    const { driver, db } = makeDriver();
+    const { driver, db } = memoryDriver();
     const state = createEngineState({ name: "guard" });
     state.driver = driver;
     state.transports = [{ url: "http://relay.example" }];
@@ -540,5 +506,112 @@ describe("purgeDeleted (store, pending-push guard)", () => {
     ).run("2020-01-01T00:00:01.000Z", oldHlc);
     expect(store.purgeDeleted(0, 5_000)).toBe(1);
     expect(rowCount(db)).toBe(0);
+  });
+});
+
+describe("purgeDeleted (store, unparseable tombstone)", () => {
+  test("a tombstone whose updatedAt is not an HLC is never reclaimed", () => {
+    // purgeDeleted decides "old enough" from the millis encoded in updatedAt.
+    // A row whose updatedAt can't be parsed (an older engine, a hand-edited
+    // database, a legacy import) has no age at all — treat it as too new
+    // forever rather than guessing, because a hard delete is irreversible and
+    // an un-replicated one resurrects from a peer.
+    const { driver, db } = memoryDriver();
+    const state = createEngineState({ name: "unparseable" });
+    state.driver = driver;
+    const store = createStore(state, schema, { name: "unparseable" });
+    store.ensureSchema();
+
+    store.writeRow("todo", {
+      id: "t1",
+      title: "x",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "not-an-hlc",
+      isDeleted: 1,
+    });
+
+    // No relays, no age window, explicitly named — still kept.
+    expect(store.purgeDeleted(0, Date.now())).toBe(0);
+    expect(store.purgeRows([{ table: "todo", id: "t1" }])).toBe(1);
+    expect(rowCount(db)).toBe(0);
+  });
+});
+
+describe("purge queue (corrupt acknowledgements)", () => {
+  test("an unreadable acked_bases list reads as no acknowledgements", () => {
+    // The ack list is JSON in a text column, so a truncated write or an older
+    // format can leave it unparseable. Re-sending a compaction is free (the
+    // endpoint is idempotent); dropping the entry early is not — the relay
+    // would keep the stream forever.
+    const { driver } = memoryDriver();
+    const state = createEngineState({ name: "corrupt-acks" });
+    state.driver = driver;
+    const store = createStore(state, schema, { name: "corrupt-acks" });
+    store.ensureSchema();
+
+    driver.exec(
+      `insert into "${SYNC_PURGE_TABLE}" (table_name, row_id, acked_bases) values (?, ?, ?)`,
+      ["todo", "t9", "{not json"],
+    );
+    expect(store.listPurgeQueue()).toEqual([
+      { table: "todo", rowId: "t9", ackedBases: [] },
+    ]);
+
+    // A non-array JSON value is equally unusable, and ack still repairs it.
+    driver.exec(`update "${SYNC_PURGE_TABLE}" set acked_bases = ?`, ['"a"']);
+    expect(store.listPurgeQueue()[0]!.ackedBases).toEqual([]);
+    store.ackPurgeBase("todo", "t9", "https://a.example");
+    expect(store.listPurgeQueue()[0]!.ackedBases).toEqual(["https://a.example"]);
+  });
+});
+
+describe("purge queue retention (no relay to notify)", () => {
+  test("entries are kept, not dropped, when there is no relay to compact", async () => {
+    // The queue is the only record of which streams a relay still holds for
+    // rows this device has hard-deleted, and the streamId cannot be
+    // re-derived once the row is gone. Dropping an entry because no relay is
+    // configured *right now* would leave that stream on the relay forever the
+    // moment one is attached — or reattached.
+    //
+    // The cost of the safe direction: a device that never syncs accumulates
+    // one small row per permanently purged row. Bounded by user action, and
+    // preferable to the alternative.
+    let handle!: { db: Database };
+    const engine = createSync({
+      createSqliteDriver: () => {
+        const made = memoryDriver();
+        handle = made;
+        return made.driver;
+      },
+      secureStorage: memoryStorage(),
+      fetch: (async () =>
+        new Response(JSON.stringify({ events: [], nextCursor: "" }), {
+          status: 200,
+        })) as typeof fetch,
+    })(schema, { name: "purge-no-relay", syncIntervalMs: 3_600_000 });
+    await engine.ready;
+
+    const a = engine.insert("todo", { title: "goner" });
+    if (!a.ok) throw new Error("insert failed");
+    engine.delete("todo", a.value.id);
+    expect(engine.purgeDeleted({ olderThanMs: 0 }).purged).toBe(1);
+
+    const queued = () =>
+      (
+        handle.db
+          .prepare(`select count(*) as c from "${SYNC_PURGE_TABLE}"`)
+          .get() as { c: number }
+      ).c;
+    expect(queued()).toBe(1);
+
+    // Syncing with no relay configured must not quietly discard it.
+    await engine.sync();
+    expect(queued()).toBe(1);
+
+    // Attaching a relay later is exactly what the retained entry was for: the
+    // compaction goes out and only then does the entry leave the queue.
+    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    await engine.sync();
+    expect(queued()).toBe(0);
   });
 });

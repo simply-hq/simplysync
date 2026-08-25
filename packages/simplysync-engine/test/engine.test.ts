@@ -16,26 +16,12 @@ import {
   kysely,
   NonEmptyString,
   SqliteBoolean,
-  type SecureStorage,
   type SqliteDriver,
 } from "../src/index";
 import { createEngineState } from "../src/engine/state";
-import { createClock, createStore, type Store } from "../src/engine/store";
+import { createClock, createStore } from "../src/engine/store";
 import { SYNC_LOG_CAP } from "../src/engine/constants";
-
-function wrapDriver(db: Database): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
+import { memoryDriver, memoryStorage } from "./support";
 
 const AccountId = id("Account");
 const LedgerId = id("Ledger");
@@ -45,37 +31,9 @@ const schema = {
   ledger: { id: LedgerId, accountId: AccountId, amount: FiniteNumber },
 };
 
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(initial: Record<string, string> = {}): SecureStorage {
-  const map = new Map<string, string>(Object.entries(initial));
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
-
 function makeEngine() {
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
   })(schema, { name: "test-db" });
 }
@@ -84,25 +42,28 @@ describe("hlc clock", () => {
   function makeClock() {
     const state = createEngineState({ name: "clock-test" });
     state.deviceId = "devA";
-    const meta = new Map<string, string>();
+    // The clock only needs somewhere to keep its high-water mark, so this is
+    // the whole dependency — no `as unknown as Store` cast over 30-odd members
+    // it never touches.
+    let mark = { time: 0, counter: 0 };
     const store = {
-      setMeta: (k: string, v: string) => {
-        meta.set(k, v);
+      clockHighWaterMark: () => mark,
+      setClockHighWaterMark: (time: number, counter: number) => {
+        mark = { time, counter };
       },
-      getMeta: (k: string) => meta.get(k) ?? null,
-    } as unknown as Store;
-    return { clock: createClock(state, store), state, meta };
+    };
+    return { clock: createClock(state, store), state, mark: () => mark };
   }
 
   test("absorbs an observed future HLC so the next local HLC sorts above it", () => {
-    const { clock, meta } = makeClock();
+    const { clock, mark } = makeClock();
     // A remote edit stamped a minute in the future (a device with a fast clock).
     const future = createHlc("devB", Date.now() + 60_000, 3);
     clock.observeHlc(future);
 
     const local = clock.nextHlc();
     expect(compareHlc(future, local)).toBeLessThan(0); // local sorts strictly after
-    expect(Number(meta.get("hlc:time"))).toBeGreaterThan(Date.now()); // persisted
+    expect(mark().time).toBeGreaterThan(Date.now()); // persisted
   });
 
   test("breaks a same-millis tie by lifting the counter", () => {
@@ -250,7 +211,7 @@ describe("engine", () => {
       [`${name}:mnemonic`]: `  ${recoveryKey}  `,
     });
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: storage,
     })(schema, { name });
 
@@ -261,6 +222,27 @@ describe("engine", () => {
     expect(owner?.id).toBe(expected.ownerId);
     // Boot also heals whitespace in the persisted legacy-named storage slot.
     expect(await storage.getItem(`${name}:mnemonic`)).toBe(recoveryKey);
+  });
+
+  test("boots a phrase stored in non-canonical spelling and rewrites it once", async () => {
+    // Phrases are typed and pasted by hand, so a stored value can carry case
+    // and spacing that the protocol normalizes away. Leaving it means every
+    // later boot re-normalizes a value that never settles, and any code that
+    // compares the stored string to a derived one disagrees with itself.
+    const phrase = createMnemonic();
+    const name = "phrase-normalizing-boot";
+    const messy = `  ${phrase.toUpperCase().replace(/ /gu, "   ")}  `;
+    const storage = memoryStorage({ [`${name}:mnemonic`]: messy });
+    const engine = createSync({
+      createSqliteDriver: () => memoryDriver().driver,
+      secureStorage: storage,
+    })(schema, { name });
+
+    const owner = await engine.appOwner;
+    const expected = await deriveIdentity(phrase);
+    expect(owner?.id).toBe(expected.ownerId); // same owner, despite the spelling
+    expect(owner?.recoveryKey).toBe(phrase);
+    expect(await storage.getItem(`${name}:mnemonic`)).toBe(phrase);
   });
 
   // Regression: a legacy schema allowed NULL where ours requires a
@@ -328,7 +310,7 @@ describe("engine", () => {
     const store = memoryStorage();
     const make = () =>
       createSync({
-        createSqliteDriver: () => wrapDriver(db),
+        createSqliteDriver: () => memoryDriver(db).driver,
         secureStorage: store,
       })({ account: { id: AccountId, name: NonEmptyString } }, { name: "t" });
 
@@ -389,7 +371,7 @@ describe("engine", () => {
         status: 200,
       })) as typeof fetch;
     const emptyRelayEngine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: emptyRelayFetch,
     })(schema, {
@@ -407,7 +389,7 @@ describe("engine", () => {
       throw new TypeError("Network unavailable");
     }) as typeof fetch;
     const unavailableEngine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: unavailableFetch,
     })(schema, {
@@ -458,7 +440,7 @@ describe("engine", () => {
       return new Response("{}", { status: 200 });
     }) as typeof fetch;
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: relayFetch,
       reloadApp: () => {},
@@ -499,7 +481,7 @@ describe("engine", () => {
     const main = new Database(":memory:");
     const engine = createSync({
       createSqliteDriver: (name: string) =>
-        name === "legacy" ? wrapDriver(legacy) : wrapDriver(main),
+        name === "legacy" ? memoryDriver(legacy).driver : memoryDriver(main).driver,
       secureStorage: memoryStorage(),
     })({ account: { id: AccountId, name: NonEmptyString } }, { name: "main" });
     await engine.ready;
@@ -523,7 +505,7 @@ describe("engine", () => {
 describe("sync diagnostics log", () => {
   function makeStore() {
     const state = createEngineState({ name: "log-test" });
-    state.driver = makeDriver();
+    state.driver = memoryDriver().driver;
     const store = createStore(state, schema, { name: "log-test" });
     store.ensureSchema();
     return { state, store };
@@ -578,5 +560,89 @@ describe("sync diagnostics log", () => {
       ["e2", "{}", new Date().toISOString()],
     );
     expect(store.pendingOutboxCount()).toBe(1);
+  });
+});
+
+describe("mutation modes", () => {
+  test("update refuses a row that is not present locally", async () => {
+    // update has nothing to merge onto. Inventing the row would produce a
+    // half-populated record that then replicates as if it were a real edit;
+    // delete is the only mode allowed to write a row it has never seen.
+    const engine = makeEngine();
+    await engine.ready;
+
+    const missing = engine.update("account", { id: "nope", name: "Ghost" });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.error.message).toMatch(/not found/i);
+
+    const created = engine.insert("account", { name: "Real" });
+    if (!created.ok) throw new Error("insert failed");
+    expect(engine.update("account", { id: created.value.id, name: "Renamed" }).ok)
+      .toBe(true);
+  });
+
+  test("a write naming a table the schema does not declare never reaches SQL", async () => {
+    // Table names are interpolated into the statement, so an unknown one has
+    // to be refused at the boundary rather than reaching the driver — and
+    // every mode has to refuse it, not just the one a caller happened to test.
+    const engine = makeEngine();
+    await engine.ready;
+
+    for (const attempt of [
+      () => engine.insert("nope" as never, { name: "x" } as never),
+      () => engine.upsert("nope" as never, { id: "a", name: "x" } as never),
+      () => engine.update("nope" as never, { id: "a", name: "x" } as never),
+    ]) {
+      const result = attempt();
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toMatch(/unknown table/i);
+    }
+
+    const batched = engine.batch([
+      { table: "account", values: { name: "fine" } },
+      { table: "nope" as never, values: { name: "x" } as never },
+    ]);
+    expect(batched.ok).toBe(false);
+  });
+
+  test("insert against an existing id overwrites the row, including createdAt", async () => {
+    // insert deliberately does not read the existing row, so there is nothing
+    // to merge onto and the stored createdAt is replaced rather than kept.
+    // Callers that may be re-writing a known id want upsert, which does merge.
+    const engine = makeEngine();
+    await engine.ready;
+
+    const read = async () => {
+      const q = engine.createQuery((db) =>
+        db
+          .selectFrom("account")
+          .select(["createdAt", "name"])
+          .where("id", "=", "acct-1")
+          .where("isDeleted", "=", 0),
+      );
+      const rows = await engine.loadQuery(q);
+      return rows[0] as { createdAt: string; name: string };
+    };
+
+    const FIRST = "2020-01-01T00:00:00.000Z";
+    const SECOND = "2021-01-01T00:00:00.000Z";
+    expect(
+      engine.insert("account", { id: "acct-1", name: "First", createdAt: FIRST }).ok,
+    ).toBe(true);
+    expect((await read()).createdAt).toBe(FIRST);
+
+    expect(
+      engine.insert("account", { id: "acct-1", name: "Second", createdAt: SECOND }).ok,
+    ).toBe(true);
+    const after = await read();
+    expect(after.name).toBe("Second");
+    expect(after.createdAt).toBe(SECOND); // replaced, not preserved
+
+    // upsert is the mode that merges onto the existing row, so the stored
+    // createdAt survives a write that does not mention it.
+    expect(engine.upsert("account", { id: "acct-1", name: "Third" }).ok).toBe(true);
+    const merged = await read();
+    expect(merged.name).toBe("Third");
+    expect(merged.createdAt).toBe(SECOND);
   });
 });

@@ -17,7 +17,8 @@ func check(_ name: String, _ actual: String, _ expected: String) {
 
 let vectorsURL = URL(fileURLWithPath: "verify/vectors.json")
 let data = try Data(contentsOf: vectorsURL)
-let vectors = try JSONSerialization.jsonObject(with: data) as! [String: [String: Any]]
+let corpus = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+let vectors = corpus["identities"] as! [String: [String: Any]]
 
 // Fixed inputs used by the generator (packages/simplysync-protocol vector script).
 let eventId = "00000abcde-0000-dev1"
@@ -45,6 +46,18 @@ for name in ["sf1", "mnemonic"] {
         createdAt: createdAt, payload: payload, nonce: nonce
     )
     check("streamId", envelope.streamId ?? "", v["streamId"] as! String)
+
+    // Checked before the ciphertext: these two strings are what a ciphertext
+    // mismatch is usually caused by, and a bare ciphertext failure names
+    // neither the field order nor the key sort that actually moved.
+    check("headerCanonical",
+          Envelope.encodeHeader(
+              version: envelope.version, ownerId: envelope.ownerId,
+              eventId: envelope.eventId, deviceId: envelope.deviceId,
+              createdAt: envelope.createdAt, streamId: envelope.streamId),
+          v["headerCanonical"] as! String)
+    check("payloadCanonical", Envelope.encodePayload(payload),
+          v["payloadCanonical"] as! String)
     check("ciphertext", envelope.ciphertext, v["ciphertextB64"] as! String)
 
     // Round-trip: decrypt what we sealed and confirm the row survives.
@@ -55,6 +68,18 @@ for name in ["sf1", "mnemonic"] {
     }()
     check("roundtrip.title", title, "Hello from JS")
     check("roundtrip.table", decrypted.table, "todo")
+}
+
+// HLC.compare is the sole last-write-wins tiebreaker. A port that orders two
+// events differently than TypeScript hands its device a different winner for
+// the same pair, and the two stop converging — exactly the drift that shipped
+// once, when TS used locale collation and the ports used code-unit order.
+print("[hlcOrder]")
+let orderCases = corpus["hlcOrder"] as! [[String: Any]]
+for c in orderCases {
+    let actual = HLC.compare((c["left"] as! String), c["right"] as! String)
+    let sign = actual < 0 ? "lt" : (actual > 0 ? "gt" : "eq")
+    check(c["name"] as! String, sign, c["expect"] as! String)
 }
 
 print("")

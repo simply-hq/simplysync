@@ -1,44 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
-const settle = () => new Promise((r) => setTimeout(r, 25));
 const waitUntil = async (predicate: () => boolean, message: string) => {
   for (let i = 0; i < 100; i++) {
     if (predicate()) return;
@@ -81,7 +50,7 @@ describe("getRelayStatuses", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, {
@@ -139,7 +108,7 @@ describe("getRelayStatuses", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, {
@@ -191,7 +160,7 @@ describe("getRelayStatuses", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, {
@@ -204,7 +173,7 @@ describe("getRelayStatuses", () => {
     await engine.ready;
 
     await engine.sync();
-    await settle();
+    await settle(engine);
 
     // One healthy relay is enough for the collapsed state…
     expect(engine.getSyncState().type).toBe("SyncStateIsSynced");
@@ -236,7 +205,7 @@ describe("getRelayStatuses", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, {
@@ -254,5 +223,184 @@ describe("getRelayStatuses", () => {
     expect(statuses.length).toBe(1);
     expect(statuses[0]!.url).toContain("relay-good");
     expect(statuses[0]!.lastFailure).toBeUndefined();
+  });
+});
+
+describe("failure classification", () => {
+  // The poller's cadence is driven entirely by this taxonomy: a kind the user
+  // or operator must act on (auth, quota, a rejected batch) backs off to five
+  // minutes instead of re-sending the same doomed request every minute, while
+  // a transient one keeps the normal cadence. Getting a status into the wrong
+  // bucket is invisible until a battery complaint or a stalled account.
+  const cases: Array<{
+    status: number;
+    kind: string;
+    terminal: boolean;
+  }> = [
+    { status: 401, kind: "authRejected", terminal: true },
+    { status: 403, kind: "authRejected", terminal: true },
+    { status: 413, kind: "quotaExceeded", terminal: true },
+    { status: 429, kind: "rateLimited", terminal: false },
+    { status: 400, kind: "badRequest", terminal: true },
+    { status: 500, kind: "serverError", terminal: false },
+    { status: 503, kind: "serverError", terminal: false },
+  ];
+
+  for (const { status, kind, terminal } of cases) {
+    test(`${status} is reported as ${kind}${terminal ? " (terminal)" : ""}`, async () => {
+      const fetchStub = (async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/health")) {
+          return new Response(JSON.stringify({ version: "1.0.0" }), {
+            status: 200,
+          });
+        }
+        return new Response(JSON.stringify({ error: "no" }), { status });
+      }) as typeof fetch;
+
+      const engine = createSync({
+        createSqliteDriver: () => memoryDriver().driver,
+        secureStorage: memoryStorage(),
+        fetch: fetchStub,
+      })(schema, {
+        name: `classify-${status}`,
+        transports: [{ type: "Http", url: "http://relay.test" }],
+        syncIntervalMs: 3_600_000,
+      });
+      await engine.ready;
+      await engine.sync();
+      await settle(engine);
+
+      const state = engine.getSyncState();
+      expect(state.type).toBe("SyncStateIsNotSynced");
+      expect((state as { kind?: string }).kind).toBe(kind);
+      expect((state as { terminal?: boolean }).terminal).toBe(terminal);
+      expect((state as { status?: number }).status).toBe(status);
+
+      // The per-relay surface records the same kind, and a relay that answers
+      // an error is still "not reachable" for status purposes.
+      const [relay] = await engine.getRelayStatuses();
+      expect(relay?.lastFailure?.kind).toBe(kind);
+    });
+  }
+
+  test("a fetch that never reaches a relay is unreachable, not a bad request", async () => {
+    // A rejected fetch carries no HTTP status at all. Classifying it as a 4xx
+    // would mark it terminal and stop the poller from ever retrying a relay
+    // that is merely down.
+    const fetchStub = (async () => {
+      throw new TypeError("Failed to fetch");
+    }) as typeof fetch;
+
+    const engine = createSync({
+      createSqliteDriver: () => memoryDriver().driver,
+      secureStorage: memoryStorage(),
+      fetch: fetchStub,
+    })(schema, {
+      name: "classify-network",
+      transports: [{ type: "Http", url: "http://relay.test" }],
+      syncIntervalMs: 3_600_000,
+    });
+    await engine.ready;
+    await engine.sync();
+    await settle(engine);
+
+    const state = engine.getSyncState();
+    expect((state as { kind?: string }).kind).toBe("unreachable");
+    expect((state as { terminal?: boolean }).terminal).toBe(false);
+  });
+
+  test("a relay that recovers clears the failure without a restart", async () => {
+    let failing = true;
+    const fetchStub = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (failing) return new Response("boom", { status: 500 });
+      if (init?.method === "POST") return okPush();
+      if (String(input).includes("/v1/status")) {
+        return new Response(
+          JSON.stringify({ server: { version: "1.0.0" }, account: {} }),
+          { status: 200 },
+        );
+      }
+      return okPull();
+    }) as typeof fetch;
+
+    const engine = createSync({
+      createSqliteDriver: () => memoryDriver().driver,
+      secureStorage: memoryStorage(),
+      fetch: fetchStub,
+    })(schema, {
+      name: "classify-recovery",
+      transports: [{ type: "Http", url: "http://relay.test" }],
+      syncIntervalMs: 3_600_000,
+    });
+    await engine.ready;
+    await engine.sync();
+    await settle(engine);
+    expect(engine.getSyncState().type).toBe("SyncStateIsNotSynced");
+
+    failing = false;
+    await engine.sync();
+    await settle(engine);
+    expect(engine.getSyncState().type).toBe("SyncStateIsSynced");
+    const [relay] = await engine.getRelayStatuses();
+    expect(relay?.lastFailure).toBeUndefined();
+    expect(relay?.reachable).toBe(true);
+  });
+});
+
+describe("poll cadence", () => {
+  test("a terminal failure slows the poller; a healthy relay keeps the normal cadence", async () => {
+    // The taxonomy only matters because of what it does to the poller. A relay
+    // that answers 401 will answer 401 to the next request too, so re-sending
+    // it every interval is pure battery and radio drain until someone re-auths.
+    // Kept observable through fetch counts rather than internal state, because
+    // the interval itself is private and the drain is the point.
+    const POLL_MS = 15;
+    const WINDOW_MS = 260;
+
+    const run = async (name: string, status: number) => {
+      let calls = 0;
+      const fetchStub = (async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/health")) {
+          return new Response(JSON.stringify({ version: "1.0.0" }), { status: 200 });
+        }
+        calls += 1;
+        if (status === 200) return okPull();
+        return new Response(JSON.stringify({ error: "no" }), { status });
+      }) as typeof fetch;
+
+      const engine = createSync({
+        createSqliteDriver: () => memoryDriver().driver,
+        secureStorage: memoryStorage(),
+        fetch: fetchStub,
+      })(schema, {
+        name,
+        transports: [{ type: "Http", url: "http://relay.test" }],
+        syncIntervalMs: POLL_MS,
+      });
+      await engine.ready;
+      await engine.sync();
+      await settle(engine);
+
+      const baseline = calls;
+      await new Promise((r) => setTimeout(r, WINDOW_MS));
+      engine.setTransports([]); // stops the poller for this engine
+      return calls - baseline;
+    };
+
+    // Healthy: the poller keeps firing across the window.
+    const healthyPolls = await run("cadence-healthy", 200);
+    expect(healthyPolls).toBeGreaterThanOrEqual(2);
+
+    // Terminal: the interval jumps to five minutes, so nothing fires again.
+    const terminalPolls = await run("cadence-terminal", 401);
+    expect(terminalPolls).toBe(0);
+
+    // Rate limiting is not terminal, but it backs off for the same reason.
+    const rateLimitedPolls = await run("cadence-ratelimited", 429);
+    expect(rateLimitedPolls).toBe(0);
+
+    // A plain server error does self-heal, so the cadence is left alone.
+    const serverErrorPolls = await run("cadence-server-error", 500);
+    expect(serverErrorPolls).toBeGreaterThanOrEqual(2);
   });
 });

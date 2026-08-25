@@ -1,97 +1,123 @@
-// Cross-relay conformance: the same black-box HTTP contract driven against
-// BOTH relay implementations, plus the edge cases a real deployment hits when
-// an owner's data is reset or moved between them.
+// What only shows up when both relays are running at once: moving an owner
+// between implementations, and the places where they answer the same request
+// differently.
 //
-// `conformance.test.ts` pins the Go relay alone. Two adapters sit at the relay
-// seam, so the contract has to be asserted of both or it isn't a contract —
-// and the divergences at the bottom of this file are what that gap was hiding.
+// The contract itself lives in conformance.test.ts, asserted of every adapter.
+// This file holds the residue that is deliberately NOT contract:
+//
+//   - cross-implementation behaviour (a device switching relays),
+//   - divergences: same request, two answers, asserted as they behave TODAY,
+//   - exceptions: a feature only one implementation has at all.
+//
+// Everything below is PINNED. Each names the risk it carries, so closing one is
+// a deliberate edit here rather than a drift nobody notices.
 //
 // Cloudflare runs under `wrangler dev --local` (miniflare: local D1 + R2, no
-// network, no account). If wrangler isn't installed the cross-relay and
-// Cloudflare blocks skip rather than fail, so this suite stays runnable on a
-// machine that only has Go.
+// network, no account). Its blocks skip when wrangler isn't installed — unless
+// RELAY_REQUIRE_CLOUDFLARE=1, which CI sets (see conformance/adapters.ts).
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { SyncEnvelope } from "@simplysync/protocol";
+import { sha256Base64UrlBytes, type SyncEnvelope } from "@simplysync/protocol";
+import { CLOUDFLARE_AVAILABLE } from "./conformance/adapters";
 import {
   cleanupGoBinary,
-  isGoAvailable,
   launchRelay,
   type LaunchedRelay,
 } from "./conformance/launch-relay";
-import {
-  isWranglerAvailable,
-  launchCloudflareRelay,
-} from "./conformance/launch-cloudflare";
+import { launchCloudflareRelay } from "./conformance/launch-cloudflare";
 import {
   createTestIdentity,
+  makeEnvelope,
   makeEnvelopes,
   type TestIdentity,
 } from "./conformance/envelopes";
-import { getStatus, pullEvents, pushEvents } from "./conformance/http";
+import {
+  compactStreams,
+  getBlob,
+  getStatus,
+  getUsage,
+  pullEvents,
+  pushEvents,
+  putBlob,
+} from "./conformance/http";
 
-const CLOUDFLARE = isWranglerAvailable();
+const CLOUDFLARE = CLOUDFLARE_AVAILABLE;
 const BOOT_MS = 240_000;
-
-if (!isGoAvailable()) {
-  throw new Error("[cross-relay] `go` was not found on PATH");
-}
+const ADMIN_TOKEN = "conformance-admin-token";
+const ADMIN_BASE = "/conformance-admin";
 
 let go: LaunchedRelay;
+/** Go with the admin surface on — the ops dashboard has no Cloudflare twin. */
+let goAdmin: LaunchedRelay;
+/** Go handed Cloudflare's kill switch, to pin that it ignores it. */
+let goDisabled: LaunchedRelay;
 let cf: LaunchedRelay | undefined;
+let cfDisabled: LaunchedRelay | undefined;
 
 beforeAll(async () => {
-  go = await launchRelay({ RATE_LIMIT_ENABLED: "false" });
-  if (CLOUDFLARE) cf = await launchCloudflareRelay();
+  [go, goAdmin, goDisabled] = await Promise.all([
+    launchRelay({ RATE_LIMIT_ENABLED: "false" }),
+    launchRelay({
+      RATE_LIMIT_ENABLED: "false",
+      ADMIN_TOKEN,
+      ADMIN_PATH: ADMIN_BASE.slice(1),
+      // Off: the admin-triggered compaction test must be the only thing that
+      // can delete an event while it runs.
+      COMPACTION_INTERVAL_MS: "0",
+    }),
+    launchRelay({ RATE_LIMIT_ENABLED: "false", RELAY_DISABLED: "true" }),
+  ]);
+  if (CLOUDFLARE) {
+    [cf, cfDisabled] = await Promise.all([
+      launchCloudflareRelay(),
+      launchCloudflareRelay({ RELAY_DISABLED: "true" }),
+    ]);
+  }
 }, BOOT_MS);
 
 afterAll(async () => {
-  await Promise.all([go?.kill(), cf?.kill()]);
+  await Promise.all([
+    go?.kill(),
+    goAdmin?.kill(),
+    goDisabled?.kill(),
+    cf?.kill(),
+    cfDisabled?.kill(),
+  ]);
   cleanupGoBinary();
 });
 
 // --- helpers ---------------------------------------------------------------
-
-// Every test owner is a different client. Cloudflare keys its owner-creation
-// limiter (5/min) on CF-Connecting-IP, which `wrangler dev` never sets, so
-// without this the whole suite shares one budget and 429s partway through.
-// Go ignores the header, so the Go half is unaffected.
-function ipFor(who: TestIdentity): string {
-  const id = who.identity.ownerId;
-  let h = 0;
-  for (let i = 0; i < id.length; i += 1) h = (h * 31 + id.charCodeAt(i)) >>> 0;
-  return `10.${(h >>> 16) & 255}.${(h >>> 8) & 255}.${h & 255}`;
-}
-
-const push = (base: string, who: TestIdentity, events: readonly SyncEnvelope[]) =>
-  pushEvents(base, who, events as SyncEnvelope[], { ip: ipFor(who) });
-
-const pullRaw = (base: string, who: TestIdentity, after: string) =>
-  pullEvents(base, who, after, { ip: ipFor(who) });
-
-const status = (base: string, who: TestIdentity) =>
-  getStatus(base, who, { ip: ipFor(who) });
 
 interface PullBody {
   readonly events: SyncEnvelope[];
   readonly nextCursor: string;
 }
 
-async function pull(base: string, who: TestIdentity, after = ""): Promise<PullBody> {
-  const res = await pullRaw(base, who, after);
+async function pull(
+  base: string,
+  who: TestIdentity,
+  after = "",
+): Promise<PullBody> {
+  const res = await pullEvents(base, who, after);
   expect(res.status).toBe(200);
   return (await res.json()) as PullBody;
 }
 
 async function eventIds(base: string, who: TestIdentity): Promise<string[]> {
-  return (await pull(base, who)).events.map((e) => e.eventId);
+  return (await pull(base, who)).events.map((event) => event.eventId);
 }
 
 async function usedBytes(base: string, who: TestIdentity): Promise<number> {
-  const body = (await (await status(base, who)).json()) as {
-    account?: { usedBytes?: number };
+  const res = await getUsage(base, who);
+  expect(res.status).toBe(200);
+  return ((await res.json()) as { storedBytes: number }).storedBytes;
+}
+
+async function streamCount(base: string, who: TestIdentity): Promise<number> {
+  const body = (await (await getStatus(base, who)).json()) as {
+    account?: { streams?: number };
   };
-  return body.account?.usedBytes ?? -1;
+  return body.account?.streams ?? -1;
 }
 
 async function seed(
@@ -100,85 +126,14 @@ async function seed(
 ): Promise<{ who: TestIdentity; events: SyncEnvelope[] }> {
   const who = await createTestIdentity();
   const events = await makeEnvelopes(who, count);
-  expect((await push(base, who, events)).status).toBe(200);
+  expect((await pushEvents(base, who, events)).status).toBe(200);
   return { who, events };
 }
 
-/** Each implementation, so one `test.each`-style block asserts both. */
-function implementations(): { name: string; base: () => string }[] {
-  const list = [{ name: "go", base: () => go.baseUrl }];
-  if (CLOUDFLARE) list.push({ name: "cloudflare", base: () => cf!.baseUrl });
-  return list;
-}
-
-// --- contract parity -------------------------------------------------------
-
-for (const impl of implementations()) {
-  describe(`relay contract — ${impl.name}`, () => {
-    test("an owner that never pushed is unknown to both status and pull", async () => {
-      const who = await createTestIdentity();
-      expect((await status(impl.base(), who)).status).toBe(404);
-      expect((await pullRaw(impl.base(), who, "")).status).toBe(404);
-    });
-
-    test("push then pull returns the same events in the same order", async () => {
-      const { who, events } = await seed(impl.base());
-      const body = await pull(impl.base(), who);
-      expect(body.events.map((e) => e.eventId)).toEqual(
-        events.map((e) => e.eventId),
-      );
-      // The cursor is opaque to a client but must be stable: pulling from it
-      // returns nothing and echoes it back rather than rewinding.
-      const tail = await pull(impl.base(), who, body.nextCursor);
-      expect(tail.events).toEqual([]);
-      expect(tail.nextCursor).toBe(body.nextCursor);
-    });
-
-    test("re-pushing the same events is idempotent and free", async () => {
-      const { who, events } = await seed(impl.base());
-      const before = await usedBytes(impl.base(), who);
-
-      const again = await push(impl.base(), who, events);
-      expect(await again.json()).toEqual({ accepted: 0, duplicate: events.length });
-      expect(await usedBytes(impl.base(), who)).toBe(before);
-      expect((await eventIds(impl.base(), who)).length).toBe(events.length);
-    });
-
-    test("an uninterpretable cursor reads from the beginning, it does not error", async () => {
-      // Matters for a device whose stored cursor predates the current cursor
-      // format: it must re-pull (the seen-set dedupes) rather than stall.
-      const { who, events } = await seed(impl.base());
-      const body = await pull(impl.base(), who, "not-a-cursor");
-      expect(body.events.map((e) => e.eventId)).toEqual(
-        events.map((e) => e.eventId),
-      );
-    });
-
-    test("a wiped relay forgets the owner, and a re-push restores it fully", async () => {
-      // "Wiped" = the same relay after a lost volume, a fresh deploy, or a
-      // restore from before this owner existed: the client still holds the
-      // recovery key, the relay holds nothing.
-      const { who, events } = await seed(impl.base());
-      expect((await eventIds(impl.base(), who)).length).toBe(events.length);
-
-      const wiped =
-        impl.name === "go"
-          ? await launchRelay({ RATE_LIMIT_ENABLED: "false" })
-          : await launchCloudflareRelay();
-      try {
-        expect((await status(wiped.baseUrl, who)).status).toBe(404);
-        expect((await pullRaw(wiped.baseUrl, who, "")).status).toBe(404);
-
-        // Re-seeding from the device is the whole recovery path.
-        expect((await push(wiped.baseUrl, who, events)).status).toBe(200);
-        expect(await eventIds(wiped.baseUrl, who)).toEqual(
-          events.map((e) => e.eventId),
-        );
-      } finally {
-        await wiped.kill();
-      }
-    }, BOOT_MS);
-  });
+/** Runs the Cloudflare compaction cron on demand (`wrangler dev --test-scheduled`). */
+async function runCron(base: string): Promise<void> {
+  const res = await fetch(`${base}/__scheduled?cron=0+*/6+*+*+*`);
+  expect(res.status).toBe(200);
 }
 
 // --- moving an owner between implementations -------------------------------
@@ -188,8 +143,8 @@ describe.skipIf(!CLOUDFLARE)("migrating an owner between relays", () => {
     const who = await createTestIdentity();
     const events = await makeEnvelopes(who, 4);
 
-    expect((await push(go.baseUrl, who, events)).status).toBe(200);
-    expect((await push(cf!.baseUrl, who, events)).status).toBe(200);
+    expect((await pushEvents(go.baseUrl, who, events)).status).toBe(200);
+    expect((await pushEvents(cf!.baseUrl, who, events)).status).toBe(200);
 
     const fromGo = await pull(go.baseUrl, who);
     const fromCf = await pull(cf!.baseUrl, who);
@@ -215,10 +170,10 @@ describe.skipIf(!CLOUDFLARE)("migrating an owner between relays", () => {
     // owner so pull never 404s, and its wipe detection never fires.
     const who = await createTestIdentity();
     const events = await makeEnvelopes(who, 4);
-    expect((await push(go.baseUrl, who, events)).status).toBe(200);
+    expect((await pushEvents(go.baseUrl, who, events)).status).toBe(200);
     const goCursor = (await pull(go.baseUrl, who)).nextCursor;
 
-    expect((await push(cf!.baseUrl, who, events)).status).toBe(200);
+    expect((await pushEvents(cf!.baseUrl, who, events)).status).toBe(200);
     const honest = await pull(cf!.baseUrl, who);
     expect(honest.events.length).toBe(4);
 
@@ -227,10 +182,7 @@ describe.skipIf(!CLOUDFLARE)("migrating an owner between relays", () => {
   });
 });
 
-// --- known divergences -----------------------------------------------------
-//
-// Asserted as they behave TODAY so a fix has to change this file deliberately
-// rather than drift. Each names the risk.
+// --- divergences: same request, two answers --------------------------------
 
 describe.skipIf(!CLOUDFLARE)("divergences between the implementations", () => {
   test("a null streamId: Go accepts it, Cloudflare rejects it", async () => {
@@ -242,21 +194,22 @@ describe.skipIf(!CLOUDFLARE)("divergences between the implementations", () => {
       return { who, event: { ...event!, streamId: null } as never };
     };
     const a = await mk();
-    expect((await push(go.baseUrl, a.who, [a.event])).status).toBe(200);
+    expect((await pushEvents(go.baseUrl, a.who, [a.event])).status).toBe(200);
     const b = await mk();
-    expect((await push(cf!.baseUrl, b.who, [b.event])).status).toBe(400);
+    expect((await pushEvents(cf!.baseUrl, b.who, [b.event])).status).toBe(400);
   });
 
   test("neither relay applies the streamId shape rule on push", async () => {
     // Both enforce it on /v1/streams/compact and neither on the push path, so
     // a stream id that could never be produced by the protocol is storable.
-    for (const impl of implementations()) {
+    for (const [name, base] of [
+      ["go", go.baseUrl],
+      ["cloudflare", cf!.baseUrl],
+    ] as const) {
       const who = await createTestIdentity();
       const [event] = await makeEnvelopes(who, 1);
-      const res = await push(impl.base(), who, [
-        { ...event!, streamId: "x" },
-      ]);
-      expect([impl.name, res.status]).toEqual([impl.name, 200]);
+      const res = await pushEvents(base, who, [{ ...event!, streamId: "x" }]);
+      expect([name, res.status]).toEqual([name, 200]);
     }
   });
 
@@ -266,52 +219,203 @@ describe.skipIf(!CLOUDFLARE)("divergences between the implementations", () => {
     // and '' IS NOT NULL — so every event with an empty streamId is treated as
     // ONE stream and the 6-hourly cron keeps only the highest event id.
     //
-    // Fix is two lines in apps/relay-cloudflare/src/index.ts: reuse the
-    // existing STREAM_ID_SHAPE regex in validateEnvelope's push path, and
-    // store `streamId || null` instead of `streamId ?? null`.
+    // Fix is two lines, now in two files: reuse the existing STREAM_ID_SHAPE
+    // regex in `validateEnvelope`'s push path (apps/relay-cloudflare/src/handlers.ts),
+    // and store `streamId || null` instead of `streamId ?? null` in
+    // `insertAndCharge` (apps/relay-cloudflare/src/store.ts).
     const blank = async (base: string) => {
       const who = await createTestIdentity();
-      const events = (await makeEnvelopes(who, 3)).map((e) => ({
-        ...e,
+      const events = (await makeEnvelopes(who, 3)).map((event) => ({
+        ...event,
         streamId: "",
       }));
-      expect((await push(base, who, events)).status).toBe(200);
+      expect((await pushEvents(base, who, events)).status).toBe(200);
       return who;
     };
 
     const goWho = await blank(go.baseUrl);
-    const goStatus = (await (await status(go.baseUrl, goWho)).json()) as {
-      account?: { streams?: number };
-    };
-    expect(goStatus.account?.streams).toBe(0); // NULL: not a stream at all
+    expect(await streamCount(go.baseUrl, goWho)).toBe(0); // NULL: not a stream
 
     const cfWho = await blank(cf!.baseUrl);
-    const cfStatus = (await (await status(cf!.baseUrl, cfWho)).json()) as {
-      account?: { streams?: number };
-    };
-    expect(cfStatus.account?.streams).toBe(1); // three distinct rows, one stream
+    expect(await streamCount(cf!.baseUrl, cfWho)).toBe(1); // three rows, one stream
 
-    // Run the compaction cron on demand (--test-scheduled).
-    const cron = await fetch(`${cf!.baseUrl}/__scheduled?cron=0+*/6+*+*+*`);
-    expect(cron.status).toBe(200);
+    await runCron(cf!.baseUrl);
 
-    expect((await eventIds(cf!.baseUrl, cfWho)).length).toBe(1); // 2 of 3 gone
-    expect((await eventIds(go.baseUrl, goWho)).length).toBe(3); // all survive
+    expect(await eventIds(cf!.baseUrl, cfWho)).toHaveLength(1); // 2 of 3 gone
+    expect(await eventIds(go.baseUrl, goWho)).toHaveLength(3); // all survive
   });
 
   test("compaction leaves well-formed streams alone", async () => {
     // Control for the test above: real stream ids are one-per-row, so the
     // cron must delete nothing.
     const { who, events } = await seed(cf!.baseUrl, 3);
-    expect((await fetch(`${cf!.baseUrl}/__scheduled?cron=0+*/6+*+*+*`)).status).toBe(
-      200,
+    await runCron(cf!.baseUrl);
+    expect(await eventIds(cf!.baseUrl, who)).toHaveLength(events.length);
+  });
+});
+
+// --- exceptions: a feature only the Go relay has ---------------------------
+
+describe("go-only behaviour (not contract)", () => {
+  test("pull compresses in the handler, which is why only Go sends Vary", async () => {
+    // The Go relay is deployed with nothing in front of it, so it gzips the one
+    // large response itself and must tell caches it varies by Accept-Encoding.
+    // Cloudflare's relay deliberately does NOT (a hand-gzipped body without
+    // `encodeBody: "manual"` gets re-encoded by the runtime, which bricked
+    // initial sync); its platform negotiates encoding instead. The risk: a
+    // cache in front of a self-hosted relay is the one that has to be told.
+    const { who } = await seed(go.baseUrl, 20); // over the 1 KiB gzip floor
+    const res = await pullEvents(go.baseUrl, who, "");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("vary")).toBe("Accept-Encoding");
+
+    if (CLOUDFLARE) {
+      const { who: cfWho } = await seed(cf!.baseUrl, 20);
+      const cfRes = await pullEvents(cf!.baseUrl, cfWho, "");
+      expect(cfRes.status).toBe(200);
+      expect(cfRes.headers.get("vary")).toBeNull();
+    }
+  });
+
+  test("compaction is triggered by a timer or the admin surface, not a cron", async () => {
+    // Go's superseded-event compaction runs on COMPACTION_INTERVAL_MS and can
+    // be forced through the admin dashboard; Cloudflare's runs on a Cron
+    // Trigger with no HTTP entry point at all. Two mechanisms, one invariant —
+    // and no way to make one file assert both.
+    const who = await createTestIdentity();
+    const generations = [
+      await makeEnvelope(who, { rowId: "row-a", counter: 0 }),
+      await makeEnvelope(who, { rowId: "row-a", counter: 1 }),
+      await makeEnvelope(who, { rowId: "row-a", counter: 2 }),
+    ];
+    expect((await pushEvents(goAdmin.baseUrl, who, generations)).status).toBe(200);
+
+    const res = await fetch(`${goAdmin.baseUrl}${ADMIN_BASE}/compact`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    expect(
+      ((await res.json()) as { deletedEvents: number }).deletedEvents,
+    ).toBeGreaterThanOrEqual(2);
+
+    // Last-writer-wins: only the highest event id of the stream survives.
+    expect(await eventIds(goAdmin.baseUrl, who)).toEqual([
+      generations[2]!.eventId,
+    ]);
+  });
+
+  test("admin /stats byEndpoint does not leak an unauthenticated raw path as a label", async () => {
+    // The Cloudflare relay has no admin surface, so this bound exists only
+    // here: routeLabel() collapses unmatched paths to a fixed bucket, or any
+    // caller could plant an arbitrary string in the ops metrics and grow
+    // byEndpoint without bound.
+    const junkPath = "/junk/path/should-not-leak";
+    await fetch(`${goAdmin.baseUrl}${junkPath}`);
+
+    const res = await fetch(`${goAdmin.baseUrl}${ADMIN_BASE}/stats`, {
+      headers: { Authorization: `Bearer ${ADMIN_TOKEN}` },
+    });
+    expect(res.status).toBe(200);
+    const stats = (await res.json()) as {
+      traffic: { byEndpoint: Record<string, number> };
+    };
+    const leaked = Object.keys(stats.traffic.byEndpoint).some((key) =>
+      key.includes(junkPath),
     );
-    expect((await eventIds(cf!.baseUrl, who)).length).toBe(events.length);
+    expect(leaked).toBe(false);
+  });
+
+  test("RELAY_DISABLED means nothing to the Go relay", async () => {
+    // Pinned counterpart to the Cloudflare kill switch below: a self-hosted
+    // operator stops the process, so Go never grew the var. The risk is an
+    // operator setting it here, believing writes are off, and finding they
+    // aren't.
+    const who = await createTestIdentity();
+    expect(
+      (await pushEvents(goDisabled.baseUrl, who, [await makeEnvelope(who)])).status,
+    ).toBe(200);
+  });
+});
+
+// --- exceptions: a feature only the Cloudflare relay has -------------------
+
+describe.skipIf(!CLOUDFLARE)("cloudflare-only behaviour (not contract)", () => {
+  test("blob GET carries an ETag; the Go relay's does not", async () => {
+    // Content-addressed bytes make the hash a free, exact validator, and a zone
+    // cache rule in front of /v1/blobs/* can use it. Go serves the same bytes
+    // with only Cache-Control, so a cache in front of it revalidates by time
+    // alone.
+    const who = await createTestIdentity();
+    const bytes = new TextEncoder().encode(`etag divergence ${Math.random()}`);
+    const hash = await sha256Base64UrlBytes(bytes);
+
+    expect((await putBlob(cf!.baseUrl, who, hash, bytes)).status).toBe(200);
+    expect((await getBlob(cf!.baseUrl, who, hash)).headers.get("etag")).toBe(hash);
+
+    expect((await putBlob(go.baseUrl, who, hash, bytes)).status).toBe(200);
+    expect((await getBlob(go.baseUrl, who, hash)).headers.get("etag")).toBeNull();
+  });
+
+  test("RELAY_DISABLED is a read-only kill switch: writes 503, reads still served", async () => {
+    // A metered relay needs a way to stop the bill without losing the data;
+    // a self-hosted one just gets stopped. The risk is silent asymmetry: a
+    // client seeing 503 on push here and a connection error there.
+    const who = await createTestIdentity();
+    const push = await pushEvents(cfDisabled!.baseUrl, who, [
+      await makeEnvelope(who),
+    ]);
+    expect(push.status).toBe(503);
+
+    const bytes = new TextEncoder().encode("kill switch");
+    const blob = await putBlob(
+      cfDisabled!.baseUrl,
+      who,
+      await sha256Base64UrlBytes(bytes),
+      bytes,
+    );
+    expect(blob.status).toBe(503);
+
+    const compact = await compactStreams(cfDisabled!.baseUrl, who, [
+      "A".repeat(22),
+    ]);
+    expect(compact.status).toBe(503);
+
+    // Reads take the normal path: unknown owner, not "relay off".
+    expect((await pullEvents(cfDisabled!.baseUrl, who, "")).status).toBe(404);
+  });
+
+  test("owner creation is rate limited per IP; the Go relay has no such limiter", async () => {
+    // Cloudflare's relay is a public URL on a metered account, so minting owner
+    // rows is the costliest thing to leave open and gets its own budget
+    // (5/min/IP). Go's fleet cap is MAX_OWNERS alone. The risk: several devices
+    // behind one NAT first-syncing at once are throttled on one relay only.
+    const shared = "203.0.113.7";
+    const statuses: number[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const who = await createTestIdentity();
+      const res = await pushEvents(cf!.baseUrl, who, [await makeEnvelope(who)], {
+        ip: shared,
+      });
+      statuses.push(res.status);
+    }
+    expect(statuses).toContain(429);
+
+    const goStatuses: number[] = [];
+    for (let i = 0; i < 7; i += 1) {
+      const who = await createTestIdentity();
+      const res = await pushEvents(go.baseUrl, who, [await makeEnvelope(who)], {
+        ip: shared,
+      });
+      goStatuses.push(res.status);
+    }
+    expect(goStatuses).toEqual(Array(7).fill(200));
   });
 });
 
 // A machine without wrangler still runs the Go half; say so rather than
-// reporting a green suite that silently checked one implementation.
+// reporting a green suite that silently checked one implementation. In CI
+// RELAY_REQUIRE_CLOUDFLARE=1 makes the missing harness a failure instead.
 describe.skipIf(CLOUDFLARE)("cloudflare coverage", () => {
   test.skip("skipped: wrangler is not installed, so only Go was verified", () => {});
 });

@@ -1,6 +1,7 @@
 package com.simplysync.kotlin
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -36,7 +37,7 @@ class ConformanceTest {
         ),
     )
 
-    private fun corpus(): Map<String, kotlinx.serialization.json.JsonElement> {
+    private fun corpus(): kotlinx.serialization.json.JsonObject {
         val url = javaClass.getResource("/vectors.json")
         assertNotNull("vectors.json must be on the test classpath", url)
         return Json.parseToJsonElement(url!!.readText()).jsonObject
@@ -44,7 +45,7 @@ class ConformanceTest {
 
     @Test
     fun matchesSharedCrossLanguageCorpus() {
-        val entries = corpus()
+        val entries = corpus()["identities"]!!.jsonObject
         // Both a native sf1_ recovery key and a BIP39 mnemonic must be covered.
         assertEquals(setOf("sf1", "mnemonic"), entries.keys)
 
@@ -69,6 +70,23 @@ class ConformanceTest {
                 identity, eventId, deviceId, createdAt, fixedPayload(), nonce!!,
             )
             assertEquals("$name streamId", field("streamId"), env.streamId)
+
+            // Asserted before the ciphertext: these two strings are what a
+            // ciphertext mismatch is usually caused by, and a bare ciphertext
+            // failure names neither of them.
+            assertEquals(
+                "$name headerCanonical",
+                field("headerCanonical"),
+                Envelope.encodeHeader(
+                    env.version, env.ownerId, env.eventId,
+                    env.deviceId, env.createdAt, env.streamId,
+                ),
+            )
+            assertEquals(
+                "$name payloadCanonical",
+                field("payloadCanonical"),
+                Envelope.encodePayload(fixedPayload()),
+            )
             assertEquals("$name ciphertext", field("ciphertextB64"), env.ciphertext)
 
             // And the envelope round-trips back to the original payload.
@@ -79,6 +97,28 @@ class ConformanceTest {
                 JsonValue.Str("Hello from JS"),
                 decrypted.value["title"],
             )
+        }
+    }
+
+    /**
+     * `Hlc.compare` is the sole last-write-wins tiebreaker. A port that orders
+     * two events differently than TypeScript hands its device a different
+     * winner for the same pair, and the two stop converging — which is exactly
+     * the drift that shipped once, when TS used locale collation and the ports
+     * used code-unit order.
+     */
+    @Test
+    fun matchesSharedHlcOrdering() {
+        val cases = corpus()["hlcOrder"]!!.jsonArray
+        assertEquals("corpus must carry ordering cases", true, cases.isNotEmpty())
+
+        for (elem in cases) {
+            val c = elem.jsonObject
+            fun field(k: String) = c[k]!!.jsonPrimitive.content
+
+            val actual = Hlc.compare(field("left"), field("right"))
+            val sign = if (actual < 0) "lt" else if (actual > 0) "gt" else "eq"
+            assertEquals("${field("name")}: ${field("why")}", field("expect"), sign)
         }
     }
 }

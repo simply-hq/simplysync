@@ -83,9 +83,10 @@ async function applyMigrations(persistDir: string): Promise<void> {
 }
 
 /**
- * One Cloudflare relay instance. `varOverrides` sets the same `[vars]` tunables
- * the Go launcher takes as env (MAX_OWNER_BYTES, RELAY_DISABLED, …), so a test
- * can configure either implementation the same way.
+ * One Cloudflare relay instance. `varOverrides` sets this Worker's `[vars]`,
+ * the way the Go launcher sets env — the shared tunables (MAX_OWNER_BYTES, …)
+ * are named identically, but each relay also has vars the other lacks
+ * (RELAY_DISABLED is Cloudflare-only).
  */
 export async function launchCloudflareRelay(
   varOverrides: Record<string, string> = {},

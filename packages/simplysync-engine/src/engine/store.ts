@@ -298,6 +298,11 @@ export function createStore(
     );
   };
 
+  // `_sync_meta` is a string-keyed table, and those key strings are an on-disk
+  // contract the Kotlin and Swift ports read too — they are not renameable.
+  // What is not a contract is every caller having to spell them: a key typed
+  // in one module and globbed in another drifts apart with no type error and
+  // no failing test. The keys live here and callers ask for facts instead.
   const getMeta = (key: string): string | null => {
     if (!state.driver) return null;
     const rows = state.driver.select<{ value: string }>(
@@ -314,16 +319,105 @@ export function createStore(
     );
   };
 
+  // The three per-relay key prefixes. `relayStateKeys` is the single list that
+  // `hasRelayHistory` scans and `resetRelaySyncState` deletes, so the two can
+  // no longer disagree about what "this device knows about a relay" means.
+  const pullCursorKey = (base: string) => `cursor:${base}`;
+  const pushCursorKey = (base: string) => `push:${base}`;
+  const backfillMarkerKey = (base: string) => `backfill:${base}`;
+  const relayStateKeys = (base: string) => [
+    pullCursorKey(base),
+    pushCursorKey(base),
+    backfillMarkerKey(base),
+  ];
+
+  const pullCursor = (base: string): string | null => getMeta(pullCursorKey(base));
+  const setPullCursor = (base: string, cursor: string): void =>
+    setMeta(pullCursorKey(base), cursor);
+  const pushCursor = (base: string): string | null => getMeta(pushCursorKey(base));
+
+  // The HLC high-water mark, so the clock stays monotonic across restarts.
+  const clockHighWaterMark = (): { time: number; counter: number } => ({
+    time: Number(getMeta("hlc:time") ?? "0") || 0,
+    counter: Number(getMeta("hlc:counter") ?? "0") || 0,
+  });
+  const setClockHighWaterMark = (time: number, counter: number): void => {
+    setMeta("hlc:time", String(time));
+    setMeta("hlc:counter", String(counter));
+  };
+
+  const legacyImportVersion = (): number =>
+    Number(getMeta("legacyImported") ?? "0") || 0;
+  const setLegacyImportVersion = (version: number): void =>
+    setMeta("legacyImported", String(version));
+
+  // Where the bounded rescan of permanently-opaque deferred events has got to
+  // for a given schema token. Durable so a large backlog progresses across
+  // syncs, and so a schema already scanned to completion never rescans.
+  const opaqueScanState = (): { activeToken: string; completedToken: string; cursor: string | null } => ({
+    activeToken: getMeta("deferred:opaque:activeSchema") ?? "",
+    completedToken: getMeta("deferred:opaque:completeSchema") ?? "",
+    cursor: getMeta("deferred:opaque:cursor") || null,
+  });
+  const startOpaqueScan = (token: string): void => {
+    setMeta("deferred:opaque:activeSchema", token);
+    setMeta("deferred:opaque:cursor", "");
+  };
+  const advanceOpaqueScan = (cursor: string): void =>
+    setMeta("deferred:opaque:cursor", cursor);
+  const finishOpaqueScan = (token: string): void => {
+    setMeta("deferred:opaque:completeSchema", token);
+    setMeta("deferred:opaque:activeSchema", "");
+    setMeta("deferred:opaque:cursor", "");
+  };
+
+  // The Seen set: which relay-delivered events this device has already
+  // processed. It is what makes a re-pull free and a duplicate within one page
+  // harmless. Safe to prune from the oldest end — the pull cursor only
+  // advances, so pruned ids are not re-delivered, and apply is idempotent
+  // under last-writer-wins even if one were.
+  const hasSeenEvent = (eventId: string): boolean =>
+    (state.driver?.select(
+      `select 1 from "${SYNC_SEEN_TABLE}" where event_id = ?`,
+      [eventId],
+    ).length ?? 0) > 0;
+
+  const markEventSeen = (eventId: string): void => {
+    state.driver?.exec(
+      `insert or ignore into "${SYNC_SEEN_TABLE}" (event_id) values (?)`,
+      [eventId],
+    );
+  };
+
+  const pruneSeen = (cap: number): void => {
+    const { driver } = state;
+    if (!driver) return;
+    const count =
+      driver.select<{ c: number }>(
+        `select count(*) as c from "${SYNC_SEEN_TABLE}"`,
+      )[0]?.c ?? 0;
+    if (count <= cap) return;
+    driver.exec(
+      `delete from "${SYNC_SEEN_TABLE}" where event_id not in ` +
+        `(select event_id from "${SYNC_SEEN_TABLE}" order by event_id desc limit ?)`,
+      [cap],
+    );
+  };
+
   // A temporary `setTransports([])` must not turn a previously synced database
   // into a "local-only" one for tombstone GC. Relay cursors/backfill markers
   // are durable evidence that stale peers may still exist.
   const hasRelayHistory = (): boolean => {
     if (!state.driver) return false;
-    return state.driver.select(
-      `select 1 from "${SYNC_META_TABLE}" ` +
-        `where key glob 'push:*' or key glob 'cursor:*' or key glob 'backfill:*' ` +
-        `limit 1`,
-    ).length > 0;
+    const prefixes = relayStateKeys("").map((key) => `${key}*`);
+    return (
+      state.driver.select(
+        `select 1 from "${SYNC_META_TABLE}" ` +
+          `where ${prefixes.map(() => "key glob ?").join(" or ")} ` +
+          `limit 1`,
+        prefixes,
+      ).length > 0
+    );
   };
 
   const deferRemoteEvent = (
@@ -640,9 +734,8 @@ export function createStore(
         );
         markOutboxDelivered(eventId, relay);
       }
-      const cursorKey = `push:${relay}`;
       const last = eventIds[eventIds.length - 1]!;
-      if (last > (getMeta(cursorKey) ?? "")) setMeta(cursorKey, last);
+      if (last > (pushCursor(relay) ?? "")) setMeta(pushCursorKey(relay), last);
     });
   };
 
@@ -662,9 +755,10 @@ export function createStore(
         `delete from "${SYNC_OUTBOX_RELAY_TABLE}" where relay = ?`,
         [base],
       );
+      const keys = relayStateKeys(base);
       driver.exec(
-        `delete from "${SYNC_META_TABLE}" where key in (?, ?, ?)`,
-        [`cursor:${base}`, `push:${base}`, `backfill:${base}`],
+        `delete from "${SYNC_META_TABLE}" where key in (${keys.map(() => "?").join(", ")})`,
+        keys,
       );
     });
   };
@@ -717,9 +811,9 @@ export function createStore(
   // learned row back to the same relay just because no push cursor existed.
   const backfillOutboxForNewRelay = (base: string): number => {
     const { driver } = state;
-    const marker = `backfill:${base}`;
+    const marker = backfillMarkerKey(base);
     if (!driver || getMeta(marker) !== null) return 0;
-    if (getMeta(`push:${base}`) !== null) {
+    if (pushCursor(base) !== null) {
       setMeta(marker, "1");
       return 0;
     }
@@ -1033,14 +1127,26 @@ export function createStore(
       for (const [key, value] of Object.entries(snapshot.meta)) {
         setMeta(key, value);
       }
-      setMeta("legacyImported", String(LEGACY_IMPORT_VERSION));
+      setLegacyImportVersion(LEGACY_IMPORT_VERSION);
     });
   };
 
   return {
     ensureSchema,
-    getMeta,
-    setMeta,
+    pullCursor,
+    setPullCursor,
+    pushCursor,
+    clockHighWaterMark,
+    setClockHighWaterMark,
+    legacyImportVersion,
+    setLegacyImportVersion,
+    hasSeenEvent,
+    markEventSeen,
+    pruneSeen,
+    opaqueScanState,
+    startOpaqueScan,
+    advanceOpaqueScan,
+    finishOpaqueScan,
     hasRelayHistory,
     deferRemoteEvent,
     listOpaqueDeferredEvents,
@@ -1110,10 +1216,23 @@ export type Clock = ReturnType<typeof createClock>;
  */
 const HLC_COUNTER_MAX = 36 ** 4 - 1; // createHlc pads the counter to 4 base-36 digits
 
-export function createClock(state: EngineState, store: Store) {
+/**
+ * The clock needs somewhere durable to keep its high-water mark, and nothing
+ * else the Store offers. Naming that as its own parameter type keeps the
+ * dependency honest — and lets a test hand the clock two functions instead of
+ * casting a stub through `as unknown as Store`.
+ */
+export type ClockHighWaterMarkStore = Pick<
+  Store,
+  "clockHighWaterMark" | "setClockHighWaterMark"
+>;
+
+export function createClock(
+  state: EngineState,
+  store: ClockHighWaterMarkStore,
+) {
   const persist = (): void => {
-    store.setMeta("hlc:time", String(state.hlcTime));
-    store.setMeta("hlc:counter", String(state.hlcCounter));
+    store.setClockHighWaterMark(state.hlcTime, state.hlcCounter);
   };
 
   const nextHlc = (): string => {

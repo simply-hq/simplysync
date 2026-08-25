@@ -1,94 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(db = new Database(":memory:")): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
+import { fakeRelay, memoryDriver, memoryStorage } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
 
-/**
- * A relay stub that blocks its FIRST push until released, so a second sync()
- * provably lands while a pass is in flight. Counts pushes to check coalescing.
- */
-function holdingRelay() {
-  const firstPushStarted = deferred();
-  const releaseFirstPush = deferred();
-  let pushes = 0;
-  let eventsPushed = 0;
-
-  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    if (init?.method === "POST") {
-      pushes += 1;
-      const body = JSON.parse(String(init.body)) as {
-        events: { eventId: string }[];
-      };
-      eventsPushed += body.events.length;
-      if (pushes === 1) {
-        firstPushStarted.resolve();
-        await releaseFirstPush.promise;
-      }
-      return new Response(
-        JSON.stringify({ accepted: body.events.length, duplicate: 0 }),
-        { status: 200 },
-      );
-    }
-    return new Response(JSON.stringify({ events: [], nextCursor: "" }), {
-      status: 200,
-    });
-  }) as typeof fetch;
-
-  return {
-    fetchImpl,
-    firstPushStarted: firstPushStarted.promise,
-    release: releaseFirstPush.resolve,
-    pushCount: () => pushes,
-    eventCount: () => eventsPushed,
-  };
-}
-
 function makeEngine(name: string, fetchImpl: typeof fetch) {
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
     fetch: fetchImpl,
   })(schema, {
@@ -106,8 +29,8 @@ function makeEngine(name: string, fetchImpl: typeof fetch) {
  */
 describe("await sync() covers the caller's writes", () => {
   test("a sync racing an in-flight pass still pushes the caller's event", async () => {
-    const relay = holdingRelay();
-    const engine = makeEngine("sync-await-test", relay.fetchImpl);
+    const relay = fakeRelay({ holdFirstPush: true });
+    const engine = makeEngine("sync-await-test", relay.fetch);
     await engine.ready;
 
     engine.insert("note", { body: "one" });
@@ -127,13 +50,13 @@ describe("await sync() covers the caller's writes", () => {
     // resolves, its write has reached the relay. (Outbox event ids are HLC
     // event ids, not row ids, so the count is what's assertable here.)
     expect(engine.getPendingOutboxCount()).toBe(0);
-    expect(relay.eventCount()).toBe(2);
+    expect(relay.pushedEventIds().length).toBe(2);
     engine.setTransports([]);
   });
 
   test("concurrent callers coalesce into a single follow-up pass", async () => {
-    const relay = holdingRelay();
-    const engine = makeEngine("sync-coalesce-test", relay.fetchImpl);
+    const relay = fakeRelay({ holdFirstPush: true });
+    const engine = makeEngine("sync-coalesce-test", relay.fetch);
     await engine.ready;
 
     engine.insert("note", { body: "one" });
@@ -154,8 +77,8 @@ describe("await sync() covers the caller's writes", () => {
   });
 
   test("concurrent callers await the same drain", async () => {
-    const relay = holdingRelay();
-    const engine = makeEngine("sync-shared-drain-test", relay.fetchImpl);
+    const relay = fakeRelay({ holdFirstPush: true });
+    const engine = makeEngine("sync-shared-drain-test", relay.fetch);
     await engine.ready;
 
     engine.insert("note", { body: "one" });

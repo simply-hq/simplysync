@@ -6,43 +6,13 @@
 // 2. `resetAppOwner` wiped local data and adopted a brand-new owner with no
 //    checks at all — offline, that was unrecoverable loss with no prompt.
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
 const json = (body: unknown, status = 200) =>
@@ -75,7 +45,7 @@ describe("relay data loss", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, {
@@ -134,7 +104,7 @@ describe("relay data loss", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, {
@@ -160,7 +130,7 @@ describe("resetAppOwner guard", () => {
     },
   ) =>
     createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: options.fetch,
     })(schema, {
@@ -244,4 +214,90 @@ describe("resetAppOwner guard", () => {
     );
     expect(rows).toHaveLength(0);
   });
+});
+
+describe("wipe detection does not fire on a healthy relay", () => {
+  const engineWith = (name: string, fetchImpl: typeof fetch) =>
+    createSync({
+      createSqliteDriver: () => memoryDriver().driver,
+      secureStorage: memoryStorage(),
+      fetch: fetchImpl,
+    })(schema, {
+      name,
+      transports: [{ type: "Http", url: "http://relay.test" }],
+      syncIntervalMs: 3_600_000,
+    });
+
+  test("a relay that compacted below our cursor but still holds events is not re-seeded", async () => {
+    // Stream compaction legitimately lowers max(seq) over the surviving rows.
+    // Reading that as data loss would trigger a full re-upload on every
+    // healthy relay that compacts — expensive, and on a metered account,
+    // repeatedly so. An empty log is what separates the two.
+    let pushes = 0;
+    let headSeq = 40;
+    let events = 9;
+    const engine = engineWith("compaction-not-a-wipe", (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (init?.method === "POST") {
+        pushes += 1;
+        return okPush();
+      }
+      if (String(input).includes("/v1/status")) {
+        return json({ server: { version: "1.0.0" }, account: { headSeq, events } });
+      }
+      return json({ events: [], nextCursor: "40" });
+    }) as typeof fetch);
+    await engine.ready;
+
+    engine.insert("note", { body: "one" });
+    await engine.sync();
+    await engine.sync();
+    expect(await status(engine)).toMatchObject({ reachable: true });
+    const pushesBefore = pushes;
+
+    // The relay compacts: head drops well below our cursor, but it still has data.
+    headSeq = 3;
+    expect((await status(engine)).reseeding).toBeUndefined();
+
+    // …and only when the log is genuinely empty is it treated as a wipe.
+    events = 0;
+    expect((await status(engine)).reseeding).toBe(true);
+    await engine.sync();
+    expect(pushes).toBeGreaterThan(pushesBefore);
+  });
+
+  test("a legacy HLC-shaped cursor is ignored rather than compared as zero", async () => {
+    // Databases from before the seq cursor hold an event id. Number() gives
+    // NaN; any comparison against it is false, so wipe detection must skip it
+    // instead of reading it as cursor 0 and declaring every relay healthy —
+    // or, with the comparison the other way round, every relay wiped.
+    const engine = engineWith("legacy-cursor", (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      if (init?.method === "POST") return okPush();
+      if (String(input).includes("/v1/status")) {
+        return json({ server: { version: "1.0.0" }, account: { headSeq: 0, events: 0 } });
+      }
+      return json({ events: [], nextCursor: "0000000005-0000-devA" });
+    }) as typeof fetch);
+    await engine.ready;
+
+    engine.insert("note", { body: "one" });
+    await engine.sync();
+    await engine.sync();
+
+    // Cursor is an HLC, headSeq is 0, the log is empty — every numeric
+    // condition for "wiped" looks true, but the cursor cannot be compared.
+    expect(await engine.getSyncLog(1)).toBeDefined();
+    expect((await status(engine)).reseeding).toBeUndefined();
+  });
+
+  const status = async (engine: { getRelayStatuses: () => Promise<unknown[]> }) =>
+    (await engine.getRelayStatuses())[0] as {
+      reachable?: boolean;
+      reseeding?: boolean;
+    };
 });

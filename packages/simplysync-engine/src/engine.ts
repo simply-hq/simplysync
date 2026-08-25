@@ -19,6 +19,7 @@ import type {
 import { createEngineState } from "./engine/state.js";
 import { TOMBSTONE_RETENTION_MS } from "./engine/constants.js";
 import { createStore, createClock } from "./engine/store.js";
+import { createEventAdmission } from "./engine/admission.js";
 import { createQueryCache } from "./engine/query-cache.js";
 import { createRelaySync } from "./engine/relay.js";
 import { createTabBridge } from "./engine/tab-sync.js";
@@ -111,19 +112,21 @@ export const createSync =
     const store = createStore(state, schema, config, schemaVersion);
     const clock = createClock(state, store);
     const queryCache = createQueryCache(state, schema);
+    // One ladder decides what happens to an arriving event, whichever of the
+    // three paths delivered it (relay pull, deferred replay, sibling tab).
+    const admission = createEventAdmission(store, clock, schema, schemaVersion);
     const bridge = createTabBridge(
       state,
       store,
-      clock,
+      admission,
       queryCache,
-      schema,
       deps.tabSync,
-      schemaVersion,
     );
     const relay = createRelaySync(
       state,
       store,
       clock,
+      admission,
       queryCache,
       bridge,
       schema,
@@ -172,6 +175,13 @@ export const createSync =
     // engine.ready: kick off init exactly once; every awaiting method uses this
     // single promise (loadQuery, importLegacy, the appOwner getter).
     const ready = lifecycle.init();
+
+    // Retain synced tombstones until the protocol has a durable, cross-device
+    // delete watermark. Hard-deleting/compacting them today lets a long-offline
+    // device resurrect stale data. Durable relay history keeps this guard
+    // active after transports are detached.
+    const peersMayResurrect = () =>
+      state.transports.length > 0 || store.hasRelayHistory();
 
     const instance: SyncEngine<S> = {
       createQuery(fn, options) {
@@ -303,11 +313,7 @@ export const createSync =
         return relay.getRelayStatuses();
       },
       purgeDeleted(options) {
-        // Retain synced tombstones until the protocol has a durable,
-        // cross-device delete watermark. Hard-deleting/compacting them today
-        // lets a long-offline device resurrect stale data. Durable relay
-        // history keeps this guard active after transports are detached.
-        if (state.transports.length > 0 || store.hasRelayHistory()) {
+        if (peersMayResurrect()) {
           return { purged: 0 };
         }
         const olderThanMs = options?.olderThanMs ?? TOMBSTONE_RETENTION_MS;
@@ -318,7 +324,7 @@ export const createSync =
         return { purged };
       },
       purgeRows(rows) {
-        if (state.transports.length > 0 || store.hasRelayHistory()) {
+        if (peersMayResurrect()) {
           return { purged: 0 };
         }
         const purged = store.purgeRows(rows);
@@ -328,7 +334,7 @@ export const createSync =
       setTransports(next) {
         relay.setTransports(next);
       },
-      sync: relay.sync,
+      sync: relay.syncNow,
       reloadApp() {
         if (deps.reloadApp) {
           void deps.reloadApp();

@@ -8,7 +8,6 @@
 // checked here too since it's cheap to assert).
 
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
@@ -17,37 +16,8 @@ import {
   SqliteBoolean,
   sqliteFalse,
   sqliteTrue,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage } from "./support";
 
 const schema = {
   task: {
@@ -59,7 +29,7 @@ const schema = {
 
 function makeApp() {
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
   })(schema, { name: "query-cache-app" });
 }

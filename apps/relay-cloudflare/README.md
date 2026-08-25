@@ -44,7 +44,7 @@ each layer sheds load before the next, more expensive one runs:
    `WRITE_LIMITER`). Per-IP, per-owner, and per-IP-owner-creation budgets.
    These protect the default `workers.dev` deployment without extra setup.
 
-3. **Cheap-path rejection ordering** (in `src/index.ts`). `/health`, CORS
+3. **Cheap-path rejection ordering** (in `src/handlers.ts`). `/health`, CORS
    pre-flight, bad methods, missing tokens, and oversized `Content-Length` are
    all rejected on **pure Worker CPU — zero D1 reads, zero R2 ops**. Only
    well-formed, authenticated, in-budget requests ever touch a metered store.
@@ -144,6 +144,8 @@ bun run dev          # wrangler dev — local D1 + R2 emulation
 | `GET` | `/health` | Liveness (no DB). |
 | `POST` | `/v1/events` | Push encrypted events. |
 | `GET` | `/v1/events?ownerId&after&limit` | Pull events (keyset cursor). |
+| `POST` | `/v1/streams/compact` | Drop every event of the named purged streams. |
+| `GET` | `/v1/status?ownerId` | Server version + this owner's account stats. |
 | `GET` | `/v1/usage?ownerId` | Owner's stored byte count. |
 | `PUT` | `/v1/blobs/:hash?ownerId` | Store an encrypted, content-addressed chunk. |
 | `GET` | `/v1/blobs/:hash?ownerId` | Fetch a chunk. |

@@ -162,6 +162,68 @@ describe("streamId (compaction grouping key)", () => {
   });
 });
 
+describe("credential form is unambiguous", () => {
+  test("an sf1_ prefix always wins over a mnemonic-shaped body", async () => {
+    // The two credential forms share one entry point. If a value could be read
+    // as either, it would derive two different owners depending on which
+    // engine version or port looked at it — and each owner sees an empty
+    // account. The prefix decides, always.
+    const phrase = TEST_MNEMONIC;
+    const asPhrase = await deriveIdentity(phrase);
+    expect(asPhrase.source).toBe("mnemonic");
+
+    // Same words, prefixed: it is now read as a native key, and rejected as
+    // one, rather than quietly deriving the phrase's owner by a second route.
+    expect(deriveIdentity(`sf1_${phrase}`)).rejects.toThrow(
+      /base64url|32 bytes/u,
+    );
+  });
+
+  test("a native key that does not carry 32 bytes of entropy is refused", async () => {
+    // A truncated or padded key still base64url-decodes to *something*, and
+    // that something derives a perfectly valid, permanently empty owner. The
+    // length check is what turns silent data loss into an error message.
+    const good = await createRecoveryKey();
+    const identity = await deriveIdentity(good);
+    expect(identity.ownerId).toBeTruthy();
+
+    const body = good.slice("sf1_".length);
+    expect(deriveIdentity(`sf1_${body.slice(0, -4)}`)).rejects.toThrow(
+      /32 bytes/u,
+    );
+    expect(deriveIdentity("sf1_")).rejects.toThrow(/32 bytes/u);
+    expect(deriveIdentity("not-a-credential-at-all")).rejects.toThrow(
+      /must start with sf1_/u,
+    );
+  });
+});
+
+describe("envelope owner binding", () => {
+  test("an envelope sealed for another owner is refused before any decryption", async () => {
+    // Two owners share a relay only by accident (a wrong ownerId in a request,
+    // a restored backup pointed at the wrong account). AES-GCM would reject it
+    // anyway, but the explicit check turns an opaque auth-tag failure into a
+    // statement about whose data this is — and it is what makes the pull path's
+    // "decryptFailures" count mean "wrong key", not "wrong account".
+    const mine = await deriveIdentity(TEST_MNEMONIC);
+    const theirs = await deriveIdentity(await createRecoveryKey());
+    const env = await encryptPayload(
+      theirs,
+      { eventId: "e1", deviceId: "d1" },
+      samplePayload,
+    );
+    expect(env.ownerId).not.toBe(mine.ownerId);
+    expect(decryptEnvelope(mine, env)).rejects.toThrow(
+      /owner does not match/u,
+    );
+
+    // Relabelling the envelope does not help: ownerId is part of the AAD.
+    expect(
+      decryptEnvelope(mine, { ...env, ownerId: mine.ownerId }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("native recovery keys remain unchanged", () => {
   test("sf1 keys still derive via HKDF and report their source", async () => {
     const recoveryKey = await createRecoveryKey();

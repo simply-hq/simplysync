@@ -12,10 +12,10 @@ import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
   type SqliteDriver,
 } from "../src/index";
 import { SYNC_OUTBOX_TABLE } from "../src/engine/constants";
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 // --- Scope note -------------------------------------------------------------
 //
@@ -31,24 +31,6 @@ import { SYNC_OUTBOX_TABLE } from "../src/engine/constants";
 // fully synchronous (no API shape change) while closing the crash window the
 // old async `enqueue` left open (see the sibling branch's write-atomicity
 // test for that gap's description).
-
-function makeDriver(): { driver: SqliteDriver; db: Database } {
-  const db = new Database(":memory:");
-  return {
-    db,
-    driver: {
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
-    },
-  };
-}
 
 // A driver whose underlying row-write engine works normally EXCEPT that any
 // attempt to insert into `_sync_outbox` throws — simulating a failure in the
@@ -77,21 +59,7 @@ function makeThrowingOutboxDriver(): { driver: SqliteDriver; db: Database } {
   };
 }
 
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
-
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
-const settle = () => new Promise((r) => setTimeout(r, 20));
 
 function count(db: Database, table: string): number {
   return (
@@ -129,7 +97,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     let handle!: { driver: SqliteDriver; db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        handle = makeDriver();
+        handle = memoryDriver();
         return handle.driver;
       },
       secureStorage: memoryStorage(),
@@ -181,7 +149,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     let handle!: { driver: SqliteDriver; db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        handle = makeDriver();
+        handle = memoryDriver();
         return handle.driver;
       },
       secureStorage: memoryStorage(),
@@ -204,7 +172,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
     for (let i = 0; i < 40 && pushedEvents.length < 1; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(pushedEvents.length).toBe(1);
 
@@ -241,7 +209,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     let handle!: { driver: SqliteDriver; db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        handle = makeDriver();
+        handle = memoryDriver();
         return handle.driver;
       },
       secureStorage: memoryStorage(),
@@ -280,7 +248,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
     for (let i = 0; i < 40 && pushedEvents.length < 1; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(pushedEvents.length).toBe(1);
     expect((pushedEvents[0] as unknown as SyncEnvelope).eventId).toBe(
@@ -300,7 +268,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     let handle!: { driver: SqliteDriver; db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        handle = makeDriver();
+        handle = memoryDriver();
         return handle.driver;
       },
       secureStorage: memoryStorage(),
@@ -341,7 +309,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     let handle!: { driver: SqliteDriver; db: Database };
     const engine = createSync({
       createSqliteDriver: () => {
-        handle = makeDriver();
+        handle = memoryDriver();
         return handle.driver;
       },
       secureStorage: memoryStorage(),
@@ -358,7 +326,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     ]);
     for (let i = 0; i < 40 && goodEvents.length < 1; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(goodEvents.length).toBe(1);
 
@@ -376,8 +344,79 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     // AES-GCM uses a fresh random nonce per encryption, so a re-seal would be
     // detectable as a changed envelope_json.
     await engine.sync();
-    await settle();
+    await settle(engine);
     expect(goodEvents.length).toBe(1); // no duplicate push
     expect(readEnvelope()).toBe(sealedOnce); // byte-identical: not re-encrypted
+  });
+});
+
+describe("seal robustness", () => {
+  test("one unsealable pending row is reported and skipped; its siblings still seal and push", async () => {
+    // payload_json is written synchronously by the write path, so a row can
+    // only become unparseable through corruption below the engine (a torn
+    // write, a restored file, a hand-edited database). The seal loop must not
+    // stop at it: every later event in the outbox would be stranded on this
+    // device forever, and the failure would be invisible.
+    let handle!: { driver: SqliteDriver; db: Database };
+    const pushed: SyncEnvelope[] = [];
+    const fetchStub = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { events: SyncEnvelope[] };
+        pushed.push(...body.events);
+        return okPushResponse(body.events.length);
+      }
+      return emptyPullResponse();
+    }) as typeof fetch;
+
+    // No relay yet, so the write's own sync only seals — nothing is pushed or
+    // pruned before the test can stage the corruption.
+    const engine = createSync({
+      createSqliteDriver: () => {
+        handle = memoryDriver();
+        return handle.driver;
+      },
+      secureStorage: memoryStorage(),
+      fetch: fetchStub,
+    })(schema, { name: "seal-corrupt-test", syncIntervalMs: 3_600_000 });
+    await engine.ready;
+
+    engine.insert("note", { body: "good one" });
+    await settle(engine);
+
+    const goodEventId = (
+      handle.db
+        .prepare(`select event_id from "${SYNC_OUTBOX_TABLE}" limit 1`)
+        .get() as { event_id: string }
+    ).event_id;
+    // Return it to the pending state so both rows face the seal loop together,
+    // and corrupt an event that sorts BEFORE it — a loop that aborted on the
+    // first failure would strand the good row too.
+    handle.db
+      .prepare(`update "${SYNC_OUTBOX_TABLE}" set envelope_json = '' where event_id = ?`)
+      .run(goodEventId);
+    const corruptEventId = createHlc("device-x", 1, 0);
+    handle.db
+      .prepare(
+        `insert into "${SYNC_OUTBOX_TABLE}" (event_id, payload_json, envelope_json, pushed_at) values (?, ?, '', null)`,
+      )
+      .run(corruptEventId, "{not json");
+    expect(corruptEventId < goodEventId).toBe(true);
+
+    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    await engine.sync();
+    await settle(engine);
+
+    // The healthy event reached the relay…
+    expect(pushed.map((e) => e.eventId)).toEqual([goodEventId]);
+    // …the corrupt one stayed pending and unsealed rather than being deleted
+    // (a human can still recover its plaintext) …
+    const stillPending = handle.db
+      .prepare(
+        `select envelope_json from "${SYNC_OUTBOX_TABLE}" where event_id = ?`,
+      )
+      .get(corruptEventId) as { envelope_json: string };
+    expect(stillPending.envelope_json).toBe("");
+    // …and the failure is surfaced, not swallowed.
+    expect(engine.getError()?.type).toBe("SealError");
   });
 });

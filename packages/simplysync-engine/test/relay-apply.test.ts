@@ -24,11 +24,10 @@ import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
   type SyncEngine,
   type Transport,
 } from "../src/index";
+import { fakeRelay, memoryDriver, memoryStorage, settle, type FakeRelay } from "./support";
 
 // Generate one ephemeral identity per test process so every simulated device
 // shares the same owner without checking a usable recovery phrase into source.
@@ -44,74 +43,10 @@ const schema = {
   note: { id: id("Note"), title: NonEmptyString, details: NonEmptyString },
 };
 
-function wrapDriver(db: Database): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
-
-/**
- * A minimal in-memory stand-in for a relay's `/v1/events` push+pull HTTP API.
- * `after` is a numeric offset into the event log; `nextCursor` is the offset
- * after everything returned by this page — just enough to drive the client's
- * cursor bookkeeping in relay.ts without a real relay process.
- */
-function createFakeRelay() {
-  const events: SyncEnvelope[] = [];
-  const fetchImpl = (async (
-    input: RequestInfo | URL,
-    init?: RequestInit,
-  ): Promise<Response> => {
-    const url = new URL(input.toString());
-    if (url.pathname !== "/v1/events") {
-      return new Response("not found", { status: 404 });
-    }
-    if (init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as {
-        events: SyncEnvelope[];
-      };
-      events.push(...body.events);
-      return new Response(JSON.stringify({ accepted: body.events.length }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }
-    const after = Number(url.searchParams.get("after") ?? "0") || 0;
-    const slice = events.slice(after);
-    const nextCursor = String(after + slice.length);
-    return new Response(JSON.stringify({ events: slice, nextCursor }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
-  }) as typeof fetch;
-  return { events, fetchImpl };
-}
-
 function makeDevice(fetchImpl: typeof fetch, name: string) {
   const db = new Database(":memory:");
   const engine = createSync({
-    createSqliteDriver: () => wrapDriver(db),
+    createSqliteDriver: () => memoryDriver(db).driver,
     secureStorage: memoryStorage(),
     fetch: fetchImpl,
   })(schema, {
@@ -122,16 +57,6 @@ function makeDevice(fetchImpl: typeof fetch, name: string) {
     syncIntervalMs: 3_600_000,
   });
   return { engine, db };
-}
-
-/** Wait for an in-flight sync (e.g. one auto-triggered by setTransports) to
- * finish, so the caller observes fully settled state. */
-async function settle(engine: SyncEngine<typeof schema>): Promise<void> {
-  for (let i = 0; i < 500; i++) {
-    if (engine.getSyncState().type !== "SyncStateIsSyncing") return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  throw new Error("sync never settled");
 }
 
 /** Attach the fake relay and wait for the connect-time sync it triggers. */
@@ -150,7 +75,7 @@ async function getIdentity(): Promise<LocalFirstIdentity> {
 /** Encrypt a synthetic payload (as if some other device had written and
  * pushed it) directly into the fake relay's event log. */
 async function pushSynthetic(
-  relay: ReturnType<typeof createFakeRelay>,
+  relay: FakeRelay,
   payload: SyncPayload<Record<string, unknown>, number>,
   deviceId = "device-remote",
   eventId = payload.hlc,
@@ -194,8 +119,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("a remote row carrying a column unknown to the local schema is applied, not dropped", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "unknown-column");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "unknown-column");
     await engine.ready;
 
     const rowId = "row-1";
@@ -236,8 +161,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("a merged remote row may carry SQLite NULLs for never-supplied typed columns", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "merged-null-column");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "merged-null-column");
     await engine.ready;
 
     const rowId = "row-null";
@@ -286,8 +211,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("re-pulling the same page (cursor rewound) is idempotent", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "idempotency");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "idempotency");
     await engine.ready;
 
     const rowId = "row-2";
@@ -329,8 +254,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("a stale (older-HLC) remote edit that arrives after a newer one is skipped, not applied — and still marked seen", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "lww-lost");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "lww-lost");
     await engine.ready;
 
     const rowId = "row-3";
@@ -384,9 +309,78 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     expect(isSeen(db, hlcOld)).toBe(true);
   });
 
-  test("a genuinely invalid value for a known column fails apply but is still marked seen (terminal, not retried forever)", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "terminal-failure");
+  test("a remote event whose HLC exactly equals the local row's is not applied", async () => {
+    // The LWW tiebreak is `compareHlc(local, remote) >= 0` — equal keeps local.
+    // An HLC embeds its writing device id, so a true tie can only be the SAME
+    // event arriving again (a relay resend after the seen-set was pruned, or a
+    // re-seed after a wipe). Re-applying it would be a pointless write; taking
+    // the remote value would let a re-serialized payload silently overwrite the
+    // row it came from.
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "lww-tie");
+    await engine.ready;
+
+    const rowId = "row-tie";
+    const t0 = Date.now();
+    const hlc = createHlc("device-remote", t0, 0);
+    const value = (title: string) => ({
+      title,
+      details: "d",
+      createdAt: new Date(t0).toISOString(),
+      updatedAt: hlc,
+      isDeleted: 0,
+    });
+
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId,
+      hlc,
+      value: value("first"),
+    });
+    await connect(engine);
+    expect(
+      (db.prepare(`select title from note where id = ?`).get(rowId) as {
+        title: string;
+      }).title,
+    ).toBe("first");
+
+    // Same eventId, different body. Rewind the cursor so the pull re-serves it
+    // and clear the seen row, so the tie reaches applyLwwRow rather than being
+    // short-circuited by dedup.
+    relay.events[0] = await (async () => {
+      const identity = await getIdentity();
+      return encryptPayload(
+        identity,
+        { eventId: hlc, deviceId: "device-remote" },
+        {
+          schemaVersion: 1,
+          table: "note",
+          op: "upsert" as const,
+          rowId,
+          hlc,
+          value: value("second"),
+        },
+      );
+    })();
+    db.prepare(`delete from _sync_seen where event_id = ?`).run(hlc);
+    db.prepare(`delete from _sync_meta where key like 'cursor:%'`).run();
+
+    await engine.sync();
+    await settle(engine);
+
+    expect(
+      (db.prepare(`select title from note where id = ?`).get(rowId) as {
+        title: string;
+      }).title,
+    ).toBe("first"); // the tie did not overwrite
+    expect(isSeen(db, hlc)).toBe(true);
+  });
+
+  test("a genuinely invalid value for a known column is reported as an apply failure, retained, and not retried on every sync", async () => {
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "terminal-failure");
     await engine.ready;
 
     const rowId = "row-4";
@@ -413,20 +407,30 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     const row = db.prepare(`select 1 from note where id = ?`).get(rowId);
     expect(row).toBeNull(); // never written
 
-    expect(isSeen(db, hlc)).toBe(true); // terminal: marked seen anyway
+    expect(isSeen(db, hlc)).toBe(true); // the cursor must move past it
 
     const logBeforeIdleSync = engine.getSyncLog(5);
     expect(logBeforeIdleSync[0]?.kind).toBe("applyFailed");
 
-    // Re-syncing must NOT retry it (already seen) or write a zero-activity
-    // success entry. Idle polling stays out of the durable diagnostics log.
+    // Retained, not discarded: this is the owner's own authenticated data, and
+    // a later build that widens the column can still apply it. It is held
+    // opaque (no retry time), so normal syncs never reconsider it — only a
+    // schema change does.
+    const deferred = db
+      .prepare(`select retry_after_ms from _sync_deferred where event_id = ?`)
+      .get(hlc) as { retry_after_ms: number | null } | null;
+    expect(deferred).not.toBeNull();
+    expect(deferred?.retry_after_ms).toBeNull();
+
+    // Re-syncing must NOT retry it or write a zero-activity success entry.
+    // Idle polling stays out of the durable diagnostics log.
     await engine.sync();
     expect(engine.getSyncLog(5)).toEqual(logBeforeIdleSync);
   });
 
   test("malformed row ids and system columns are terminal apply failures", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "invalid-system-columns");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "invalid-system-columns");
     await engine.ready;
 
     const badIdHlc = createHlc("device-remote", Date.now(), 0);
@@ -467,8 +471,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("normal apply (no schema gap) still works end to end", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "normal-apply");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "normal-apply");
     await engine.ready;
 
     const rowId = "row-5";
@@ -496,7 +500,7 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("an unknown-table event is staged and replayed after schema upgrade", async () => {
-    const relay = createFakeRelay();
+    const relay = fakeRelay();
     const db = new Database(":memory:");
     const storage = memoryStorage();
     const makeWithSchema = <S extends Parameters<ReturnType<typeof createSync>>[0]>(
@@ -504,9 +508,9 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
       name: string,
     ) =>
       createSync({
-        createSqliteDriver: () => wrapDriver(db),
+        createSqliteDriver: () => memoryDriver(db).driver,
         secureStorage: storage,
-        fetch: relay.fetchImpl,
+        fetch: relay.fetch,
       })(nextSchema, {
         name,
         externalAppOwner: { id: "", mnemonic: MNEMONIC, writeKey: "" },
@@ -551,14 +555,14 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("a future payload for a known table is retained until the app declares support", async () => {
-    const relay = createFakeRelay();
+    const relay = fakeRelay();
     const db = new Database(":memory:");
     const storage = memoryStorage();
     const makeAtVersion = (version: number) =>
       createSync({
-        createSqliteDriver: () => wrapDriver(db),
+        createSqliteDriver: () => memoryDriver(db).driver,
         secureStorage: storage,
-        fetch: relay.fetchImpl,
+        fetch: relay.fetch,
       })(schema, {
         name: "payload-version-upgrade",
         schemaVersion: version,
@@ -606,7 +610,7 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   test("local events carry the configured payload schema version", async () => {
     const db = new Database(":memory:");
     const engine = createSync({
-      createSqliteDriver: () => wrapDriver(db),
+      createSqliteDriver: () => memoryDriver(db).driver,
       secureStorage: memoryStorage(),
     })(schema, {
       name: "payload-version-writer",
@@ -623,8 +627,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("an invalid payload schema version is terminal, not deferred forever", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "invalid-payload-version");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "invalid-payload-version");
     await engine.ready;
     const hlc = createHlc("device-remote", Date.now(), 0);
     await pushSynthetic(relay, {
@@ -653,8 +657,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("an absurd future HLC is quarantined before last-write-wins apply", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "future-hlc-apply");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "future-hlc-apply");
     await engine.ready;
     const hlc = createHlc("device-remote", Date.now() + 10 * 60_000, 0);
     await pushSynthetic(relay, {
@@ -692,8 +696,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("opaque replay is schema-gated, bounded, and advances without starvation", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "bounded-deferred-replay");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "bounded-deferred-replay");
     await engine.ready;
 
     const insert = db.prepare(
@@ -744,8 +748,8 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
   });
 
   test("a payload HLC that does not match its authenticated event id is rejected", async () => {
-    const relay = createFakeRelay();
-    const { engine, db } = makeDevice(relay.fetchImpl, "mismatched-hlc");
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "mismatched-hlc");
     await engine.ready;
     const eventId = createHlc("device-remote", Date.now(), 0);
     const payloadHlc = createHlc("device-remote", Date.now(), 1);

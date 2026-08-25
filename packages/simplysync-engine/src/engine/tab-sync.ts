@@ -1,9 +1,8 @@
-import { SYNC_SCHEMA_VERSION } from "@simplysync/protocol";
-import type { SchemaDefinition, TabSync, TabSyncEvent } from "../engine-types.js";
+import type { TabSync, TabSyncEvent } from "../engine-types.js";
 import type { QueryCache } from "./query-cache.js";
 import type { EngineState } from "./state.js";
-import type { Clock, Store } from "./store.js";
-import { classifySyncPayload } from "./schema-version.js";
+import type { Store } from "./store.js";
+import type { EventAdmission } from "./admission.js";
 
 export type TabBridge = ReturnType<typeof createTabBridge>;
 
@@ -14,10 +13,10 @@ const PUBLISH_CHUNK = 500;
 /**
  * The engine side of cross-tab replication. Every committed event (a local
  * write, a relay-pulled row, a replayed deferred event) is published to the
- * other tabs; events received from them are applied through the same LWW path
- * a relay pull uses (observeHlc + applyLwwRow), then staged in this tab's
- * outbox too — so whichever tab is later promoted to leader can push the
- * fleet's complete backlog, not just its own writes.
+ * other tabs; events received from them go through the same admission ladder
+ * a relay pull uses, then are staged in this tab's outbox too — so whichever
+ * tab is later promoted to leader can push the fleet's complete backlog, not
+ * just its own writes.
  *
  * Subscribes at construction (before the database is open) and buffers until
  * `start()`, so a follower can never miss an event broadcast while its
@@ -27,11 +26,9 @@ const PUBLISH_CHUNK = 500;
 export function createTabBridge(
   state: EngineState,
   store: Store,
-  clock: Clock,
+  admission: EventAdmission,
   queryCache: QueryCache,
-  schema: SchemaDefinition,
   tabSync: TabSync | undefined,
-  schemaVersion: number = SYNC_SCHEMA_VERSION,
 ) {
   let started = false;
   const buffer: TabSyncEvent[] = [];
@@ -72,26 +69,24 @@ export function createTabBridge(
         } catch {
           continue;
         }
-        const classified = classifySyncPayload(rawPayload, schemaVersion);
-        if (classified.kind === "invalid") continue;
-        const payload = classified.kind === "supported"
-          ? classified.payload
-          : null;
-        // Absorb the sender's time so this tab's next write sorts above it.
-        if (payload && !clock.observeHlc(payload.hlc)) continue;
-        // Tabs run the same page, hence the same schema — no deferred-event
-        // staging is normally needed here. During a rolling page upgrade an
-        // older leader can still receive a future payload from a newer
-        // follower: don't apply it, but retain its outbox marker below so the
-        // event can still reach the relay.
-        if (payload && payload.table in schema) {
-          try {
-            if (store.applyLwwRow(payload)) changed.add(payload.table);
-          } catch {
-            continue; // one bad event must not wedge the batch
-          }
-        }
-        if (event.outbox) {
+        // The same ladder the relay-pull and deferred-replay paths use: a tab
+        // broadcast is the same event arriving at another database, so it must
+        // reach the same verdict. Tabs normally run the same page and the
+        // event just applies; during a rolling upgrade an older tab can
+        // receive a payload it cannot interpret, and admission retains it
+        // rather than discarding it.
+        const outcome = admission.admit(
+          event.eventId,
+          rawPayload,
+          event.payloadJson,
+        );
+        if (outcome.kind === "applied") changed.add(outcome.table);
+        // Staging is independent of whether this tab could apply the event.
+        // The marker exists so whichever tab is promoted can push the fleet's
+        // backlog, and an event this tab merely deferred is still an event the
+        // relay has never seen. Only a structurally rejected event is dropped:
+        // it can never become pushable.
+        if (event.outbox && outcome.kind !== "rejected") {
           store.insertPendingOutboxEvent(event.eventId, event.payloadJson);
           stagedOutbox = true;
         }

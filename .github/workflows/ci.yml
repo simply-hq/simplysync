@@ -36,6 +36,10 @@ jobs:
           cache-dependency-path: apps/relay-go/go.sum
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      # Each port asserts against its own copy of the conformance corpus, so a
+      # copy left behind by a regeneration keeps proving conformance to a
+      # protocol that has already moved. Cheap, and the only guard against it.
+      - run: bun run vectors:check
       - run: bun run docs:check-links
       - run: bun run docs:check-entrypoints
       - run: bun run docs:build
@@ -44,7 +48,21 @@ jobs:
       # clean runner does not spend the whole deadline downloading Go/sqlite.
       - run: go build ./...
         working-directory: apps/relay-go
+      # The relay's own unit tests. `bun run test` covers the relay only as a
+      # black box over HTTP, so the pure functions guarding every request —
+      # HLC classification, bearer parsing, envelope and stream-id validation —
+      # are only exercised here.
+      - run: go test ./...
+        working-directory: apps/relay-go
+      # The relay contract is asserted of BOTH relay implementations, and the
+      # Cloudflare half skips itself when wrangler can't be resolved. Skipping
+      # is right on a machine that only has Go; in CI it would be a green run
+      # that checked one implementation, so here a missing or broken Cloudflare
+      # harness has to fail. (Declared in turbo.json — turbo's strict env mode
+      # drops undeclared variables.)
       - run: bun run test
+        env:
+          RELAY_REQUIRE_CLOUDFLARE: "1"
 
   selective-clones:
     name: Selective clones + app cold starts (TypeScript)
@@ -109,6 +127,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # Swift is the one port whose conformance harness is not a package test,
+      # so `swift test` never reaches it and until this step it ran nowhere but
+      # a hand-typed command in the docs. It asserts the shared corpus:
+      # identity derivation, canonical header/payload, exact ciphertext, and
+      # the last-write-wins ordering.
+      - name: Conformance vectors (Swift port)
+        run: |
+          swiftc Sources/SimplySync/Kit/*.swift apps/todolist/swift/verify/main.swift \
+            -o "$RUNNER_TEMP/ssverify"
+          cd apps/todolist/swift && "$RUNNER_TEMP/ssverify"
       - run: sh scripts/check-selective-clone.sh swift
       - run: sh scripts/check-scaffold.sh swift
 

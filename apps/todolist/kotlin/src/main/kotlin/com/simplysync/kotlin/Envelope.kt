@@ -102,6 +102,17 @@ object Envelope {
 
     fun encodePayload(payload: SyncPayload): String = payloadObject(payload).canonical()
 
+    /**
+     * The exact AAD string `seal` binds a ciphertext to. Exposed so the
+     * conformance corpus can assert the header canonicalization directly: a
+     * drift here otherwise surfaces only as a ciphertext mismatch, which names
+     * neither the field order nor the key sort that actually moved.
+     */
+    fun encodeHeader(
+        version: Int, ownerId: String, eventId: String,
+        deviceId: String, createdAt: String, streamId: String?,
+    ): String = headerObject(version, ownerId, eventId, deviceId, createdAt, streamId).canonical()
+
     fun decodePayload(payloadJson: String): SyncPayload =
         parsePayload(payloadJson.toByteArray(Charsets.UTF_8))
 

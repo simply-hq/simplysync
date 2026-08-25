@@ -5,40 +5,8 @@ import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): { driver: SqliteDriver; db: Database } {
-  const db = new Database(":memory:");
-  return {
-    db,
-    driver: {
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = {
   todo: { id: id("Todo"), title: NonEmptyString },
@@ -48,7 +16,7 @@ function makeEngine() {
   let handle!: { db: Database };
   const engine = createSync({
     createSqliteDriver: () => {
-      const made = makeDriver();
+      const made = memoryDriver();
       handle = made;
       return made.driver;
     },
@@ -68,7 +36,6 @@ const visibleTitles = async (
   return rows.map((r) => r.title);
 };
 
-const settle = () => new Promise((r) => setTimeout(r, 25));
 
 describe("delete", () => {
   test("hides the row from isDeleted-filtered queries but keeps the tombstone", async () => {
@@ -93,10 +60,10 @@ describe("delete", () => {
     await engine.ready;
     const created = engine.insert("todo", { title: "x" });
     if (!created.ok) return;
-    await settle();
+    await settle(engine);
     const before = engine.getPendingOutboxCount();
     engine.delete("todo", created.value.id);
-    await settle();
+    await settle(engine);
     // The delete added one more outbox event (the tombstone).
     expect(engine.getPendingOutboxCount()).toBe(before + 1);
   });

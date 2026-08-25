@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import { createHlc } from "@simplysync/protocol";
+import { createHlc, createRecoveryKey } from "@simplysync/protocol";
 
 import {
   createSync,
@@ -8,107 +7,20 @@ import {
   NonEmptyString,
   type SecureStorage,
   type SqliteDriver,
-  type SyncState,
   type TabSync,
-  type TabSyncEvent,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { fakeTabBus, memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
-const settle = () => new Promise((r) => setTimeout(r, 25));
 
-// An in-process TabSync bus: N members, synchronous delivery to everyone
-// else, manually driven leadership. Mirrors what the browser coordinator does
-// with BroadcastChannel + Web Locks.
-function createFakeTabBus() {
-  interface Member extends TabSync {
-    readonly _events: Set<(events: readonly TabSyncEvent[]) => void>;
-    readonly _syncStates: Set<(state: SyncState) => void>;
-    readonly _promoted: Set<() => void>;
-    _leader: boolean;
-  }
-  const members: Member[] = [];
-  let lockChain: Promise<unknown> = Promise.resolve();
-
-  const join = (leader: boolean): TabSync => {
-    const member: Member = {
-      _events: new Set(),
-      _syncStates: new Set(),
-      _promoted: new Set(),
-      _leader: leader,
-      isLeader: () => member._leader,
-      onPromoted(cb) {
-        member._promoted.add(cb);
-        return () => member._promoted.delete(cb);
-      },
-      publishEvents(events) {
-        for (const other of members) {
-          if (other === member) continue;
-          other._events.forEach((cb) => cb(events));
-        }
-      },
-      subscribeEvents(cb) {
-        member._events.add(cb);
-        return () => member._events.delete(cb);
-      },
-      publishSyncState(state) {
-        for (const other of members) {
-          if (other === member) continue;
-          other._syncStates.forEach((cb) => cb(state));
-        }
-      },
-      subscribeSyncState(cb) {
-        member._syncStates.add(cb);
-        return () => member._syncStates.delete(cb);
-      },
-      withLock(_key, fn) {
-        const run = lockChain.then(fn);
-        lockChain = run.catch(() => undefined);
-        return run;
-      },
-      acquireExclusive: async () => undefined,
-    };
-    members.push(member);
-    return member;
-  };
-
-  const promote = (member: TabSync): void => {
-    for (const m of members) m._leader = m === member;
-    (member as Member)._promoted.forEach((cb) => cb());
-  };
-
-  return { join, promote };
-}
+// The only timed waits in this file, and both are proofs of a negative that
+// `settle` cannot make: a pass parked at the relay never leaves
+// "SyncStateIsSyncing", and a destructive op held at the barrier has no state
+// at all to poll for.
+const tick = () => new Promise((r) => setTimeout(r, 25));
 
 function makeEngine(tabSync: TabSync, storage: SecureStorage, fetchStub?: typeof fetch) {
-  const driver = makeDriver();
+  const driver = memoryDriver().driver;
   const engine = createSync({
     createSqliteDriver: () => driver,
     secureStorage: storage,
@@ -120,7 +32,7 @@ function makeEngine(tabSync: TabSync, storage: SecureStorage, fetchStub?: typeof
 
 describe("cross-tab replication", () => {
   test("a write in one tab appears in the other, staged in its outbox too", async () => {
-    const bus = createFakeTabBus();
+    const bus = fakeTabBus();
     const storage = memoryStorage();
     const a = makeEngine(bus.join(true), storage);
     await a.engine.ready;
@@ -148,7 +60,7 @@ describe("cross-tab replication", () => {
   });
 
   test("two tabs never mint the same HLC device id", async () => {
-    const bus = createFakeTabBus();
+    const bus = fakeTabBus();
     const storage = memoryStorage();
     const a = makeEngine(bus.join(true), storage);
     await a.engine.ready;
@@ -166,7 +78,7 @@ describe("cross-tab replication", () => {
   });
 
   test("an older leader forwards a future-version follower event without applying it", async () => {
-    const bus = createFakeTabBus();
+    const bus = fakeTabBus();
     const storage = memoryStorage();
     const leaderTab = bus.join(true);
     const futureTab = bus.join(false);
@@ -199,7 +111,7 @@ describe("cross-tab replication", () => {
   });
 
   test("LWW converges when tabs edit the same row; local writes propagate without staging", async () => {
-    const bus = createFakeTabBus();
+    const bus = fakeTabBus();
     const storage = memoryStorage();
     const a = makeEngine(bus.join(true), storage);
     await a.engine.ready;
@@ -241,7 +153,7 @@ describe("cross-tab replication", () => {
       });
     }) as typeof fetch;
 
-    const bus = createFakeTabBus();
+    const bus = fakeTabBus();
     const storage = memoryStorage();
     const leaderTab = bus.join(true);
     const followerTab = bus.join(false);
@@ -253,13 +165,13 @@ describe("cross-tab replication", () => {
 
     b.engine.insert("note", { body: "written in follower" });
     await b.engine.sync();
-    await settle();
+    await settle(b.engine);
     // Follower never pushes — even with transports configured.
     expect(pushed.size).toBe(0);
 
     // Leader dies; follower is promoted and pushes what the fleet wrote.
     bus.promote(followerTab);
-    await settle();
+    await settle(b.engine);
     expect(pushed.size).toBe(1);
   });
 
@@ -281,14 +193,14 @@ describe("cross-tab replication", () => {
       });
     }) as typeof fetch;
 
-    const bus = createFakeTabBus();
+    const bus = fakeTabBus();
     const storage = memoryStorage();
     const a = makeEngine(bus.join(true), storage, fetchStub);
     await a.engine.ready;
     a.engine.setTransports([{ type: "Http", url: "https://relay.test" }]);
 
     a.engine.insert("note", { body: "first" });
-    for (let i = 0; i < 40 && pushed.size < 1; i++) await settle();
+    await settle(a.engine);
     expect(pushed.size).toBe(1);
 
     // Simulate a cross-tab straggler: a sealed event whose id sorts below the
@@ -299,5 +211,242 @@ describe("cross-tab replication", () => {
     );
     await a.engine.sync();
     expect(pushed.has("0000000000-0000-straggler")).toBe(true);
+  });
+});
+
+describe("identity under a cold start", () => {
+  test("two tabs booting one empty profile settle on a single owner", async () => {
+    // Both tabs find no stored credential and both want to mint one. Without
+    // the cross-tab lock they each generate a different phrase and race the
+    // write: two identities in one session, events sealed under two owners,
+    // and half the user's data unreadable by the half that won.
+    const bus = fakeTabBus();
+    const storage = memoryStorage();
+
+    const a = makeEngine(bus.join(true), storage);
+    const b = makeEngine(bus.join(false), storage);
+    const [ownerA, ownerB] = await Promise.all([
+      a.engine.appOwner,
+      b.engine.appOwner,
+    ]);
+
+    expect(ownerA?.id).toBeTruthy();
+    expect(ownerB?.id).toBe(ownerA!.id);
+    expect(ownerB?.recoveryKey).toBe(ownerA!.recoveryKey);
+    // And exactly one credential was persisted, not one overwriting the other.
+    expect(await storage.getItem("tab-test:mnemonic")).toBe(ownerA!.recoveryKey);
+  });
+});
+
+describe("cross-tab robustness", () => {
+  test("a follower buffers events broadcast while it is still booting", async () => {
+    // A tab that joins mid-session subscribes before its database is open. If
+    // those broadcasts were dropped instead of buffered, the new tab would be
+    // silently missing every write made during its own boot, and would only
+    // notice at the next relay pull — or never, on a local-only device.
+    const bus = fakeTabBus();
+    const storage = memoryStorage();
+    const leader = makeEngine(bus.join(true), storage);
+    await leader.engine.ready;
+
+    // The follower is constructed (and subscribed) but deliberately not awaited.
+    const follower = makeEngine(bus.join(false), storage);
+    // Synchronous, so it lands before the follower's boot continues.
+    const written = leader.engine.insert("note", { body: "during boot" });
+    expect(written.ok).toBe(true);
+
+    await follower.engine.ready;
+    await settle(follower.engine);
+
+    const rows = await follower.engine.loadQuery(
+      follower.engine.createQuery((db) =>
+        db.selectFrom("note").select(["body"]).where("isDeleted", "=", 0),
+      ),
+    );
+    expect(rows.map((r) => r.body)).toEqual(["during boot"]);
+  });
+
+  test("an unusable broadcast is skipped without wedging the rest of the batch", async () => {
+    // On the web the transport is a BroadcastChannel that anything on the
+    // origin can post to, and during a rolling upgrade a peer may send a shape
+    // this build does not accept. One bad entry must not cost the batch.
+    const bus = fakeTabBus();
+    const storage = memoryStorage();
+    const a = makeEngine(bus.join(true), storage);
+    const bTab = bus.join(false);
+    const b = makeEngine(bTab, storage);
+    await Promise.all([a.engine.ready, b.engine.ready]);
+
+    const hlc = createHlc("peer-device", Date.now(), 0);
+    const good = {
+      eventId: hlc,
+      payloadJson: JSON.stringify({
+        schemaVersion: 1,
+        table: "note",
+        op: "upsert",
+        rowId: "n-good",
+        hlc,
+        value: { body: "survives", updatedAt: hlc, createdAt: hlc, isDeleted: 0 },
+      }),
+      outbox: false,
+    };
+    const notJson = { eventId: "e-bad-1", payloadJson: "{not json", outbox: false };
+    const notAPayload = {
+      eventId: "e-bad-2",
+      payloadJson: JSON.stringify({ nonsense: true }),
+      outbox: false,
+    };
+    const unknownTable = {
+      eventId: "e-bad-3",
+      payloadJson: JSON.stringify({
+        schemaVersion: 1,
+        table: "nope",
+        op: "upsert",
+        rowId: "x",
+        hlc,
+        value: {},
+      }),
+      outbox: false,
+    };
+
+    // The bad entries bracket the good one, so an abort at the first failure
+    // would lose it either way.
+    bTab.publishEvents([notJson, notAPayload, good, unknownTable]);
+    await settle(a.engine);
+
+    const rows = await a.engine.loadQuery(
+      a.engine.createQuery((db) =>
+        db.selectFrom("note").select(["id", "body"]).where("isDeleted", "=", 0),
+      ),
+    );
+    expect(rows).toEqual([{ id: "n-good", body: "survives" }]);
+  });
+});
+
+describe("a queued pass respects a leadership change", () => {
+  // A sync requested while another is in flight is queued, not run immediately.
+  // By the time the drain gets to it, this tab may no longer be the leader —
+  // and a follower that pushes is exactly the split-brain the leader model
+  // exists to prevent. Two tabs contacting one relay with two device ids
+  // produce duplicate outbox work and interleaved cursors.
+  const hangingRelay = () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let holdNext = true;
+    let pushes = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        pushes += 1;
+        return new Response(JSON.stringify({ accepted: 1, duplicate: 0 }), {
+          status: 200,
+        });
+      }
+      if (holdNext) {
+        holdNext = false;
+        await held;
+      }
+      return new Response(JSON.stringify({ events: [], nextCursor: "" }), {
+        status: 200,
+      });
+    }) as typeof fetch;
+    return { fetchImpl, release: () => release(), pushes: () => pushes };
+  };
+
+  const bootLeader = async (relay: ReturnType<typeof hangingRelay>) => {
+    const bus = fakeTabBus();
+    const leaderTab = bus.join(true);
+    const followerTab = bus.join(false);
+    const driver = memoryDriver().driver;
+    const engine = createSync({
+      createSqliteDriver: () => driver,
+      secureStorage: memoryStorage(),
+      tabSync: leaderTab,
+      fetch: relay.fetchImpl,
+    })(schema, {
+      name: "tab-leadership",
+      transports: [{ type: "Http", url: "http://relay.test" }],
+      syncIntervalMs: 3_600_000,
+    });
+    await engine.ready;
+    return { engine, bus, followerTab };
+  };
+
+  test("a demoted tab drops the pass it had queued", async () => {
+    const relay = hangingRelay();
+    const { engine, bus, followerTab } = await bootLeader(relay);
+
+    const inFlight = engine.sync(); // parks on the held pull
+    await tick();
+
+    engine.insert("note", { body: "queued behind the held pull" });
+    await tick();
+    expect(relay.pushes()).toBe(0); // still parked, nothing sent yet
+
+    bus.promote(followerTab); // this tab is no longer the leader
+    relay.release();
+    await inFlight;
+    await tick();
+
+    // The queued pass was dropped rather than pushing as a follower.
+    expect(relay.pushes()).toBe(0);
+    // The write is not lost — it is staged, waiting for whoever leads next.
+    expect(engine.getPendingOutboxCount()).toBe(1);
+  });
+
+  test("a tab that keeps leadership runs the pass it had queued", async () => {
+    const relay = hangingRelay();
+    const { engine } = await bootLeader(relay);
+
+    const inFlight = engine.sync();
+    await tick();
+
+    engine.insert("note", { body: "queued behind the held pull" });
+    await tick();
+    expect(relay.pushes()).toBe(0);
+
+    relay.release();
+    await inFlight;
+    await tick();
+
+    expect(relay.pushes()).toBe(1);
+    expect(engine.getPendingOutboxCount()).toBe(0);
+  });
+});
+
+describe("the destructive-op barrier", () => {
+  test("a destructive op waits for the exclusive lock before replacing the database", async () => {
+    // The destructive-op barrier is the strictest thing Leader-ship buys: no
+    // sibling tab may write into a database another tab is replacing
+    // wholesale. It is only load-bearing while something else holds the lock,
+    // so hold it — with a no-op `acquireExclusive` the restore lands
+    // immediately and the two assertions below it fail.
+    const bus = fakeTabBus();
+    const storage = memoryStorage();
+    const a = makeEngine(bus.join(true), storage);
+    await a.engine.ready;
+    const before = await a.engine.appOwner;
+    expect(a.engine.insert("note", { body: "written before the restore" }).ok)
+      .toBe(true);
+
+    const release = await bus.hold(); // another tab still owns the lock
+    const restored = a.engine.restoreAppOwner(await createRecoveryKey(), {
+      force: true,
+    });
+    await tick(); // no state to poll for an op that must not have started
+
+    // Still this Owner's database: the op is queued behind the barrier.
+    expect(
+      a.driver.select<{ body: string }>('select body from "note"'),
+    ).toEqual([{ body: "written before the restore" }]);
+    expect((await a.engine.appOwner)?.id).toBe(before!.id);
+
+    release();
+    await restored;
+
+    // Barrier passed: the local data is gone and the Owner has changed.
+    expect(a.driver.select('select body from "note"')).toEqual([]);
+    expect((await a.engine.appOwner)?.id).not.toBe(before!.id);
   });
 });

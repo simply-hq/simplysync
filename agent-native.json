@@ -48,7 +48,7 @@
           "include": [
             "apps/relay-go/handlers.go",
             "apps/relay-go/store.go",
-            "apps/relay-cloudflare/src/index.ts",
+            "apps/relay-cloudflare/src",
             "apps/relay-cloudflare/migrations"
           ],
           "blocks": ["diagram", "api-endpoint", "data-model"],

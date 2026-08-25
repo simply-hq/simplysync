@@ -14,9 +14,8 @@ import {
   NonEmptyString,
   sqliteTrue,
   type AppOwner,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
+import { memoryDriver, memoryStorage } from "./support";
 
 const AccountId = id("Account");
 const LedgerId = id("Ledger");
@@ -26,37 +25,10 @@ const schema = {
   ledger: { id: LedgerId, accountId: AccountId, amount: FiniteNumber },
 };
 
-function wrapDriver(db: Database): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(initial: Record<string, string> = {}): SecureStorage {
-  const map = new Map<string, string>(Object.entries(initial));
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
-
 function makeEngine(name = "test-db", storage = memoryStorage()) {
   const db = new Database(":memory:");
   const engine = createSync({
-    createSqliteDriver: () => wrapDriver(db),
+    createSqliteDriver: () => memoryDriver(db).driver,
     secureStorage: storage,
     reloadApp: () => {},
   })(schema, { name });
@@ -315,5 +287,173 @@ describe("db export / import", () => {
     expect(restoredOwner?.recoveryKey).toBe(recoveryKey);
     expect(restoredOwner?.mnemonic).toBeUndefined();
     expect(b.db.prepare(`select id from account`).all()).toHaveLength(1);
+  });
+});
+
+describe("snapshot preflight", () => {
+  // A snapshot file is the one restore path that consults nothing but itself:
+  // no relay, no existing device state. Everything a malformed or hand-edited
+  // file could get wrong has to be caught before the wipe.
+
+  const wrap = async (body: unknown) =>
+    encryptStringWithPassphrase("pw", JSON.stringify(body));
+
+  const snapshotOf = (
+    owner: AppOwner,
+    tables: Record<string, Record<string, unknown>[]>,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    format: "simplysync-db-snapshot",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    recoveryKey: owner.recoveryKey,
+    tables,
+    meta: {},
+    ...extra,
+  });
+
+  test("a snapshot whose two recovery credentials disagree is rejected", async () => {
+    // Phrase-backed snapshots carry both `recoveryKey` and the legacy
+    // `mnemonic` so older engines can still read them. If they derive to
+    // different owners, the file cannot say which identity it belongs to —
+    // adopting either one risks pointing the device at an owner whose data
+    // this snapshot is not.
+    const source = makeEngine("conflicting-source");
+    await source.engine.ready;
+    const owner = (await source.engine.appOwner)!;
+
+    const other = makeEngine("conflicting-other");
+    await other.engine.ready;
+    const otherOwner = (await other.engine.appOwner)!;
+    expect(otherOwner.recoveryKey).not.toBe(owner.recoveryKey);
+
+    const envelope = await wrap(
+      snapshotOf(owner, { account: [] }, { mnemonic: otherOwner.mnemonic }),
+    );
+
+    const target = makeEngine("conflicting-target");
+    await target.engine.ready;
+    const before = (await target.engine.appOwner)!.recoveryKey;
+
+    await expect(
+      target.engine.importDatabase(envelope, { passphrase: "pw" }),
+    ).rejects.toThrow(/conflicting recovery credentials/i);
+    expect((await target.engine.appOwner)?.recoveryKey).toBe(before);
+  });
+
+  test("a snapshot with duplicate ids in one table is rejected before the wipe", async () => {
+    // Rows are written verbatim with `on conflict do update`, so duplicates
+    // would silently collapse to whichever row happened to be last — a restore
+    // that quietly loses data reads exactly like one that worked.
+    const source = makeEngine("dupe-source");
+    await source.engine.ready;
+    const owner = (await source.engine.appOwner)!;
+    const row = (name: string) => ({
+      id: "acct-1",
+      name,
+      createdAt: new Date().toISOString(),
+      updatedAt: "0000000001-0000-devA",
+      isDeleted: 0,
+    });
+    const envelope = await wrap(
+      snapshotOf(owner, { account: [row("first"), row("second")] }),
+    );
+
+    const target = makeEngine("dupe-target");
+    await target.engine.ready;
+    const keep = target.engine.insert("account", { name: "Keep me" });
+    expect(keep.ok).toBe(true);
+
+    await expect(
+      target.engine.importDatabase(envelope, { passphrase: "pw" }),
+    ).rejects.toThrow(/duplicate id/i);
+    expect(target.db.prepare(`select name from account`).all()).toEqual([
+      { name: "Keep me" },
+    ]);
+  });
+
+  test("a table the current schema does not know is carried past validation, then ignored", async () => {
+    // Restoring a backup taken by a newer app version must not fail on a table
+    // this build has never heard of. It cannot be written either, so it is
+    // dropped — the same additive-migration posture the remote apply path uses.
+    const source = makeEngine("future-table-source");
+    await source.engine.ready;
+    const owner = (await source.engine.appOwner)!;
+    const envelope = await wrap(
+      snapshotOf(owner, {
+        account: [
+          {
+            id: "acct-1",
+            name: "Kept",
+            createdAt: new Date().toISOString(),
+            updatedAt: "0000000001-0000-devA",
+            isDeleted: 0,
+          },
+        ],
+        budget: [{ id: "b1", anything: "at all" }],
+      }),
+    );
+
+    const target = makeEngine("future-table-target");
+    await target.engine.ready;
+    await target.engine.importDatabase(envelope, { passphrase: "pw" });
+
+    expect(target.db.prepare(`select name from account`).all()).toEqual([
+      { name: "Kept" },
+    ]);
+  });
+});
+
+describe("snapshot metadata", () => {
+  test("the clock high-water mark and pull cursors travel with the data", async () => {
+    // A snapshot moves a device's whole history to new hardware. If the clock
+    // restarted at zero there, its first write would sort below every row it
+    // just restored and lose every LWW compare; if the pull cursors were lost,
+    // it would re-pull and re-apply the entire relay log to learn nothing.
+    const source = makeEngine("meta-source");
+    await source.engine.ready;
+    const seeded = source.engine.insert("account", { name: "Seeded" });
+    if (!seeded.ok) throw new Error("insert failed");
+    source.db
+      .prepare(
+        `insert into "_sync_meta" (key, value) values (?, ?) on conflict(key) do update set value = excluded.value`,
+      )
+      .run("cursor:http://relay.test", "42");
+
+    const hlcTimeBefore = (
+      source.db
+        .prepare(`select value from "_sync_meta" where key = 'hlc:time'`)
+        .get() as { value: string }
+    ).value;
+    expect(Number(hlcTimeBefore)).toBeGreaterThan(0);
+
+    const envelope = await source.engine.exportDatabase({ passphrase: "pw" });
+
+    const target = makeEngine("meta-target");
+    await target.engine.ready;
+    await target.engine.importDatabase(envelope, { passphrase: "pw" });
+
+    const metaOf = (key: string) =>
+      (
+        target.db
+          .prepare(`select value from "_sync_meta" where key = ?`)
+          .get(key) as { value: string } | undefined
+      )?.value;
+    expect(metaOf("hlc:time")).toBe(hlcTimeBefore);
+    expect(metaOf("cursor:http://relay.test")).toBe("42");
+
+    // The restored device's next write sorts above everything it imported.
+    const next = target.engine.insert("account", { name: "After restore" });
+    expect(next.ok).toBe(true);
+    const rows = await target.engine.loadQuery(
+      target.engine.createQuery((db) =>
+        db
+          .selectFrom("account")
+          .select(["name", "updatedAt"])
+          .where("isDeleted", "=", 0)
+          .orderBy("updatedAt", "asc"),
+      ),
+    );
+    expect(rows.map((r) => r.name)).toEqual(["Seeded", "After restore"]);
   });
 });

@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
@@ -7,37 +6,8 @@ import {
   id,
   keysBetween,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = {
   todo: { id: id("Todo"), title: NonEmptyString, order: NonEmptyString },
@@ -46,12 +16,11 @@ const schema = {
 
 function makeEngine() {
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
   })(schema, { name: "batch-test" });
 }
 
-const settle = () => new Promise((r) => setTimeout(r, 25));
 
 describe("batch", () => {
   test("seeds many rows in one shot, one sync event per row", async () => {
@@ -79,7 +48,7 @@ describe("batch", () => {
     );
     expect(rows.map((r) => r.title)).toEqual(["a", "b", "c", "d", "e"]);
 
-    await settle();
+    await settle(engine);
     // One outbox event per row — the rows still replicate individually (per-row
     // LWW), but they were written in a single transaction + refresh + sync.
     expect(engine.getPendingOutboxCount()).toBe(5);
@@ -142,7 +111,7 @@ describe("batch", () => {
       { local: true },
     );
     expect(result.ok).toBe(true);
-    await settle();
+    await settle(engine);
     expect(engine.getPendingOutboxCount()).toBe(0);
   });
 
@@ -270,5 +239,37 @@ describe("batch", () => {
       ),
     );
     expect(rows.map((row) => row.title)).toEqual(["first", "newer second"]);
+  });
+});
+
+describe("batch isolation", () => {
+  test("an op cannot read a write made earlier in the same batch", async () => {
+    // Every op is prepared against the pre-batch state so the whole batch can
+    // be validated before anything is written — which is what makes a single
+    // invalid op abort the batch cleanly. The cost is no read-your-writes:
+    // an update that expects an insert from the same batch sees nothing.
+    const engine = makeEngine();
+    await engine.ready;
+
+    const result = engine.batch([
+      { table: "todo", values: { id: "t1", title: "created here" }, mode: "insert" },
+      { table: "todo", values: { id: "t1", title: "renamed here" }, mode: "update" },
+    ]);
+
+    // The update was prepared against a database where t1 did not exist yet.
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toMatch(/not found/i);
+
+    // Nothing at all was written — the whole batch aborted before the insert.
+    const rows = await engine.loadQuery(
+      engine.createQuery((db) =>
+        db.selectFrom("todo").select(["id"]).where("isDeleted", "=", 0),
+      ),
+    );
+    expect(rows).toHaveLength(0);
+
+    // Two separate calls are the supported shape for a dependent write.
+    expect(engine.insert("todo", { id: "t1", title: "created here" }).ok).toBe(true);
+    expect(engine.update("todo", { id: "t1", title: "renamed here" }).ok).toBe(true);
   });
 });

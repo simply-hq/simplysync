@@ -12,7 +12,7 @@ import (
 )
 
 // errBlobQuotaExceeded signals a blob PUT that would push the owner over
-// MaxOwnerBytes; handleBlobPut maps this to HTTP 413.
+// MaxOwnerBytes; handleBlobPut owns what that becomes on the wire.
 var errBlobQuotaExceeded = errors.New("owner quota exceeded")
 
 // store wraps the SQLite database. Reads run concurrently on the pool; writes
@@ -107,10 +107,23 @@ func (s *store) migrate() error {
 
 // --- Owner auth (trust-on-first-use) -----------------------------------------
 
+// authDenial is why the store refused a request, in the store's own terms.
+// handlers.go maps each to a status code and a message; this file never names
+// one, which is what keeps the store HTTP-free and directly testable.
+type authDenial int
+
+const (
+	// The zero value on purpose: a denial nobody set is a server-side failure,
+	// never an accidental grant.
+	authInternalError authDenial = iota
+	authUnknownOwner
+	authInvalidToken
+	authAtCapacity
+)
+
 type authResult struct {
 	ok     bool
-	status int
-	msg    string
+	denial authDenial
 }
 
 // ensureOwnerAuth validates the bearer token against the owner's stored auth
@@ -120,19 +133,19 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 
 	storedHash, found, err := s.getOwner(ownerID)
 	if err != nil {
-		return authResult{status: 500, msg: "Internal error"}
+		return authResult{denial: authInternalError}
 	}
 
 	if !found {
 		if !createIfMissing {
-			return authResult{status: 404, msg: "Unknown owner"}
+			return authResult{denial: authUnknownOwner}
 		}
 		s.writeMu.Lock()
 		// Re-check inside the lock to avoid a creation race.
 		storedHash, found, err = s.getOwner(ownerID)
 		if err != nil {
 			s.writeMu.Unlock()
-			return authResult{status: 500, msg: "Internal error"}
+			return authResult{denial: authInternalError}
 		}
 		if !found {
 			// Enforce the global owner cap atomically with the insert: bump the
@@ -141,19 +154,19 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 			tx, err := s.db.Begin()
 			if err != nil {
 				s.writeMu.Unlock()
-				return authResult{status: 500, msg: "Internal error"}
+				return authResult{denial: authInternalError}
 			}
 			res, err := tx.Exec(`update relay_meta set value = value + 1
 				where key = 'owner_count' and value < ?`, s.maxOwners)
 			if err != nil {
 				_ = tx.Rollback()
 				s.writeMu.Unlock()
-				return authResult{status: 500, msg: "Internal error"}
+				return authResult{denial: authInternalError}
 			}
 			if n, _ := res.RowsAffected(); n == 0 {
 				_ = tx.Rollback()
 				s.writeMu.Unlock()
-				return authResult{status: 503, msg: "Relay is at capacity"}
+				return authResult{denial: authAtCapacity}
 			}
 			if _, err := tx.Exec(
 				`insert or ignore into owners (owner_id, relay_auth_hash, stored_bytes, created_at)
@@ -162,11 +175,11 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 			); err != nil {
 				_ = tx.Rollback()
 				s.writeMu.Unlock()
-				return authResult{status: 500, msg: "Internal error"}
+				return authResult{denial: authInternalError}
 			}
 			if err := tx.Commit(); err != nil {
 				s.writeMu.Unlock()
-				return authResult{status: 500, msg: "Internal error"}
+				return authResult{denial: authInternalError}
 			}
 			s.writeMu.Unlock()
 			return authResult{ok: true}
@@ -175,7 +188,7 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 	}
 
 	if storedHash != hash {
-		return authResult{status: 401, msg: "Invalid bearer token"}
+		return authResult{denial: authInvalidToken}
 	}
 	return authResult{ok: true}
 }
@@ -242,11 +255,23 @@ type incomingEvent struct {
 	env SyncEnvelope
 }
 
+// pushRejection is why a push stored nothing, in the store's own terms.
+// pushStored is the zero value, so an outcome that rejected nothing is a
+// stored one — the same shape the old `status == 0` check had, without the
+// store having to know what a 413 is.
+type pushRejection int
+
+const (
+	pushStored pushRejection = iota
+	pushStoreFailed
+	pushEventTooLarge
+	pushOwnerQuotaExceeded
+)
+
 type pushOutcome struct {
 	accepted  int
 	duplicate int
-	status    int // 0 == success
-	msg       string
+	rejected  pushRejection
 }
 
 func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) pushOutcome {
@@ -255,19 +280,19 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return pushOutcome{status: 500, msg: "Failed to store events"}
+		return pushOutcome{rejected: pushStoreFailed}
 	}
 	defer tx.Rollback()
 
 	var current int64
 	if err := tx.QueryRow(`select stored_bytes from owners where owner_id = ?`, ownerID).Scan(&current); err != nil && err != sql.ErrNoRows {
-		return pushOutcome{status: 500, msg: "Failed to store events"}
+		return pushOutcome{rejected: pushStoreFailed}
 	}
 
 	// Current monotonic seq counter; each newly-inserted event consumes the next.
 	var seq int64
 	if err := tx.QueryRow(`select value from relay_meta where key = 'event_seq'`).Scan(&seq); err != nil && err != sql.ErrNoRows {
-		return pushOutcome{status: 500, msg: "Failed to store events"}
+		return pushOutcome{rejected: pushStoreFailed}
 	}
 
 	stmt, err := tx.Prepare(
@@ -275,7 +300,7 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 			(owner_id, event_id, device_id, envelope_json, stored_bytes, created_at, stream_id, seq)
 		 values (?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return pushOutcome{status: 500, msg: "Failed to store events"}
+		return pushOutcome{rejected: pushStoreFailed}
 	}
 	defer stmt.Close()
 
@@ -288,10 +313,7 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 		// cross-relay comparison guards that they stay equal.
 		storedBytes := int64(len(ev.raw))
 		if storedBytes > cfg.MaxEventBytes {
-			return pushOutcome{status: 413, msg: "Event is too large"}
-		}
-		if current+delta+storedBytes > cfg.MaxOwnerBytes {
-			return pushOutcome{status: 413, msg: "Owner quota exceeded"}
+			return pushOutcome{rejected: pushEventTooLarge}
 		}
 		var streamID any
 		if ev.env.StreamID != "" {
@@ -301,29 +323,40 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 		res, err := stmt.Exec(ev.env.OwnerID, ev.env.EventID, ev.env.DeviceID,
 			string(ev.raw), storedBytes, ev.env.CreatedAt, streamID, seq+1)
 		if err != nil {
-			return pushOutcome{status: 500, msg: "Failed to store events"}
+			return pushOutcome{rejected: pushStoreFailed}
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
+			// A duplicate stores nothing, so it is charged nothing and can
+			// never push the owner over quota: re-pushing events the relay
+			// already holds is what a flaky network produces, and it must
+			// stay a free no-op even at the cap. The quota check therefore
+			// runs AFTER the insert, on genuinely-new bytes only — the same
+			// rule the Cloudflare relay applies to its accepted bytes.
 			duplicate++
-		} else {
-			accepted++
-			delta += storedBytes
-			seq++ // consumed by this insert
+			continue
 		}
+		if current+delta+storedBytes > cfg.MaxOwnerBytes {
+			// The insert above dies with the transaction (deferred rollback),
+			// so an over-quota push stores nothing at all.
+			return pushOutcome{rejected: pushOwnerQuotaExceeded}
+		}
+		accepted++
+		delta += storedBytes
+		seq++ // consumed by this insert
 	}
 
 	if accepted > 0 {
 		if _, err := tx.Exec(`update relay_meta set value = ? where key = 'event_seq'`, seq); err != nil {
-			return pushOutcome{status: 500, msg: "Failed to store events"}
+			return pushOutcome{rejected: pushStoreFailed}
 		}
 	}
 	if delta > 0 {
 		if _, err := tx.Exec(`update owners set stored_bytes = stored_bytes + ? where owner_id = ?`, delta, ownerID); err != nil {
-			return pushOutcome{status: 500, msg: "Failed to store events"}
+			return pushOutcome{rejected: pushStoreFailed}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return pushOutcome{status: 500, msg: "Failed to store events"}
+		return pushOutcome{rejected: pushStoreFailed}
 	}
 	return pushOutcome{accepted: accepted, duplicate: duplicate}
 }

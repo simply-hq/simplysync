@@ -1,40 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(db = new Database(":memory:")): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
 
@@ -60,7 +31,7 @@ describe("a never-synced owner pulls empty, not terminal", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchImpl,
     })(schema, {
@@ -90,7 +61,7 @@ describe("a never-synced owner pulls empty, not terminal", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchImpl,
     })(schema, {

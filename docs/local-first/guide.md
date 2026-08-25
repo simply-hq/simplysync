@@ -545,7 +545,7 @@ incompatible, or already imported.
 | `MutationResult` | `{ ok: true, value: { id } } \| { ok: false, error: { message } }` |
 | `AppOwner` | `{ id, recoveryKey, mnemonic?, writeKey }` |
 | `Transport` | `{ type: "Http" \| "WebSocket", url }` |
-| `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, indexes? }` |
+| `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, autoSync?, indexes? }` |
 | `SyncState` | `Initial \| IsSyncing \| IsSynced{lastSyncedAt} \| IsNotSynced{error?,status?,terminal?}` |
 | `Query<R>` | `{ sql, parameters, Row }` (the `Row` field is a phantom type carrier) |
 

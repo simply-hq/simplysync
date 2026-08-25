@@ -1,42 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 
 import {
   createSync,
   id,
   NonEmptyString,
   String as Str,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(): SqliteDriver {
-  const db = new Database(":memory:");
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = {
   message: { id: id("Message"), role: NonEmptyString, body: Str },
@@ -47,14 +17,11 @@ function makeEngine() {
   // pending-outbox count is a clean proxy for "how many sync events were
   // generated".
   return createSync({
-    createSqliteDriver: () => makeDriver(),
+    createSqliteDriver: () => memoryDriver().driver,
     secureStorage: memoryStorage(),
   })(schema, { name: "streaming-test" });
 }
 
-// enqueue() encrypts asynchronously (WebCrypto), so let outstanding mutations
-// settle before reading the outbox.
-const settle = () => new Promise((r) => setTimeout(r, 25));
 
 describe("streaming / local-only writes", () => {
   test("local writes don't grow the outbox; the final commit does", async () => {
@@ -66,7 +33,7 @@ describe("streaming / local-only writes", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     const messageId = created.value.id;
-    await settle();
+    await settle(engine);
     expect(engine.getPendingOutboxCount()).toBe(1);
 
     // Stream 200 tokens, each a local-only write. None should enqueue.
@@ -80,7 +47,7 @@ describe("streaming / local-only writes", () => {
       );
       expect(r.ok).toBe(true);
     }
-    await settle();
+    await settle(engine);
     expect(engine.getPendingOutboxCount()).toBe(1); // unchanged by streaming
 
     // The local DB already reflects the latest streamed text (UI is live).
@@ -95,7 +62,7 @@ describe("streaming / local-only writes", () => {
     // Commit once when generation completes — exactly one new sync event.
     const done = engine.update("message", { id: messageId, body } as never);
     expect(done.ok).toBe(true);
-    await settle();
+    await settle(engine);
     expect(engine.getPendingOutboxCount()).toBe(2);
   });
 

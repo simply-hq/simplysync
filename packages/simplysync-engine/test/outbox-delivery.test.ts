@@ -9,29 +9,12 @@ import { id, NonEmptyString, type SqliteDriver } from "../src/index";
 import { createEngineState } from "../src/engine/state";
 import { createStore } from "../src/engine/store";
 import { SYNC_OUTBOX_TABLE } from "../src/engine/constants";
-
-function makeDriver(): { driver: SqliteDriver; db: Database } {
-  const db = new Database(":memory:");
-  return {
-    db,
-    driver: {
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
-    },
-  };
-}
+import { memoryDriver } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
 
 function makeStore(bases: string[] = []) {
-  const { driver, db } = makeDriver();
+  const { driver, db } = memoryDriver();
   const state = createEngineState({ name: "outbox" });
   state.driver = driver;
   state.transports = bases.map((url) => ({ type: "Http" as const, url }));
@@ -106,7 +89,7 @@ describe("outbox delivery (store)", () => {
       store.sealOutboxEvent(eid, "{}");
     }
     store.markBatchDelivered(["e5", "e9"], "http://a", AT);
-    expect(store.getMeta("push:http://a")).toBe("e9");
+    expect(store.pushCursor("http://a")).toBe("e9");
 
     store.insertPendingOutboxEvent("e7", "{}");
     store.sealOutboxEvent("e7", "{}");
@@ -116,7 +99,7 @@ describe("outbox delivery (store)", () => {
     ]);
     // And the cursor does not regress when that straggler is acknowledged.
     store.markBatchDelivered(["e7"], "http://a", AT);
-    expect(store.getMeta("push:http://a")).toBe("e9");
+    expect(store.pushCursor("http://a")).toBe("e9");
   });
 
   test("pushed_at keeps the earliest delivery across relays", () => {
@@ -148,5 +131,62 @@ describe("outbox delivery (store)", () => {
       AT,
     );
     expect(store.claimPushBatch("http://a").length).toBe(1);
+  });
+});
+
+describe("new-relay backfill (store)", () => {
+  test("an empty database queues nothing, so the first pull is not echoed back", () => {
+    // A device that attaches a relay before it has any rows must not treat the
+    // rows it then *pulls* as its own to re-upload. The separate backfill
+    // marker is what records "this relay was considered" independently of the
+    // push cursor, which does not exist yet.
+    const { store } = makeStore(["http://a"]);
+
+    expect(store.backfillOutboxForNewRelay("http://a")).toBe(0);
+    expect(store.hasRelayHistory()).toBe(true);
+
+    // Rows learned later (as a pull would write them) are not retro-queued,
+    // because the marker already says this relay was handled.
+    store.writeRow("note", {
+      id: "n1",
+      body: "learned from a peer",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "0000000001-0000-peer",
+      isDeleted: 0,
+    });
+    expect(store.backfillOutboxForNewRelay("http://a")).toBe(0);
+    expect(store.claimPushBatch("http://a")).toEqual([]);
+  });
+
+  test("a relay that already has a push cursor is not re-seeded", () => {
+    // A push cursor means this device has talked to that relay before, so a
+    // full rebuild would be pointless traffic for a relay that already has it.
+    const { store } = makeStore(["http://a"]);
+    store.writeRow("note", {
+      id: "n1",
+      body: "mine",
+      createdAt: "2020-01-01T00:00:00.000Z",
+      updatedAt: "0000000001-0000-devA",
+      isDeleted: 0,
+    });
+    // Seeded through the delivery path that actually mints a push cursor,
+    // rather than by writing the meta key this test would otherwise have to
+    // know the spelling of.
+    store.markBatchDelivered(
+      ["0000000001-0000-devA"],
+      "http://a",
+      "2020-01-01T00:00:00.000Z",
+    );
+
+    expect(store.backfillOutboxForNewRelay("http://a")).toBe(0);
+    expect(store.hasRelayHistory()).toBe(true);
+    expect(store.claimPushBatch("http://a")).toEqual([]);
+
+    // A genuinely new relay, same database, does get the full copy.
+    expect(store.backfillOutboxForNewRelay("http://b")).toBe(1);
+    store.sealOutboxEvent("0000000001-0000-devA", "{}");
+    expect(store.claimPushBatch("http://b").map((e) => e.eventId)).toEqual([
+      "0000000001-0000-devA",
+    ]);
   });
 });

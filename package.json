@@ -37,7 +37,9 @@
     "todo:e2e": "turbo run build && bun run --cwd apps/todolist/e2e e2e",
     "app-port:check": "node scripts/check-native-app-port-drift.mjs",
     "app-port:update": "node scripts/check-native-app-port-drift.mjs --update",
-    "sync:diff": "node scripts/diff-sync-port.mjs"
+    "sync:diff": "node scripts/diff-sync-port.mjs",
+    "vectors:gen": "bun run --cwd packages/simplysync-protocol gen:vectors",
+    "vectors:check": "node scripts/check-vector-corpus.mjs"
   },
   "devDependencies": {
     "@types/node": "22.15.30",

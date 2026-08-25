@@ -5,39 +5,10 @@ import {
   createSync,
   id,
   NonEmptyString,
-  type SecureStorage,
-  type SqliteDriver,
 } from "../src/index";
-
-function makeDriver(db = new Database(":memory:")): SqliteDriver {
-  return {
-    exec(sql, params) {
-      db.prepare(sql).run(...((params ?? []) as never[]));
-    },
-    select(sql, params) {
-      return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-    },
-    transaction(fn) {
-      return db.transaction(fn)();
-    },
-  };
-}
-
-function memoryStorage(): SecureStorage {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k) => map.get(k) ?? null,
-    setItem: (k, v) => {
-      map.set(k, v);
-    },
-    removeItem: (k) => {
-      map.delete(k);
-    },
-  };
-}
+import { memoryDriver, memoryStorage, settle } from "./support";
 
 const schema = { note: { id: id("Note"), body: NonEmptyString } };
-const settle = () => new Promise((r) => setTimeout(r, 25));
 
 describe("multi-relay push redundancy", () => {
   test("every configured relay receives a full copy of this device's events", async () => {
@@ -68,7 +39,7 @@ describe("multi-relay push redundancy", () => {
     // Start with NO transports so inserts don't kick off opportunistic syncs
     // that race the (async) enqueue — makes the test deterministic.
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, { name: "multi-relay-test" });
@@ -81,11 +52,9 @@ describe("multi-relay push redundancy", () => {
     }
     expect(ids.length).toBe(3);
 
-    // Let the three async enqueues land in the outbox, then attach both relays
-    // and drive sync until the data propagates.
-    for (let i = 0; i < 40 && engine.getPendingOutboxCount() < 3; i++) {
-      await settle();
-    }
+    // A write stages its Outbox row inside the same transaction, so the three
+    // are already there; attach both relays and drive sync until the data
+    // propagates.
     expect(engine.getPendingOutboxCount()).toBe(3);
 
     engine.setTransports([
@@ -94,7 +63,7 @@ describe("multi-relay push redundancy", () => {
     ]);
     for (let i = 0; i < 40 && (received.a.size < 3 || received.b.size < 3); i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
 
     // Both relays got all three events — not just the first relay contacted.
@@ -126,7 +95,7 @@ describe("multi-relay push redundancy", () => {
     }) as typeof fetch;
 
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(),
+      createSqliteDriver: () => memoryDriver().driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, { name: "sequential-relay-test" });
@@ -135,27 +104,25 @@ describe("multi-relay push redundancy", () => {
     for (const body of ["one", "two"]) {
       expect(engine.insert("note", { body }).ok).toBe(true);
     }
-    for (let i = 0; i < 40 && engine.getPendingOutboxCount() < 2; i++) {
-      await settle();
-    }
+    expect(engine.getPendingOutboxCount()).toBe(2);
 
     engine.setTransports([{ type: "Http", url: "http://relay-a.test" }]);
     for (let i = 0; i < 40 && received.a.size < 2; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(received.a.size).toBe(2);
 
     for (let i = 0; i < 40 && engine.getPendingOutboxCount() > 0; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(engine.getPendingOutboxCount()).toBe(0);
 
     engine.setTransports([{ type: "Http", url: "http://relay-b.test" }]);
     for (let i = 0; i < 40 && received.b.size < 2; i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
 
     expect(received.b.size).toBe(2);
@@ -185,7 +152,7 @@ describe("multi-relay push redundancy", () => {
 
     const db = new Database(":memory:");
     const engine = createSync({
-      createSqliteDriver: () => makeDriver(db),
+      createSqliteDriver: () => memoryDriver(db).driver,
       secureStorage: memoryStorage(),
       fetch: fetchStub,
     })(schema, { name: "multi-relay-straggler-test" });
@@ -198,7 +165,7 @@ describe("multi-relay push redundancy", () => {
     ]);
     for (let i = 0; i < 40 && (received.a.size < 1 || received.b.size < 1); i++) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
     expect(received.a.size).toBe(1);
     expect(received.b.size).toBe(1);
@@ -215,7 +182,7 @@ describe("multi-relay push redundancy", () => {
       i++
     ) {
       await engine.sync();
-      await settle();
+      await settle(engine);
     }
 
     expect(received.a.has(straggler)).toBe(true);
