@@ -82,6 +82,12 @@ test-results/
 # Compiled relay-go binary (build artifact)
 apps/relay-go/sbt-relay-go
 
+# Local agent tooling workspace: the visualize-repo skill's generated visual
+# docs (marked localOnly) plus its manifest. Personal scratch state, not project
+# source — nothing in the build, CI, or docs reads these.
+.agent-native/
+agent-native.json
+
 # Installed agent skills (reproducible from skills-lock.json). Keep the
 # repo-owned relay-hosting skill available in fresh clones.
 .agents/skills/*
@@ -89,3 +95,8 @@ apps/relay-go/sbt-relay-go
 !.agents/skills/host-relay/**
 !.agents/skills/clone-simplysync/
 !.agents/skills/clone-simplysync/**
+
+# Convenience symlinks into locally-installed (ignored) skills. Committing one
+# leaves a dangling link in every fresh clone; the repo-owned host-relay and
+# clone-simplysync links above are the only ones that resolve.
+.claude/skills/improve
