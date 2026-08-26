@@ -82,24 +82,3 @@ public enum HLC {
         s.count >= width ? s : String(repeating: "0", count: width - s.count) + s
     }
 }
-
-/// A monotonic clock that never emits a duplicate HLC for this device, bumping
-/// the counter when the wall clock doesn't advance.
-public final class HLCClock {
-    private let deviceId: String
-    private var lastMillis: Int64 = 0
-    private var counter: Int = 0
-
-    public init(deviceId: String) { self.deviceId = deviceId }
-
-    public func next() -> String {
-        let now = Int64(Date().timeIntervalSince1970 * 1000)
-        if now > lastMillis {
-            lastMillis = now
-            counter = 0
-        } else {
-            counter += 1
-        }
-        return HLC.make(deviceId: deviceId, millis: lastMillis, counter: counter)
-    }
-}

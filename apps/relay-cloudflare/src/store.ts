@@ -43,9 +43,11 @@ export interface Env {
   WRITE_LIMITER: RateLimiter;
   MAX_EVENT_BYTES: string;
   MAX_OWNER_BYTES: string;
+  MAX_TOTAL_BYTES?: string;
   MAX_EVENTS_PER_PUSH: string;
   MAX_EVENTS_PER_PULL: string;
   DEFAULT_EVENTS_PER_PULL: string;
+  MAX_PULL_BYTES?: string;
   MAX_BLOB_BYTES: string;
   MAX_OWNERS: string;
   MAX_STREAMS_PER_COMPACT?: string;
@@ -55,9 +57,11 @@ export interface Env {
 export interface Config {
   maxEventBytes: number;
   maxOwnerBytes: number;
+  maxTotalBytes: number;
   maxEventsPerPush: number;
   maxEventsPerPull: number;
   defaultEventsPerPull: number;
+  maxPullBytes: number;
   maxBlobBytes: number;
   maxOwners: number;
   maxStreamsPerCompact: number;
@@ -68,9 +72,12 @@ export function readConfig(env: Env): Config {
   return {
     maxEventBytes: readPositiveInt(env.MAX_EVENT_BYTES, 256 * 1024),
     maxOwnerBytes: readPositiveInt(env.MAX_OWNER_BYTES, 1024 * 1024 * 1024),
+    // Global storage ceiling across all owners; 0 = disabled (per-owner only).
+    maxTotalBytes: readPositiveInt(env.MAX_TOTAL_BYTES, 0),
     maxEventsPerPush: readPositiveInt(env.MAX_EVENTS_PER_PUSH, 1000),
     maxEventsPerPull: readPositiveInt(env.MAX_EVENTS_PER_PULL, 5000),
     defaultEventsPerPull: readPositiveInt(env.DEFAULT_EVENTS_PER_PULL, 1000),
+    maxPullBytes: readPositiveInt(env.MAX_PULL_BYTES, 8 * 1024 * 1024),
     maxBlobBytes: readPositiveInt(env.MAX_BLOB_BYTES, 8 * 1024 * 1024),
     maxOwners: readPositiveInt(env.MAX_OWNERS, 100000),
     maxStreamsPerCompact: readPositiveInt(env.MAX_STREAMS_PER_COMPACT, 1000),
@@ -182,7 +189,7 @@ export async function ensureOwnerAuth(
       )
         .bind(ownerId)
         .first<{ relay_auth_hash: string; stored_bytes: number }>();
-      if (racedOwner && racedOwner.relay_auth_hash === relayAuthHash) {
+      if (racedOwner && timingSafeEqual(racedOwner.relay_auth_hash, relayAuthHash)) {
         return { ok: true, storedBytes: racedOwner.stored_bytes };
       }
       return { ok: false, denial: "invalid-token" };
@@ -191,7 +198,7 @@ export async function ensureOwnerAuth(
     return { ok: true, storedBytes: 0 };
   }
 
-  if (owner.relay_auth_hash !== relayAuthHash) {
+  if (!timingSafeEqual(owner.relay_auth_hash, relayAuthHash)) {
     return { ok: false, denial: "invalid-token" };
   }
   return { ok: true, storedBytes: owner.stored_bytes };
@@ -250,7 +257,7 @@ export interface PreparedEvent {
   readonly bytes: number;
 }
 
-export type PushRejection = "owner-quota-exceeded";
+export type PushRejection = "owner-quota-exceeded" | "relay-full";
 
 export type PushOutcome =
   | { readonly ok: true; readonly accepted: number; readonly duplicate: number }
@@ -282,9 +289,19 @@ export async function pushEvents(
     return { ok: false, rejection: "owner-quota-exceeded" };
   }
 
-  if (storedBytes + (await chargeableBytes(env.DB, ownerId, prepared)) >
-      cfg.maxOwnerBytes) {
+  const chargeable = await chargeableBytes(env.DB, ownerId, prepared);
+  if (storedBytes + chargeable > cfg.maxOwnerBytes) {
     return { ok: false, rejection: "owner-quota-exceeded" };
+  }
+
+  // Global storage ceiling (opt-in): per-owner quotas bound one tenant, but
+  // maxOwners × maxOwnerBytes multiplies to far more than the account should
+  // hold. On Cloudflare this is a metered-spend bound rather than a disk one.
+  if (cfg.maxTotalBytes > 0 && chargeable > 0) {
+    const total = await fleetStoredBytes(env.DB);
+    if (total + chargeable > cfg.maxTotalBytes) {
+      return { ok: false, rejection: "relay-full" };
+    }
   }
 
   const range = await reserveSeqRange(env.DB, prepared.length);
@@ -333,6 +350,14 @@ export async function chargeableBytes(
     (sum, p) => (stored.has(p.event.eventId) ? sum : sum + p.bytes),
     0,
   );
+}
+
+/** Total bytes stored across every owner — the input to the global ceiling. */
+export async function fleetStoredBytes(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(`select coalesce(sum(stored_bytes), 0) as total from owners`)
+    .first<{ total: number }>();
+  return row?.total ?? 0;
 }
 
 /**
@@ -405,7 +430,10 @@ async function insertAndCharge(
         p.json,
         p.bytes,
         p.event.createdAt,
-        p.event.streamId ?? null,
+        // `|| null` (not `??`): an empty streamId is "no stream", stored as
+        // SQL NULL so the compaction cron never groups it. validateEnvelope
+        // already rejects a present, non-empty, malformed id upstream.
+        p.event.streamId || null,
         range.base + i + 1,
       ),
     ),
@@ -429,6 +457,7 @@ export async function listEvents(
   ownerId: string,
   after: string,
   limit: number,
+  maxBytes: number,
 ): Promise<EventPage> {
   // Cursor is a monotonic seq. A legacy HLC-string cursor parses to 0 -> the
   // client re-pulls once (deduped client-side) then advances on seq.
@@ -442,10 +471,20 @@ export async function listEvents(
     .all<{ seq: number; envelope_json: string }>();
 
   const rows = results ?? [];
-  return {
-    events: rows.map((row) => JSON.parse(row.envelope_json) as SyncEnvelope),
-    nextCursor: String(rows.at(-1)?.seq ?? afterSeq),
-  };
+  // Bound the response page by bytes as well as count: at the 256 KiB/event max
+  // the count cap alone lets one page reach hundreds of MiB, doubling during
+  // JSON.stringify. Stop after at least one row so the pull always advances;
+  // the client loops on nextCursor. Matches the Go relay's listEvents.
+  const events: SyncEnvelope[] = [];
+  let cursor = afterSeq;
+  let accumulated = 0;
+  for (const row of rows) {
+    events.push(JSON.parse(row.envelope_json) as SyncEnvelope);
+    cursor = row.seq;
+    accumulated += row.envelope_json.length;
+    if (maxBytes > 0 && accumulated >= maxBytes) break;
+  }
+  return { events, nextCursor: String(cursor) };
 }
 
 // -----------------------------------------------------------------------------
@@ -477,7 +516,7 @@ export function getBlob(
   return env.BLOBS.get(blobKey(ownerId, hash));
 }
 
-export type BlobRejection = "owner-quota-exceeded";
+export type BlobRejection = "owner-quota-exceeded" | "relay-full";
 
 export type PutBlobOutcome =
   | { readonly ok: true; readonly stored: boolean }
@@ -508,6 +547,12 @@ export async function putBlob(
 ): Promise<PutBlobOutcome> {
   if (storedBytes + bytes.length > cfg.maxOwnerBytes) {
     return { ok: false, rejection: "owner-quota-exceeded" };
+  }
+  if (cfg.maxTotalBytes > 0) {
+    const total = await fleetStoredBytes(env.DB);
+    if (total + bytes.length > cfg.maxTotalBytes) {
+      return { ok: false, rejection: "relay-full" };
+    }
   }
 
   await env.BLOBS.put(blobKey(ownerId, hash), bytes, {
@@ -653,6 +698,18 @@ export async function compactLog(env: Env): Promise<void> {
 // core helper) to keep the Worker bundle dependency-free.
 async function sha256Base64Url(value: string): Promise<string> {
   return sha256Base64UrlBytes(new TextEncoder().encode(value));
+}
+
+// Constant-time compare of the two equal-length base64url SHA-256 digests, so
+// the relay's primary auth check leaks no timing signal (matches the Go relay's
+// subtle.ConstantTimeCompare; the V8 runtime has no timingSafeEqual).
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 export async function sha256Base64UrlBytes(bytes: Uint8Array): Promise<string> {

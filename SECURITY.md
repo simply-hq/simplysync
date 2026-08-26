@@ -29,6 +29,12 @@ Everything derives from a single secret the user holds — a recovery key
 
 Derivation is SLIP-21 over the mnemonic's BIP39 entropy, using SimplySync's own
 fixed labels so a given recovery phrase always resolves to the same identity.
+`relayAuth` and `dataKey` are independent derivation outputs — neither reveals
+the other. On the mnemonic path the `streamKey` is HKDF-derived *from* the
+encryption key (a one-way step, chosen so a streamId stays stable across
+devices); on the `sf1_` path `data-key` and `stream-key` are sibling outputs of
+the root secret. The two paths therefore differ in structure but agree on every
+value that goes on the wire.
 
 **Verify:** [`packages/simplysync-protocol/src/index.ts`](packages/simplysync-protocol/src/index.ts)
 — `deriveIdentity`, `deriveIdentityFromMnemonic`. The `dataKey` is imported as an
@@ -61,7 +67,7 @@ code path that decrypts, inspects, or transforms `ciphertext`.
 [`apps/relay-go/handlers.go`](apps/relay-go/handlers.go) — `SyncEnvelope`
 is documented as *"the opaque, end-to-end-encrypted event the relay stores"*;
 the encrypt/decrypt happens client-side in
-[`packages/simplysync-engine/src/engine.ts`](packages/simplysync-engine/src/engine.ts)
+[`packages/simplysync-engine/src/engine/relay.ts`](packages/simplysync-engine/src/engine/relay.ts)
 (`encryptPayload` / `decryptEnvelope`, imported from `@simplysync/protocol`). The
 exact call binds the envelope header as AES-GCM **additional authenticated
 data** — see `encryptPayload` in
@@ -78,6 +84,9 @@ data** — see `encryptPayload` in
   AAD, so the ciphertext can't be re-bound to a different owner/event either.
 - **Tamper with, swap, or reorder blob chunks.** Each chunk is
   content-hash-verified before decryption and AEAD-bound to its owner/blob/index.
+  (Blob encryption is implemented in the TypeScript client today; the Swift and
+  Kotlin ports do not yet handle blobs, so a blob written by one platform is not
+  readable by the others.)
 - **Recover your key or phrase from `relayAuth`.** `relayAuth` and `dataKey` are
   independent derivation outputs; one does not reveal the other. The relay only
   ever stores the **SHA-256 hash** of `relayAuth`, never the value itself.
@@ -119,6 +128,28 @@ enforcement.
 
 ---
 
+## Assurance level (be skeptical)
+
+We would rather state this plainly than have you infer it:
+
+- **SimplySync has not had a third-party security audit.** Nothing on this page
+  is an external assurance; it is a map to the code so you can check the claims
+  yourself.
+- **The cryptography is built on platform primitives, not hand-rolled ciphers.**
+  Payload encryption is AES-256-GCM via the platform's own crypto (WebCrypto,
+  Apple CryptoKit, and the JVM's `javax.crypto`); key derivation is SLIP-21 /
+  HKDF over those same primitives. What pins the four implementations together
+  is a generated cross-language test corpus (`bun run vectors:check`) that
+  asserts byte-identical envelopes, not four independent guesses.
+- **Nonce and key limits.** Each envelope uses a fresh random 96-bit AES-GCM
+  nonce under a `dataKey` that is never rotated for the life of a recovery
+  phrase. The random-nonce collision bound (NIST SP 800-38D) is ~2³² messages
+  per key; SimplySync is far below that at any realistic device volume, but the
+  ceiling is fixed rather than enforced, and one `dataKey` covers both envelopes
+  and blob chunks.
+
+---
+
 ## Audit this in ten minutes
 
 1. **Confirm the key never leaves the device.** Open
@@ -139,10 +170,12 @@ enforcement.
 
 ## Reporting a vulnerability
 
-Found something? Please open a private security advisory (or email the
-maintainers) rather than a public issue, and give us a reasonable window to
-ship a fix before disclosure. Specific, reproducible reports against the files
-above are the most useful.
+Found something? Please report it privately rather than in a public issue, and
+give us a reasonable window to ship a fix before disclosure. The preferred
+channel is GitHub's **private vulnerability reporting** — on the repository's
+**Security** tab, choose **Report a vulnerability** (this opens a private
+advisory only the maintainers can see). Specific, reproducible reports against
+the files above are the most useful.
 
 ---
 

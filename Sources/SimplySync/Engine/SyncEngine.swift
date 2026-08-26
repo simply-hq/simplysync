@@ -920,7 +920,18 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                 let seen = (try? store.driver?.select(
                     "select 1 from \"\(Store.seenTable)\" where event_id = ?", [.text(envelope.eventId)])) ?? []
                 if !seen.isEmpty { continue }
-                guard let payload = try? Envelope.decrypt(identity: identity, envelope: envelope) else { continue }
+                let payload: SyncPayload
+                do {
+                    payload = try Envelope.decrypt(identity: identity, envelope: envelope)
+                } catch {
+                    // A GCM tag failure means storage corruption or relay
+                    // tampering — the one event the threat model most wants
+                    // surfaced (SECURITY.md: "the client rejects it"). The
+                    // cursor still advances so it can't wedge the batch, but it
+                    // must not be a silent drop.
+                    setError("decrypt failed for event \(envelope.eventId)")
+                    continue
+                }
                 let eventHlc = HLC.admissibility(envelope.eventId)
                 if eventHlc == .malformed {
                     // Terminal protocol violation: mark seen below so it cannot

@@ -341,6 +341,16 @@ export interface SyncEngineConfig {
    * @deprecated Currently has no effect.
    */
   readonly tombstoneRetentionMs?: number | false;
+  /**
+   * Reject a write whose encrypted event would exceed this many bytes, at write
+   * time, with a clear error — instead of letting it into the outbox where a
+   * relay's per-event cap (default 256 KiB) rejects it on every push and stalls
+   * every later write behind it (head-of-line poison pill). Defaults to 256 KiB
+   * to match the reference relays; raise it only if your relay's MAX_EVENT_BYTES
+   * is higher. A JSON column is the usual way to blow past it — prefer the blob
+   * API for large values.
+   */
+  readonly maxEventBytes?: number;
 }
 
 /** Structured reason a sync attempt failed, so a consumer can show *why*. */

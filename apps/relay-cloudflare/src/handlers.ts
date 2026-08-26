@@ -146,10 +146,12 @@ async function handlePush(
     return json({ error: "Payload too large" }, 413);
   }
 
-  const body = (await request.json().catch(() => null)) as {
-    ownerId?: unknown;
-    events?: unknown;
-  } | null;
+  const parsed = await readJsonCapped(
+    request,
+    cfg.maxEventBytes * cfg.maxEventsPerPush,
+  );
+  if (parsed === "too-large") return json({ error: "Payload too large" }, 413);
+  const body = parsed as { ownerId?: unknown; events?: unknown } | null;
 
   if (!body || typeof body.ownerId !== "string" || !Array.isArray(body.events)) {
     return json({ error: "Invalid push body" }, 400);
@@ -184,7 +186,11 @@ async function handlePush(
   }
 
   const out = await pushEvents(env, cfg, ownerId, auth.storedBytes, prepared);
-  if (!out.ok) return json({ error: "Owner quota exceeded" }, 413);
+  if (!out.ok) {
+    return out.rejection === "relay-full"
+      ? json({ error: "Relay storage is full" }, 507)
+      : json({ error: "Owner quota exceeded" }, 413);
+  }
   return json({ accepted: out.accepted, duplicate: out.duplicate });
 }
 
@@ -214,10 +220,12 @@ async function handleCompactStreams(
     return json({ error: "Payload too large" }, 413);
   }
 
-  const body = (await request.json().catch(() => null)) as {
-    ownerId?: unknown;
-    streamIds?: unknown;
-  } | null;
+  const parsed = await readJsonCapped(
+    request,
+    64 * cfg.maxStreamsPerCompact + 1024,
+  );
+  if (parsed === "too-large") return json({ error: "Payload too large" }, 413);
+  const body = parsed as { ownerId?: unknown; streamIds?: unknown } | null;
 
   if (
     !body ||
@@ -285,7 +293,7 @@ async function handlePull(
   // (which bricked initial sync against a fresh relay). Cloudflare's edge
   // already gzip/brotli-encodes JSON responses per Accept-Encoding, so plain
   // JSON gets the same wire savings with none of the footguns.
-  return json(await listEvents(env, ownerId, after, limit));
+  return json(await listEvents(env, ownerId, after, limit, cfg.maxPullBytes));
 }
 
 async function handleUsage(
@@ -391,11 +399,12 @@ async function handleBlobPut(
     return json({ stored: false, duplicate: true });
   }
 
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.length === 0) return json({ error: "Empty blob" }, 400);
-  if (bytes.length > cfg.maxBlobBytes) {
+  const raw = await readBodyCapped(request, cfg.maxBlobBytes);
+  if (raw === "too-large") {
     return json({ error: "Blob chunk is too large" }, 413);
   }
+  const bytes = raw;
+  if (bytes.length === 0) return json({ error: "Empty blob" }, 400);
 
   // The path hash must equal the content hash — clients can't choose keys, and
   // can't poison another owner's namespace (keys are owner-scoped in R2 too).
@@ -404,7 +413,11 @@ async function handleBlobPut(
   }
 
   const out = await putBlob(env, cfg, ownerId, auth.storedBytes, hash, bytes);
-  if (!out.ok) return json({ error: "Owner quota exceeded" }, 413);
+  if (!out.ok) {
+    return out.rejection === "relay-full"
+      ? json({ error: "Relay storage is full" }, 507)
+      : json({ error: "Owner quota exceeded" }, 413);
+  }
   return json({ stored: out.stored, duplicate: !out.stored });
 }
 
@@ -491,8 +504,15 @@ function validateEnvelope(ownerId: string, event: SyncEnvelope): string | null {
   if (!isNonEmptyString(event.nonce)) return "Missing nonce";
   if (!isNonEmptyString(event.ciphertext)) return "Missing ciphertext";
   if (!isNonEmptyString(event.createdAt)) return "Missing createdAt";
-  if (event.streamId !== undefined && typeof event.streamId !== "string") {
-    return "Invalid streamId";
+  // A present streamId must be the exact shape sealPayload emits. null,
+  // undefined, and "" all mean "no stream" and are stored as SQL NULL (see
+  // insertAndCharge's `|| null`), so an empty id can no longer be grouped by
+  // the compaction cron into one stream that deletes an owner's log. This
+  // matches the Go relay's validateEnvelope exactly.
+  if (event.streamId != null && event.streamId !== "") {
+    if (typeof event.streamId !== "string" || !STREAM_ID_SHAPE.test(event.streamId)) {
+      return "Invalid streamId";
+    }
   }
   return null;
 }
@@ -523,6 +543,53 @@ function exceedsContentLength(request: Request, max: number): boolean {
   if (!header) return false;
   const length = Number(header);
   return Number.isFinite(length) && length > max;
+}
+
+// Buffer a request body but abort past `max` bytes even when there is no
+// Content-Length. exceedsContentLength only sees a declared length; a chunked /
+// length-less body slips past it and would otherwise buffer whole into the
+// isolate. Returns "too-large" if the stream exceeds the cap. Mirrors the Go
+// relay's http.MaxBytesReader on every write route.
+async function readBodyCapped(
+  request: Request,
+  max: number,
+): Promise<Uint8Array | "too-large"> {
+  const body = request.body;
+  if (!body) return new Uint8Array(0);
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => undefined);
+      return "too-large";
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+async function readJsonCapped(
+  request: Request,
+  max: number,
+): Promise<unknown | "too-large"> {
+  const raw = await readBodyCapped(request, max);
+  if (raw === "too-large") return "too-large";
+  try {
+    return JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    return null;
+  }
 }
 
 function clampPositiveInteger(

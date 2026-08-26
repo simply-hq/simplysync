@@ -37,7 +37,7 @@ for name in ["sf1", "mnemonic"] {
     let payload = SyncPayload(
         schemaVersion: 1, table: "todo", op: "upsert", rowId: "row-123",
         hlc: eventId,
-        value: ["done": .int(0), "title": .string("Hello from JS")]
+        value: ["done": .int(0), "title": .string("Hello \"q\" \\ 🌍 中文\n\t end")]
     )
 
     let nonce = Base64URL.decode(v["nonceB64"] as! String)!
@@ -66,7 +66,7 @@ for name in ["sf1", "mnemonic"] {
         if case .string(let s)? = decrypted.value["title"] { return s }
         return "<missing>"
     }()
-    check("roundtrip.title", title, "Hello from JS")
+    check("roundtrip.title", title, "Hello \"q\" \\ 🌍 中文\n\t end")
     check("roundtrip.table", decrypted.table, "todo")
 }
 

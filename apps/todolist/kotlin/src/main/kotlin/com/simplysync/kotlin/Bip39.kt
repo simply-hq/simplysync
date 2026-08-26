@@ -14,9 +14,19 @@ object Bip39 {
 
     class Bip39Exception(message: String) : Exception(message)
 
+    // The exact character set JavaScript's /\s/u matches, so this normalizes a
+    // phrase byte-identically to `normalizeMnemonic` (TS). A phrase pasted with
+    // non-breaking or thin spaces (from a PDF or password manager) must derive
+    // the same identity here as on web, or "works on one device" is
+    // indistinguishable from a lost recovery phrase. Only the whitespace class
+    // is widened — a standard space-separated phrase is unaffected.
+    private val MNEMONIC_WS = Regex(
+        "[\\u0009\\u000A\\u000B\\u000C\\u000D\\u0020\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]+"
+    )
+
     /** Trim, lowercase, collapse internal whitespace — matches `normalizeMnemonic`. */
     fun normalize(mnemonic: String): String =
-        mnemonic.trim().lowercase().split(Regex("[ \\t\\n\\r]+")).filter { it.isNotEmpty() }.joinToString(" ")
+        MNEMONIC_WS.replace(mnemonic, " ").trim().lowercase()
 
     fun isValid(mnemonic: String): Boolean = try {
         entropy(normalize(mnemonic)); true

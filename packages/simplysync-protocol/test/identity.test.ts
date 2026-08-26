@@ -188,9 +188,11 @@ describe("credential form is unambiguous", () => {
     expect(identity.ownerId).toBeTruthy();
 
     const body = good.slice("sf1_".length);
-    expect(deriveIdentity(`sf1_${body.slice(0, -4)}`)).rejects.toThrow(
-      /32 bytes/u,
-    );
+    // A truncated key is always refused — either the strict base64url decoder
+    // rejects its now-illegal length / non-canonical trailing bits, or (if it
+    // still decodes) the 32-byte entropy check does. Both are refusals; which
+    // one fires depends on the random bytes, so assert refusal, not a message.
+    expect(deriveIdentity(`sf1_${body.slice(0, -4)}`)).rejects.toThrow();
     expect(deriveIdentity("sf1_")).rejects.toThrow(/32 bytes/u);
     expect(deriveIdentity("not-a-credential-at-all")).rejects.toThrow(
       /must start with sf1_/u,

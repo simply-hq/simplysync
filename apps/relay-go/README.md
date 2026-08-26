@@ -41,11 +41,14 @@ runs on any Linux distro (glibc *or* musl/Alpine).
 | `PORT` | `4100` | listen port |
 | `RELAY_DATA_DIR` | `data` | SQLite location (prod: `/var/lib/sbt-relay`) |
 | `MAX_OWNER_BYTES` | `1073741824` | per-owner quota (1 GiB) |
+| `MAX_TOTAL_BYTES` | `0` (off) | global ceiling across all owners; set to disk size minus headroom so a few full owners can't fill the volume. Push/blob return `507` when exceeded |
 | `MAX_EVENT_BYTES` | `262144` | per-event cap (256 KiB) |
 | `MAX_BLOB_BYTES` | `8388608` | per-chunk cap (8 MiB) |
 | `MAX_EVENTS_PER_PUSH` / `_PULL` | `1000` / `5000` | batch bounds |
 | `MAX_STREAMS_PER_COMPACT` | `1000` | max streamIds per `POST /v1/streams/compact` (client-driven tombstone GC) |
 | `COMPACTION_INTERVAL_MS` | `21600000` | log compaction cadence; `0` disables |
+| `RATE_LIMIT_CREATE` | `5` | per-IP owner-creation budget per minute (bounds fleet-row spam) |
+| `TRUST_PROXY_HEADERS` | `false` | trust `CF-Connecting-IP` / `X-Forwarded-For` for the client IP. **Off = key limiters on the real socket peer** (safe when directly exposed). Set `1` only behind a proxy that *overwrites* these headers (Cloudflare, or the provided Caddyfile) — otherwise a client forges them to bypass every per-IP limit and the admin lockout. |
 | `ADMIN_TOKEN` | — | enables the dashboard; unset => admin paths 404 |
 | `ADMIN_PATH` | derived | override the secret dashboard path |
 

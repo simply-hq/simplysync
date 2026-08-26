@@ -22,6 +22,22 @@ export function createQueryCache(state: EngineState, schema: SchemaDefinition) {
   // queryKey -> entry. Owned here; nothing outside this module touches it.
   const queries = new Map<string, QueryEntry>();
   let reportedQueryError = false;
+  let reportedNoTables = false;
+
+  // Bound the cache so a non-React consumer calling getQueryRows with
+  // per-keystroke/per-filter parameters can't grow it without limit (each
+  // cached query is also re-run by refreshQueries). Only listener-less entries
+  // are evicted, oldest first (Map preserves insertion order) — a subscribed
+  // query is never dropped, and a just-created entry is newest so it survives
+  // until React's subscribe effect attaches its listener.
+  const MAX_CACHED_QUERIES = 512;
+  const evictIfNeeded = () => {
+    if (queries.size <= MAX_CACHED_QUERIES) return;
+    for (const [key, entry] of queries) {
+      if (queries.size <= MAX_CACHED_QUERIES) break;
+      if (entry.listeners.size === 0) queries.delete(key);
+    }
+  };
 
   const tablesInSql = (sql: string): Set<string> => {
     const found = new Set<string>();
@@ -127,14 +143,26 @@ export function createQueryCache(state: EngineState, schema: SchemaDefinition) {
     const key = queryKey(query);
     let entry = queries.get(key);
     if (!entry) {
+      const tables = tablesInSql(query.sql);
+      if (tables.size === 0 && !reportedNoTables) {
+        reportedNoTables = true;
+        // A query whose table dependencies can't be detected is refreshed on
+        // every change instead (see refreshQueries) — correct but not free.
+        console.warn(
+          "local-first: could not detect table dependencies for a query; " +
+            "it will re-run on every change. Ensure table names are quoted " +
+            `identifiers. SQL: ${query.sql}`,
+        );
+      }
       entry = {
         sql: query.sql,
         params: query.parameters,
-        tables: tablesInSql(query.sql),
+        tables,
         rows: state.driver ? runQuery(query.sql, query.parameters) : [],
         listeners: new Set(),
       };
       queries.set(key, entry);
+      evictIfNeeded();
     }
     return { key, entry };
   };
@@ -142,7 +170,11 @@ export function createQueryCache(state: EngineState, schema: SchemaDefinition) {
   const refreshQueries = (changedTables: Iterable<string>) => {
     const changed = new Set(changedTables);
     for (const entry of queries.values()) {
-      let touched = false;
+      // A query with no detected table dependencies (raw SQL, unquoted names,
+      // or a genuinely constant query) refreshes on ANY change rather than
+      // never — a redundant re-run beats a silently permanently-stale UI. The
+      // result diff below keeps the stable reference when nothing changed.
+      let touched = entry.tables.size === 0;
       for (const table of entry.tables) {
         if (changed.has(table)) {
           touched = true;
@@ -173,12 +205,21 @@ export function createQueryCache(state: EngineState, schema: SchemaDefinition) {
   };
 
   const subscribeQuery = (query: Query) => {
-    const { key, entry } = getOrCreateEntry(query);
+    const key = queryKey(query);
     return (listener: () => void) => {
+      // Resolve the CURRENT entry at listener-add time, not when the subscribe
+      // closure was created. A memoized closure (React memoizes on [engine,
+      // key]) can be re-invoked after its entry was evicted — capturing the old
+      // entry would attach the listener to an orphan refreshQueries never
+      // iterates, and the query would silently stop updating. getOrCreateEntry
+      // re-creates an evicted entry so the listener always lands on the live one.
+      const { entry } = getOrCreateEntry(query);
       entry.listeners.add(listener);
       return () => {
-        entry.listeners.delete(listener);
-        if (entry.listeners.size === 0) queries.delete(key);
+        const current = queries.get(key);
+        if (!current) return;
+        current.listeners.delete(listener);
+        if (current.listeners.size === 0) queries.delete(key);
       };
     };
   };

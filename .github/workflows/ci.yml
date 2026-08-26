@@ -51,8 +51,9 @@ jobs:
       # The relay's own unit tests. `bun run test` covers the relay only as a
       # black box over HTTP, so the pure functions guarding every request —
       # HLC classification, bearer parsing, envelope and stream-id validation —
-      # are only exercised here.
-      - run: go test ./...
+      # are only exercised here. `-race` because a relay is concurrent by
+      # definition and quota accounting had a lock-scope bug before (SECURITY-03).
+      - run: go test -race ./...
         working-directory: apps/relay-go
       # The relay contract is asserted of BOTH relay implementations, and the
       # Cloudflare half skips itself when wrangler can't be resolved. Skipping

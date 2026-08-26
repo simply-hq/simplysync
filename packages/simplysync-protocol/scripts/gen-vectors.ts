@@ -7,7 +7,7 @@
 //
 // The corpus locks two fixed recovery credentials (an `sf1_` key and a BIP39
 // mnemonic) to their derived identity + a byte-exact sealed envelope, using a
-// FIXED nonce (via `sealPayload`) so every platform can assert exact
+// FIXED nonce (via `unsafeSealPayloadWithNonce`) so every platform can assert exact
 // ciphertext, not just "it round-trips". Regenerate only deliberately — a
 // diff here means the protocol's wire format changed.
 //
@@ -30,7 +30,7 @@ import {
   compareHlc,
   deriveIdentity,
   deriveIdentityFromMnemonic,
-  sealPayload,
+  unsafeSealPayloadWithNonce,
   type SyncPayload,
 } from "../src/index.ts";
 
@@ -43,13 +43,19 @@ const DEVICE_ID = "dev1";
 const CREATED_AT = "2026-01-01T00:00:00.000Z";
 const NONCE_B64 = "BRIfLDlGU2BteoeU";
 
+// The title deliberately exercises the canonicalization edge cases the corpus
+// was previously blind to: an escaped quote and backslash, control chars
+// (newline/tab), a surrogate-pair emoji, and CJK. All four ports must escape
+// and UTF-8-encode these identically or a client's note fails to decrypt on
+// another platform. Keep this string byte-identical to the ports'
+// ConformanceTest / verify payloads.
 const PAYLOAD: SyncPayload<{ done: number; title: string }> = {
   schemaVersion: 1,
   table: "todo",
   op: "upsert",
   rowId: "row-123",
   hlc: EVENT_ID,
-  value: { done: 0, title: "Hello from JS" },
+  value: { done: 0, title: 'Hello "q" \\ 🌍 中文\n\t end' },
 };
 
 interface FixedInput {
@@ -136,14 +142,14 @@ async function main(): Promise<void> {
   for (const [name, { input, derive }] of Object.entries(FIXED_INPUTS)) {
     const identity = await derive(input);
 
-    const envelope = await sealPayload(
+    const envelope = await unsafeSealPayloadWithNonce(
       identity,
       { eventId: EVENT_ID, deviceId: DEVICE_ID, createdAt: CREATED_AT },
       PAYLOAD,
       nonce,
     );
 
-    // Reconstruct the exact header object sealPayload built internally (same
+    // Reconstruct the exact header object unsafeSealPayloadWithNonce built internally (same
     // shape/order it feeds to canonicalJson) so we can record the literal AAD
     // string the ciphertext is bound to.
     const headerCanonical = canonicalJson({

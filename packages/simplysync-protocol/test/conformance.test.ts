@@ -8,7 +8,7 @@ import {
   decryptEnvelope,
   deriveIdentity,
   deriveIdentityFromMnemonic,
-  sealPayload,
+  unsafeSealPayloadWithNonce,
   type SyncPayload,
 } from "../src/index.ts";
 import vectors from "./vectors.json";
@@ -31,7 +31,7 @@ const PAYLOAD: SyncPayload<{ done: number; title: string }> = {
   op: "upsert",
   rowId: "row-123",
   hlc: EVENT_ID,
-  value: { done: 0, title: "Hello from JS" },
+  value: { done: 0, title: 'Hello "q" \\ 🌍 中文\n\t end' },
 };
 
 const DERIVERS = {
@@ -50,7 +50,7 @@ describe("cross-language crypto conformance corpus", () => {
         const derive = DERIVERS[name as keyof typeof DERIVERS];
         const identity = await derive(entry.input);
         const nonce = base64UrlDecode(entry.nonceB64);
-        const envelope = await sealPayload(
+        const envelope = await unsafeSealPayloadWithNonce(
           identity,
           { eventId: EVENT_ID, deviceId: DEVICE_ID, createdAt: CREATED_AT },
           PAYLOAD,
@@ -84,7 +84,7 @@ describe("cross-language crypto conformance corpus", () => {
         const identity = await derive(entry.input);
         const nonce = base64UrlDecode(entry.nonceB64);
 
-        const envelope = await sealPayload(
+        const envelope = await unsafeSealPayloadWithNonce(
           identity,
           { eventId: EVENT_ID, deviceId: DEVICE_ID, createdAt: CREATED_AT },
           PAYLOAD,
@@ -101,7 +101,7 @@ describe("cross-language crypto conformance corpus", () => {
         const identity = await derive(entry.input);
         const nonce = base64UrlDecode(entry.nonceB64);
 
-        const envelope = await sealPayload(
+        const envelope = await unsafeSealPayloadWithNonce(
           identity,
           { eventId: EVENT_ID, deviceId: DEVICE_ID, createdAt: CREATED_AT },
           PAYLOAD,
@@ -113,7 +113,7 @@ describe("cross-language crypto conformance corpus", () => {
           title: string;
         }>(identity, envelope);
         expect(decrypted.table).toBe("todo");
-        expect(decrypted.value.title).toBe("Hello from JS");
+        expect(decrypted.value.title).toBe('Hello "q" \\ 🌍 中文\n\t end');
       });
     });
   }

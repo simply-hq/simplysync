@@ -58,6 +58,14 @@ export function base64UrlDecode(value: string): Uint8Array {
     length -= 1;
   }
 
+  // A base64 group is 2–4 chars; a remainder of exactly one char encodes no
+  // whole byte, so it is malformed. The platform decoders (Java's
+  // getUrlDecoder, Swift's Data(base64Encoded:)) reject it too — accepting it
+  // here is how a recovery key validates on web but fails on iOS/Android.
+  if (length % 4 === 1) {
+    throw new Error("invalid base64url length.");
+  }
+
   const byteLength = Math.floor((length * 6) / 8);
   const bytes = new Uint8Array(byteLength);
 
@@ -79,6 +87,13 @@ export function base64UrlDecode(value: string): Uint8Array {
       bytes[outIndex] = (buffer >> bits) & 0xff;
       outIndex += 1;
     }
+  }
+
+  // The final character's unused low bits must be zero. Otherwise the same
+  // bytes have several valid spellings, and comparing or deduping wire values
+  // (nonces, ciphertext, a persisted recovery key) stops being well-defined.
+  if (bits > 0 && (buffer & ((1 << bits) - 1)) !== 0) {
+    throw new Error("non-canonical base64url trailing bits.");
   }
 
   return bytes;
@@ -219,17 +234,43 @@ export function canonicalJson(value: unknown): string {
 }
 
 function sortJson(value: unknown): unknown {
+  // NaN / ±Infinity have no JSON form: JSON.stringify silently turns them into
+  // `null`, so the number a caller stored would decrypt as null on every peer.
+  // Reject at the boundary rather than corrupt.
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new Error("canonicalJson: non-finite number is not serializable.");
+  }
+
+  if (value === null || typeof value !== "object") {
+    return value;
+  }
+
   if (Array.isArray(value)) {
     return value.map(sortJson);
   }
 
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([key, nestedValue]) => [key, sortJson(nestedValue)]),
+  // Reject anything that isn't a plain object. A Date, Map, Set, or class
+  // instance has no own enumerable keys, so the object branch below would
+  // silently emit `{}` — and because canonicalJson's output is the AES-GCM
+  // plaintext AND its AAD, that corruption is sealed onto the wire where every
+  // peer accepts it as authentic and the original is unrecoverable. Fail at the
+  // encrypt boundary instead: the caller must serialize such a value to a
+  // JSON-safe form (e.g. an ISO string) itself, which is also the only way the
+  // Kotlin/Swift ports can reproduce the same bytes.
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    const kind = (value as { constructor?: { name?: string } }).constructor
+      ?.name;
+    throw new Error(
+      `canonicalJson: unsupported non-plain object${
+        kind ? ` (${kind})` : ""
+      }; serialize it to a JSON-safe value before encrypting.`,
     );
   }
 
-  return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, nestedValue]) => [key, sortJson(nestedValue)]),
+  );
 }

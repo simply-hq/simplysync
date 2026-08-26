@@ -28,6 +28,12 @@ export const ENCRYPTED_SNAPSHOT_FORMAT = "simplysync-db-snapshot";
 export const ENCRYPTED_SNAPSHOT_VERSION = 1;
 
 const DEFAULT_PBKDF2_ITERATIONS = 600_000;
+// Upper bound on the iteration count read from an untrusted backup file. Without
+// it, a tampered envelope can pin a restore to an arbitrarily large count — a
+// denial-of-restore / foreground hang on the one artifact that exists for
+// disaster recovery. (No lower bound: lowering the count in a stolen file just
+// derives the wrong key and fails the GCM tag, so it can't weaken brute-force.)
+const PBKDF2_MAX_ITERATIONS = 10_000_000;
 const SALT_BYTES = 16;
 const NONCE_BYTES = 12;
 const KEY_BYTES = 32;
@@ -275,9 +281,18 @@ export async function decryptStringWithPassphrase(
     throw new InvalidBackupEnvelopeError();
   }
 
+  const iterations = envelope.kdf.iterations;
+  if (
+    !Number.isInteger(iterations) ||
+    iterations <= 0 ||
+    iterations > PBKDF2_MAX_ITERATIONS
+  ) {
+    throw new InvalidBackupEnvelopeError();
+  }
+
   const kdf = options?.kdf ?? subtlePbkdf2;
   const salt = base64UrlDecode(envelope.kdf.salt);
-  const key = await kdf(passphrase, salt, envelope.kdf.iterations, KEY_BYTES);
+  const key = await kdf(passphrase, salt, iterations, KEY_BYTES);
   return open(key, {
     nonce: envelope.cipher.nonce,
     tag: envelope.cipher.tag,

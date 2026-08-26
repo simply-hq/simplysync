@@ -39,6 +39,10 @@ class SnapshotCryptoException(message: String) : Exception(message)
 object SnapshotCrypto {
     const val FORMAT = "simplysync-db-snapshot"
     const val DEFAULT_ITERATIONS = 600_000
+    // Upper bound on the iteration count read from an untrusted backup file, so
+    // a tampered envelope can't pin a restore to an arbitrarily large KDF cost
+    // (a denial-of-restore / foreground hang). Matches the TypeScript port.
+    private const val MAX_ITERATIONS = 10_000_000
     private const val SALT_BYTES = 16
     private const val NONCE_BYTES = 12
     private const val KEY_BYTES = 32
@@ -113,6 +117,7 @@ object SnapshotCrypto {
     fun decryptStringWithPassphrase(passphrase: String, envelope: EncryptedEnvelopeV1): String {
         val kdf = envelope.kdf
         if (!envelope.isValid || envelope.keying != "passphrase" || kdf == null) throw SnapshotCryptoException("invalidEnvelope")
+        if (kdf.iterations <= 0 || kdf.iterations > MAX_ITERATIONS) throw SnapshotCryptoException("invalidEnvelope")
         val salt = Base64Url.decode(kdf.salt) ?: throw SnapshotCryptoException("invalidEnvelope")
         val key = Crypto.pbkdf2(passphrase, salt, kdf.iterations, KEY_BYTES)
         return open(key, envelope.cipher.nonce, envelope.cipher.tag, envelope.ciphertext)

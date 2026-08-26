@@ -38,6 +38,19 @@ describe("passphrase crypto", () => {
     ).rejects.toBeInstanceOf(PassphraseDecryptError);
   });
 
+  test("rejects an absurd iteration count (denial-of-restore)", async () => {
+    const envelope = await encryptStringWithPassphrase("pw", "secret", FAST);
+    // A tampered file pins the restore to a huge KDF cost; decrypt must refuse
+    // rather than burn CPU for minutes / hang the app.
+    const tampered = {
+      ...envelope,
+      kdf: { ...envelope.kdf, iterations: 5_000_000_000 },
+    };
+    await expect(
+      decryptStringWithPassphrase("pw", tampered),
+    ).rejects.toBeInstanceOf(InvalidBackupEnvelopeError);
+  });
+
   test("an unrecognized envelope throws InvalidBackupEnvelopeError", async () => {
     await expect(
       decryptStringWithPassphrase("pw", { not: "an envelope" }),

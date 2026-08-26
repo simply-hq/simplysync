@@ -154,7 +154,7 @@ func TestCompactLogNeverTouchesUntaggedEvents(t *testing.T) {
 
 	cfg := Config{MaxEventBytes: 1 << 20, MaxOwnerBytes: 1 << 30}
 	const owner = "owner-untagged"
-	if auth := st.ensureOwnerAuth(owner, "write-key", true); !auth.ok {
+	if auth := st.ensureOwnerAuth(owner, "write-key", true, ""); !auth.ok {
 		t.Fatalf("ensureOwnerAuth denied: %d", auth.denial)
 	}
 

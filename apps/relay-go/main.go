@@ -27,9 +27,11 @@ type Config struct {
 	AdminBase            string
 	MaxEventBytes        int64
 	MaxOwnerBytes        int64
+	MaxTotalBytes        int64
 	MaxEventsPerPush     int
 	MaxEventsPerPull     int
 	DefaultEventsPerPull int
+	MaxPullBytes         int64
 	MaxStreamsPerCompact int
 	MaxBlobBytes         int64
 	CompactionInterval   time.Duration
@@ -37,6 +39,8 @@ type Config struct {
 	RateLimitEnabled     bool
 	RateLimitAPI         int
 	RateLimitWrite       int
+	RateLimitCreate      int
+	TrustProxyHeaders    bool
 }
 
 const blobPathPrefix = "/v1/blobs/"
@@ -53,9 +57,16 @@ func loadConfig() Config {
 		AdminToken:           token,
 		MaxEventBytes:        envInt64("MAX_EVENT_BYTES", 256*1024),
 		MaxOwnerBytes:        envInt64("MAX_OWNER_BYTES", 1024*1024*1024),
-		MaxEventsPerPush:     envInt("MAX_EVENTS_PER_PUSH", 1000),
+		// Global storage ceiling across all owners. 0 = disabled (per-owner
+		// quotas only). Set it to your disk size minus headroom so a few full
+		// owners can't fill the volume and fail writes for every tenant.
+		MaxTotalBytes:    envInt64("MAX_TOTAL_BYTES", 0),
+		MaxEventsPerPush: envInt("MAX_EVENTS_PER_PUSH", 1000),
 		MaxEventsPerPull:     envInt("MAX_EVENTS_PER_PULL", 5000),
 		DefaultEventsPerPull: envInt("DEFAULT_EVENTS_PER_PULL", 1000),
+		// Byte ceiling on a single pull page, independent of the count cap: at
+		// 256 KiB/event the count cap alone admits a multi-hundred-MiB page.
+		MaxPullBytes: envInt64("MAX_PULL_BYTES", 8*1024*1024),
 		MaxStreamsPerCompact: envInt("MAX_STREAMS_PER_COMPACT", 1000),
 		MaxBlobBytes:         envInt64("MAX_BLOB_BYTES", 8*1024*1024),
 		CompactionInterval:   resolveCompactionInterval(),
@@ -63,6 +74,16 @@ func loadConfig() Config {
 		RateLimitEnabled:     envBool("RATE_LIMIT_ENABLED", true),
 		RateLimitAPI:         envInt("RATE_LIMIT_API", 120),
 		RateLimitWrite:       envInt("RATE_LIMIT_WRITE", 60),
+		// Per-IP owner-creation budget, mirroring the Cloudflare relay's
+		// CREATE_LIMITER. Minting a new owner is the only way to grow the fleet,
+		// so it's the costliest path to leave unbounded.
+		RateLimitCreate: envInt("RATE_LIMIT_CREATE", 5),
+		// Off by default: honor CF-Connecting-IP / X-Forwarded-For only behind a
+		// proxy you trust to set them. Directly exposed, those headers are
+		// client-forgeable, so the per-IP limiters must key on the real socket
+		// peer instead. Set TRUST_PROXY_HEADERS=1 when deploying behind
+		// Cloudflare or a reverse proxy that overwrites (not appends) them.
+		TrustProxyHeaders: envBool("TRUST_PROXY_HEADERS", false),
 	}
 	if token != "" {
 		cfg.AdminBase = resolveAdminBase(token)
@@ -117,6 +138,7 @@ func main() {
 	// Sample storage/system stats for the dashboard (only when admin is on).
 	if cfg.AdminToken != "" {
 		startSampler(st, cfg.DataDir)
+		go adminSweepLoop()
 	}
 
 	// Periodically compact the log so the DB stops growing with superseded events.

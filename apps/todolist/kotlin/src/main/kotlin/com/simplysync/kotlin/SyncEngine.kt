@@ -942,7 +942,17 @@ class SyncEngine(
                     "select 1 from \"${Store.SEEN}\" where event_id = ?", listOf(SqliteValue.Text(envelope.eventId)),
                 ) ?: emptyList()
                 if (seen.isNotEmpty()) continue
-                val payload = runCatching { Envelope.decrypt(identity, envelope) }.getOrNull() ?: continue
+                val decrypted = runCatching { Envelope.decrypt(identity, envelope) }
+                if (decrypted.isFailure) {
+                    // A GCM tag failure means storage corruption or relay
+                    // tampering — the one event the threat model most wants
+                    // surfaced (SECURITY.md: "the client rejects it"). The
+                    // cursor still advances so it can't wedge the batch, but it
+                    // must not be a silent drop.
+                    setError("decrypt failed for event ${envelope.eventId}")
+                    continue
+                }
+                val payload = decrypted.getOrThrow()
                 val eventHlc = Hlc.admissibility(envelope.eventId)
                 if (eventHlc == HlcAdmissibility.MALFORMED) {
                     // Terminal protocol violation: mark seen below so it cannot

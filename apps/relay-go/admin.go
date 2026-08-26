@@ -31,6 +31,7 @@ var (
 type failRec struct {
 	count int
 	until int64 // epoch ms
+	seen  int64 // epoch ms of the last failure, so idle records can be swept
 }
 
 func adminLocked(ip string) bool {
@@ -48,10 +49,33 @@ func adminRecordFail(ip string) {
 		rec = &failRec{}
 		adminFails[ip] = rec
 	}
+	rec.seen = time.Now().UnixMilli()
 	rec.count++
 	if rec.count >= adminMaxFails {
-		rec.until = time.Now().UnixMilli() + adminLockMs
+		rec.until = rec.seen + adminLockMs
 		rec.count = 0
+	}
+}
+
+// adminSweep drops records whose lockout has expired and whose last failure is
+// older than the lock window, so the map stays bounded to recently-active IPs
+// instead of growing once per distinct source ever seen. Mirrors the rate
+// limiter's sweepLoop.
+func adminSweep() {
+	now := time.Now().UnixMilli()
+	adminMu.Lock()
+	defer adminMu.Unlock()
+	for ip, rec := range adminFails {
+		if rec.until <= now && rec.seen <= now-adminLockMs {
+			delete(adminFails, ip)
+		}
+	}
+}
+
+func adminSweepLoop() {
+	for {
+		time.Sleep(adminLockMs * time.Millisecond)
+		adminSweep()
 	}
 }
 

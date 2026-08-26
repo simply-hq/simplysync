@@ -48,12 +48,21 @@ sealed class JsonValue {
     companion object {
         /**
          * JSON string escaping matching `JSON.stringify`: escapes `"` and `\`,
-         * the short escapes (\b \t \n \f \r), and other control chars as `\u00xx`
-         * (lowercase hex). Forward slashes and non-ASCII are left literal.
+         * the short escapes (\b \t \n \f \r), other control chars as `\u00xx`,
+         * and an UNPAIRED surrogate as `\uXXXX` (all lowercase hex). Forward
+         * slashes, non-ASCII, and valid surrogate PAIRS are left literal.
+         *
+         * The unpaired-surrogate case matters: without it a lone surrogate is
+         * appended literally and Java's UTF-8 encoder later rewrites it to `?`,
+         * silently corrupting the AEAD plaintext (and, under LWW, propagating
+         * that corruption back to peers). JS's JSON.stringify escapes it instead,
+         * so this keeps the two canonicalizers byte-identical.
          */
         fun escape(s: String): String {
             val out = StringBuilder("\"")
-            for (c in s) {
+            var i = 0
+            while (i < s.length) {
+                val c = s[i]
                 when {
                     c == '"' -> out.append("\\\"")
                     c == '\\' -> out.append("\\\\")
@@ -63,8 +72,18 @@ sealed class JsonValue {
                     c.code == 0x0C -> out.append("\\f")
                     c.code == 0x0D -> out.append("\\r")
                     c.code < 0x20 -> out.append("\\u").append(c.code.toString(16).padStart(4, '0'))
+                    Character.isHighSurrogate(c) &&
+                        i + 1 < s.length &&
+                        Character.isLowSurrogate(s[i + 1]) -> {
+                        // Valid pair (e.g. an emoji): emit both units literally.
+                        out.append(c).append(s[i + 1])
+                        i += 1
+                    }
+                    Character.isSurrogate(c) ->
+                        out.append("\\u").append(c.code.toString(16).padStart(4, '0'))
                     else -> out.append(c)
                 }
+                i += 1
             }
             out.append("\"")
             return out.toString()

@@ -272,7 +272,7 @@ export function compareHlc(left: string | null | undefined, right: string): numb
  * Derives the pseudonymous stream id the relay sees for a logical row:
  * HMAC(streamKey, "<table> <rowId>"), base64url, truncated to 22 chars. Same
  * (table, row) always yields the same id; the relay can't reverse it. Exported
- * (besides feeding {@link sealPayload}) so a client can name a row's stream
+ * (besides feeding {@link unsafeSealPayloadWithNonce}) so a client can name a row's stream
  * without sealing an envelope — e.g. to ask a relay to drop a fully-purged
  * stream via `POST /v1/streams/compact` (tombstone GC).
  */
@@ -293,8 +293,14 @@ export async function deriveStreamId(
  * vector generators can seal with a fixed nonce and assert exact ciphertext.
  * Production code should use {@link encryptPayload}, which always generates a
  * fresh random nonce.
+ *
+ * The name is a warning: reusing a nonce under one AES-GCM key is the
+ * catastrophic failure mode for the whole scheme (it leaks the XOR of the two
+ * plaintexts and the GHASH subkey, enabling forgery). Only fixed-nonce test and
+ * vector-generation code should ever call this; everything else uses
+ * {@link encryptPayload}.
  */
-export async function sealPayload<
+export async function unsafeSealPayloadWithNonce<
   T,
   Version extends number = typeof SYNC_SCHEMA_VERSION,
 >(
@@ -353,7 +359,7 @@ export async function encryptPayload<
   payload: SyncPayload<T, Version>,
 ): Promise<SyncEnvelope> {
   const nonce = await randomBytes(AES_GCM_NONCE_BYTES);
-  return sealPayload(identity, event, payload, nonce);
+  return unsafeSealPayloadWithNonce(identity, event, payload, nonce);
 }
 
 export async function decryptEnvelope<

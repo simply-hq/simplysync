@@ -160,6 +160,36 @@ describe("snapshot-backed sql.js", () => {
     await closeSqlJsDatabases("finance-test");
   });
 
+  test("forces a persist under a continuous write stream (max-wait ceiling)", async () => {
+    // A long debounce that, on its own, would never fire while writes keep
+    // coming — so any save proves the max-wait ceiling forced one, i.e. a burst
+    // of writes can't be starved out of durable storage indefinitely.
+    let saves = 0;
+    const store = {
+      load: async () => null,
+      save: async () => {
+        saves += 1;
+      },
+    };
+    const createDriver = createSqlJsDriverFactory({
+      store,
+      debounceMs: 1000,
+      maxWaitMs: 40,
+      writerLock: "disabled",
+    });
+    const d = await createDriver("maxwait-test");
+    d.exec("create table t (id integer primary key)");
+    const start = Date.now();
+    let i = 0;
+    while (Date.now() - start < 160) {
+      d.exec("insert into t values (?)", [i]);
+      i += 1;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(saves).toBeGreaterThan(0);
+    await closeSqlJsDatabases("maxwait-test");
+  });
+
   test("requires an exclusive browser writer lock by default", async () => {
     const backing = new MemoryStore();
     const snapshots = createIndexedDbSnapshotStore({ store: backing });

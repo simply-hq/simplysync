@@ -70,18 +70,25 @@ func (rl *rateLimiter) sweepLoop() {
 // initRateLimiters runs; rateLimitOn gates every check so a disabled limiter
 // is a no-op.
 var (
-	rateLimitOn  bool
-	apiLimiter   *rateLimiter
-	writeLimiter *rateLimiter
+	rateLimitOn       bool
+	apiLimiter        *rateLimiter
+	writeLimiter      *rateLimiter
+	createLimiter     *rateLimiter
+	trustProxyHeaders bool
 )
 
 func initRateLimiters(cfg Config) {
+	// Independent of RateLimitEnabled: clientIP is used by every handler (auth
+	// keying, admin lockout), so how it reads the peer address must be settled
+	// even when the limiters themselves are off.
+	trustProxyHeaders = cfg.TrustProxyHeaders
 	rateLimitOn = cfg.RateLimitEnabled
 	if !rateLimitOn {
 		return
 	}
 	apiLimiter = newRateLimiter(cfg.RateLimitAPI, 10*time.Second)
 	writeLimiter = newRateLimiter(cfg.RateLimitWrite, 10*time.Second)
+	createLimiter = newRateLimiter(cfg.RateLimitCreate, time.Minute)
 }
 
 // withRateLimit is the per-IP front door. /health and CORS preflight stay free

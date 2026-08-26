@@ -158,6 +158,12 @@ export async function launchRelay(
     ...(process.env as Record<string, string>),
     PORT: String(port),
     RELAY_DATA_DIR: dataDir,
+    // The suite gives each test owner a stable CF-Connecting-IP (see http.ts
+    // ipFor) to model distinct clients, so it must run the relay in the same
+    // trusted-proxy mode a real deployment behind Cloudflare/Caddy uses.
+    // Without this the relay keys every request on the loopback socket and the
+    // per-IP / owner-creation limits collapse into one shared bucket.
+    TRUST_PROXY_HEADERS: "1",
     ...envOverrides,
   };
 

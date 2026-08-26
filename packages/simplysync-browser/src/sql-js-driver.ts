@@ -17,6 +17,14 @@ export interface SqlJsDriverOptions {
   readonly store: SnapshotStore;
   readonly locateFile?: (file: string) => string;
   readonly debounceMs?: number;
+  /**
+   * Ceiling on how long a write can sit only in memory. The debounce coalesces
+   * bursts, but a continuous write stream (a streaming AI reply, a bulk import,
+   * a multi-page pull) shorter than `debounceMs` between writes would otherwise
+   * starve the persist indefinitely. Once the oldest un-persisted write is this
+   * old, a snapshot is forced even while writes continue. Default 2000ms.
+   */
+  readonly maxWaitMs?: number;
   readonly onPersistError?: (error: unknown) => void;
   /**
    * Whole-database snapshots require one writer. Browser consumers should keep
@@ -48,9 +56,36 @@ interface OpenDb {
 
 const registry = new Map<string, OpenDb>();
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+// When the oldest un-persisted write for each db happened, so the debounce can
+// be capped at a max-wait ceiling instead of being re-armed forever.
+const firstDirtyAt = new Map<string, number>();
 const persistQueues = new Map<string, Promise<void>>();
 let lastOpened: string | null = null;
 let sqlStaticPromise: Promise<SqlJsStatic> | null = null;
+let hideFlushRegistered = false;
+
+// Flush every open db to its snapshot store when the page is hidden or being
+// unloaded, so a tab closed inside the debounce window doesn't lose the row
+// (and its outbox marker) that only lived in memory. Best-effort: the browser
+// may not finish an async IndexedDB write during unload — visibilitychange
+// (hidden) fires earlier and more reliably than pagehide, so both are wired.
+function registerHideFlush(): void {
+  if (hideFlushRegistered) return;
+  if (typeof document === "undefined" || typeof document.addEventListener !== "function") {
+    return;
+  }
+  hideFlushRegistered = true;
+  const flush = () => {
+    if (registry.size === 0) return;
+    void persistNow().catch(() => undefined);
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flush();
+  });
+  if (typeof addEventListener === "function") {
+    addEventListener("pagehide", flush);
+  }
+}
 
 export function getActiveDb(name?: string): Database | null {
   const key = name ?? lastOpened;
@@ -65,6 +100,7 @@ export async function persistNow(name?: string): Promise<void> {
       clearTimeout(timer);
       debounceTimers.delete(key);
     }
+    firstDirtyAt.delete(key);
     const open = registry.get(key);
     if (!open) continue;
 
@@ -98,19 +134,30 @@ export async function closeSqlJsDatabases(name?: string): Promise<void> {
     await registry.get(key)?.releaseWriterLock?.();
     registry.delete(key);
     debounceTimers.delete(key);
+    firstDirtyAt.delete(key);
     persistQueues.delete(key);
     if (lastOpened === key) lastOpened = null;
   }
 }
 
-function schedulePersist(name: string, debounceMs: number): void {
+function schedulePersist(name: string, debounceMs: number, maxWaitMs: number): void {
   // Followers skip write-triggered persistence entirely: their writes reach
   // the leader as broadcasts, and the leader's own apply schedules its save.
   const open = registry.get(name);
   if (open?.coordinator?.isCoordinating() && !open.coordinator.isLeader())
     return;
+  const now = Date.now();
+  let dirtySince = firstDirtyAt.get(name);
+  if (dirtySince === undefined) {
+    dirtySince = now;
+    firstDirtyAt.set(name, now);
+  }
   const existing = debounceTimers.get(name);
   if (existing !== undefined) clearTimeout(existing);
+  // Debounce to coalesce a burst, but never past the max-wait ceiling measured
+  // from the oldest un-persisted write — otherwise a continuous stream re-arms
+  // the timer forever and the writes never reach durable storage.
+  const delay = Math.max(0, Math.min(debounceMs, dirtySince + maxWaitMs - now));
   debounceTimers.set(
     name,
     setTimeout(() => {
@@ -119,7 +166,7 @@ function schedulePersist(name: string, debounceMs: number): void {
       void persistNow(name).catch((error) => {
         open?.onPersistError?.(error);
       });
-    }, debounceMs),
+    }, delay),
   );
 }
 
@@ -134,6 +181,7 @@ export function createSqlJsDriverFactory(
   options: SqlJsDriverOptions,
 ): (name: string) => Promise<SqliteDriver> {
   const debounceMs = options.debounceMs ?? 250;
+  const maxWaitMs = options.maxWaitMs ?? 2000;
   const writerLock = options.writerLock ?? "required";
   const acquireWriterLock =
     options.acquireWriterLock ?? acquireBrowserWriterLock;
@@ -184,6 +232,7 @@ export function createSqlJsDriverFactory(
         coordinator,
       });
       lastOpened = name;
+      registerHideFlush();
     } catch (error) {
       await releaseWriterLock?.();
       throw error;
@@ -192,7 +241,7 @@ export function createSqlJsDriverFactory(
     return {
       exec(sql, params) {
         db.run(sql, (params ?? []) as BindParams);
-        schedulePersist(name, debounceMs);
+        schedulePersist(name, debounceMs, maxWaitMs);
       },
       select<R = Record<string, unknown>>(
         sql: string,
@@ -213,7 +262,7 @@ export function createSqlJsDriverFactory(
         try {
           const result = fn();
           db.run("COMMIT");
-          schedulePersist(name, debounceMs);
+          schedulePersist(name, debounceMs, maxWaitMs);
           return result;
         } catch (error) {
           db.run("ROLLBACK");

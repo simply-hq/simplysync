@@ -95,8 +95,8 @@ same recovery key on the second device. Changes will sync through the
 ciphertext-only relay.
 <!-- quickstart:react-native:end -->
 
-Use `web`, `cli`, `node`, `swift`, `kotlin`, `relay-cloudflare`, or `core` in
-place of `react-native`. From a full checkout,
+Use `web`, `cli`, `node`, `swift`, `kotlin`, `relay-go`, `relay-cloudflare`, or
+`core` in place of `react-native`. From a full checkout,
 run `bun run clone --list` to see every preset.
 
 ## Explore the complete repository
@@ -169,6 +169,7 @@ stores encrypted data rather than readable app content.
 
 | Relay | Purpose |
 | --- | --- |
+| [Go relay](apps/relay-go) | Canonical, self-hostable reference relay: Go + SQLite, ciphertext-only. The implementation SECURITY.md points at to verify the claims. |
 | [Cloudflare relay](apps/relay-cloudflare) | Serverless relay using Cloudflare Workers, D1, and R2. |
 
 ### Canonical example and tools

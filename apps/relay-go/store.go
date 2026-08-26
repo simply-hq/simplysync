@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,10 @@ import (
 // errBlobQuotaExceeded signals a blob PUT that would push the owner over
 // MaxOwnerBytes; handleBlobPut owns what that becomes on the wire.
 var errBlobQuotaExceeded = errors.New("owner quota exceeded")
+
+// errRelayFull signals a write that would push the relay over the global
+// MaxTotalBytes ceiling (opt-in). handleBlobPut / the push path turn it into 507.
+var errRelayFull = errors.New("relay storage is full")
 
 // store wraps the SQLite database. Reads run concurrently on the pool; writes
 // are serialized by writeMu so quota read-modify-write stays atomic (SQLite
@@ -119,6 +124,7 @@ const (
 	authUnknownOwner
 	authInvalidToken
 	authAtCapacity
+	authCreateLimited
 )
 
 type authResult struct {
@@ -128,7 +134,10 @@ type authResult struct {
 
 // ensureOwnerAuth validates the bearer token against the owner's stored auth
 // hash, creating the owner on first use when createIfMissing is set.
-func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool) authResult {
+// createLimitKey (the client IP) is checked against the per-IP owner-creation
+// limiter, but only on the path that would actually mint a new owner; callers
+// that never create pass "".
+func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool, createLimitKey string) authResult {
 	hash := sha256B64([]byte(relayAuth))
 
 	storedHash, found, err := s.getOwner(ownerID)
@@ -148,6 +157,15 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 			return authResult{denial: authInternalError}
 		}
 		if !found {
+			// Per-IP owner-creation limit, checked only now that we know a new
+			// owner would actually be minted (so an existing owner's normal
+			// pushes never consume the create budget). Mirrors the Cloudflare
+			// relay's CREATE_LIMITER.
+			if createLimitKey != "" && rateLimitOn && createLimiter != nil &&
+				!createLimiter.allow(createLimitKey) {
+				s.writeMu.Unlock()
+				return authResult{denial: authCreateLimited}
+			}
 			// Enforce the global owner cap atomically with the insert: bump the
 			// counter only while it's below the cap, insert only if the bump
 			// took. Under writeMu, so no concurrent writer can interleave.
@@ -187,7 +205,11 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool)
 		s.writeMu.Unlock()
 	}
 
-	if storedHash != hash {
+	// Constant-time: storedHash and hash are equal-length base64 SHA-256
+	// digests, so a plain != would leak a timing signal on the primary auth
+	// check SECURITY.md points auditors straight at. The admin path already
+	// uses subtle; match it here.
+	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(hash)) != 1 {
 		return authResult{denial: authInvalidToken}
 	}
 	return authResult{ok: true}
@@ -266,6 +288,7 @@ const (
 	pushStoreFailed
 	pushEventTooLarge
 	pushOwnerQuotaExceeded
+	pushRelayFull
 )
 
 type pushOutcome struct {
@@ -351,6 +374,20 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 		}
 	}
 	if delta > 0 {
+		// Global storage ceiling (opt-in): per-owner quotas bound one tenant,
+		// but MAX_OWNERS × MAX_OWNER_BYTES multiply to far more than a small
+		// VPS holds, so a few full owners can fill the disk and fail writes for
+		// everyone. Checked inside the same locked txn that charges usage, on
+		// genuinely-new bytes only, so it can't corrupt accounting.
+		if cfg.MaxTotalBytes > 0 {
+			var total int64
+			if err := tx.QueryRow(`select coalesce(sum(stored_bytes), 0) from owners`).Scan(&total); err != nil {
+				return pushOutcome{rejected: pushStoreFailed}
+			}
+			if total+delta > cfg.MaxTotalBytes {
+				return pushOutcome{rejected: pushRelayFull}
+			}
+		}
 		if _, err := tx.Exec(`update owners set stored_bytes = stored_bytes + ? where owner_id = ?`, delta, ownerID); err != nil {
 			return pushOutcome{rejected: pushStoreFailed}
 		}
@@ -362,7 +399,7 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 }
 
 // listEvents returns raw envelope JSON for owner events after the cursor.
-func (s *store) listEvents(ownerID, after string, limit int) ([]json.RawMessage, string, error) {
+func (s *store) listEvents(ownerID, after string, limit int, maxBytes int64) ([]json.RawMessage, string, error) {
 	// The cursor is a monotonic seq. Legacy clients send an HLC eventId string
 	// (non-numeric) — treat that as 0 so they re-pull from the start once (the
 	// client dedupes by its seen-set), then advance on the seq cursor.
@@ -382,6 +419,7 @@ func (s *store) listEvents(ownerID, after string, limit int) ([]json.RawMessage,
 
 	events := make([]json.RawMessage, 0, 64)
 	cursor := afterSeq
+	var accumulated int64
 	for rows.Next() {
 		var seq int64
 		var envelopeJSON string
@@ -390,6 +428,14 @@ func (s *store) listEvents(ownerID, after string, limit int) ([]json.RawMessage,
 		}
 		events = append(events, json.RawMessage(envelopeJSON))
 		cursor = seq
+		// Bound the page by bytes as well as count: at the 256 KiB/event max,
+		// a count-only cap of 1000-5000 lets one page reach hundreds of MiB and
+		// OOM a small VPS. Stop after at least one row so the pull always makes
+		// forward progress; the client loops on nextCursor.
+		accumulated += int64(len(envelopeJSON))
+		if maxBytes > 0 && accumulated >= maxBytes {
+			break
+		}
 	}
 	return events, strconv.FormatInt(cursor, 10), rows.Err()
 }
@@ -447,6 +493,15 @@ func (s *store) putBlob(cfg Config, ownerID, hash string, bytes []byte) (stored 
 		}
 		if current+int64(len(bytes)) > cfg.MaxOwnerBytes {
 			return false, errBlobQuotaExceeded
+		}
+		if cfg.MaxTotalBytes > 0 {
+			var total int64
+			if err := tx.QueryRow(`select coalesce(sum(stored_bytes), 0) from owners`).Scan(&total); err != nil {
+				return false, err
+			}
+			if total+int64(len(bytes)) > cfg.MaxTotalBytes {
+				return false, errRelayFull
+			}
 		}
 		if _, err := tx.Exec(`update owners set stored_bytes = stored_bytes + ? where owner_id = ?`, len(bytes), ownerID); err != nil {
 			return false, err

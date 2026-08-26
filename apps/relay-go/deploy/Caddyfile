@@ -18,7 +18,13 @@ sync.simplyfinance.app {
 	# }
 	# respond @admin_blocked 403
 
-	reverse_proxy 127.0.0.1:4100
+	reverse_proxy 127.0.0.1:4100 {
+		# Overwrite (not append) X-Forwarded-For with the real socket peer, so a
+		# client-supplied value can't survive as the first entry the relay reads
+		# under TRUST_PROXY_HEADERS=1. Cloudflare's CF-Connecting-IP is already
+		# authoritative; this also makes a Caddy-only (no Cloudflare) deploy safe.
+		header_up X-Forwarded-For {remote_host}
+	}
 
 	# Lightweight origin-side rate limit as defense-in-depth behind Cloudflare's
 	# edge WAF rule. (Requires the caddy-ratelimit plugin; optional.)

@@ -58,7 +58,23 @@ export function createMutations(
   bridge: TabBridge,
   schema: SchemaDefinition,
   schemaVersion: number = SYNC_SCHEMA_VERSION,
+  maxEventBytes: number = 256 * 1024,
 ) {
+  // Reject a write whose encrypted event would exceed the relay's per-event cap
+  // AT WRITE TIME, so it never enters the outbox. Otherwise the relay 413s it on
+  // every push and it head-of-line-blocks every later write behind it (a
+  // permanent stall reported, misleadingly, as "quota exceeded"). Estimate the
+  // envelope from the plaintext: AES-GCM ciphertext is plaintext + a 16-byte
+  // tag, base64 inflates 4/3, plus a fixed allowance for the nonce + header.
+  const eventTooLargeMessage = (payloadJson: string): string | null => {
+    const payloadBytes = new TextEncoder().encode(payloadJson).length;
+    const estimated = Math.ceil(((payloadBytes + 16) * 4) / 3) + 512;
+    if (estimated <= maxEventBytes) return null;
+    return (
+      `Event is too large to sync (~${estimated} bytes, limit ${maxEventBytes}). ` +
+      "A large JSON column is the usual cause — use the blob API for large values."
+    );
+  };
   // A validated, merged row ready to write. Splitting "prepare" (pure-ish:
   // validate + merge + stamp the HLC) from "write" lets `batch` prepare every
   // op up front and fail atomically before touching the database.
@@ -230,6 +246,11 @@ export function createMutations(
     const { id, merged } = prep.prepared;
     const local = options?.local === true;
     const payloadJson = buildOutboxPayload(prep.prepared);
+    // Only replicated (non-local) writes hit a relay's per-event cap.
+    if (!local) {
+      const tooLarge = eventTooLargeMessage(payloadJson);
+      if (tooLarge) return { ok: false, error: { message: tooLarge } };
+    }
 
     try {
       driver.transaction(() => {
@@ -309,6 +330,14 @@ export function createMutations(
     }
     const local = options?.local === true;
     const payloads = prepared.map(buildOutboxPayload);
+    // Fail the whole batch before any write if any replicated event is too
+    // large (matches batch's prepare-then-fail-atomically design).
+    if (!local) {
+      for (const payloadJson of payloads) {
+        const tooLarge = eventTooLargeMessage(payloadJson);
+        if (tooLarge) return { ok: false, error: { message: tooLarge } };
+      }
+    }
 
     try {
       driver.transaction(() => {
@@ -478,12 +507,16 @@ export function createLifecycle(
       await loadIdentity();
       state.driver = sqlite;
       store.ensureSchema();
-      await relay.replayDeferredAtBoot();
-      state.schemaReady = true;
-      // Seed the HLC clock from its persisted high-water mark so it stays
-      // monotonic across restarts (see createClock).
+      // Seed the HLC clock from its persisted high-water mark BEFORE replaying
+      // deferred events. Replay calls clock.observeHlc, which compares against
+      // — and can persist — state.hlcTime; if that is still 0, a replayed
+      // event's lower millis regresses the mark below its true value, and later
+      // local writes then mint HLCs that sort below edits already applied (a
+      // silent lost update under LWW). Seeding first keeps the mark monotonic.
       ({ time: state.hlcTime, counter: state.hlcCounter } =
         store.clockHighWaterMark());
+      await relay.replayDeferredAtBoot();
+      state.schemaReady = true;
       // hydrate any active queries created before init finished
       queryCache.refreshQueries(Object.keys(schema));
       // Cross-tab events buffered while the snapshot was loading apply now;

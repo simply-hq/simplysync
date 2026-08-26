@@ -144,6 +144,7 @@ export const createSync =
       bridge,
       schema,
       schemaVersion,
+      config.maxEventBytes ?? 256 * 1024,
     );
     const lifecycle = createLifecycle(
       state,

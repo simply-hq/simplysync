@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -86,6 +87,8 @@ func authDeniedStatus(denial authDenial) (int, string) {
 		return http.StatusUnauthorized, "Invalid bearer token"
 	case authAtCapacity:
 		return http.StatusServiceUnavailable, "Relay is at capacity"
+	case authCreateLimited:
+		return http.StatusTooManyRequests, "Rate limited"
 	default:
 		return http.StatusInternalServerError, "Internal error"
 	}
@@ -103,6 +106,8 @@ func pushRejectionStatus(rejected pushRejection) (int, string) {
 		return http.StatusRequestEntityTooLarge, "Event is too large"
 	case pushOwnerQuotaExceeded:
 		return http.StatusRequestEntityTooLarge, "Owner quota exceeded"
+	case pushRelayFull:
+		return http.StatusInsufficientStorage, "Relay storage is full"
 	default:
 		return http.StatusInternalServerError, "Failed to store events"
 	}
@@ -155,7 +160,7 @@ func handlePush(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 		events = append(events, incomingEvent{raw: rm, env: env})
 	}
 
-	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, true)
+	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, true, clientIP(r))
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
@@ -224,7 +229,7 @@ func handleCompactStreams(cfg Config, st *store, w http.ResponseWriter, r *http.
 	}
 
 	// Same gate as push, but never create an owner on a purge call.
-	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, false)
+	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, false, "")
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
@@ -266,13 +271,13 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 		limit = cfg.MaxEventsPerPull
 	}
 
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
 	}
 
-	events, cursor, err := st.listEvents(ownerID, after, limit)
+	events, cursor, err := st.listEvents(ownerID, after, limit, cfg.MaxPullBytes)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errBody("Internal error"))
 		return
@@ -293,7 +298,7 @@ func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
 		return
 	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
@@ -313,7 +318,7 @@ func handleStatus(cfg Config, st *store, w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
 		return
 	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
@@ -380,7 +385,7 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, true)
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, true, clientIP(r))
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
@@ -426,6 +431,10 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusRequestEntityTooLarge, errBody("Owner quota exceeded"))
 			return
 		}
+		if errors.Is(err, errRelayFull) {
+			writeJSON(w, http.StatusInsufficientStorage, errBody("Relay storage is full"))
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, errBody("Failed to store blob"))
 		return
 	}
@@ -439,7 +448,7 @@ func handleBlobGet(st *store, w http.ResponseWriter, r *http.Request, hash strin
 		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
 		return
 	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
 	if !auth.ok {
 		writeAuthDenied(w, auth)
 		return
@@ -469,7 +478,7 @@ func handleBlobHead(st *store, w http.ResponseWriter, r *http.Request, hash stri
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false)
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
 	if !auth.ok {
 		status, _ := authDeniedStatus(auth.denial)
 		w.WriteHeader(status)
@@ -512,6 +521,13 @@ func validateEnvelope(ownerID string, env SyncEnvelope) string {
 	if env.CreatedAt == "" {
 		return "Missing createdAt"
 	}
+	// A present streamId must be the exact shape sealPayload emits. An absent
+	// one (JSON null/omitted, which unmarshals to "") means "no stream" and is
+	// left alone. This keeps a malformed id — which the compaction grouping key
+	// is built from — off the wire on both relays, not just Cloudflare.
+	if env.StreamID != "" && !streamIDShape.MatchString(env.StreamID) {
+		return "Invalid streamId"
+	}
 	return ""
 }
 
@@ -538,11 +554,23 @@ func contentLengthExceeds(r *http.Request, max int64) bool {
 }
 
 func clientIP(r *http.Request) string {
-	if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
-		return ip
+	// Forwarding headers are client-forgeable on a directly-exposed relay, so
+	// they gate the per-IP limiters and admin lockout only when the operator
+	// asserts a trusted proxy sets them (TRUST_PROXY_HEADERS). Otherwise the
+	// real socket peer is the only key an attacker can't rotate per request.
+	if trustProxyHeaders {
+		if ip := r.Header.Get("CF-Connecting-IP"); ip != "" {
+			return ip
+		}
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			return strings.TrimSpace(strings.Split(xff, ",")[0])
+		}
 	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.Split(xff, ",")[0])
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
 	}
 	return "local"
 }

@@ -7,9 +7,9 @@
       "streamKeyB64": "oG-f_-qbZ6S7jMOn_Mmzoxwci7Whf3nF5qMJ5Rru_Qk",
       "streamId": "b4LnWkiNkjd2rlJv_nTCKD",
       "headerCanonical": "{\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"deviceId\":\"dev1\",\"eventId\":\"00000abcde-0000-dev1\",\"ownerId\":\"I-2MUWBxalVfAPAltVoveA\",\"streamId\":\"b4LnWkiNkjd2rlJv_nTCKD\",\"version\":1}",
-      "payloadCanonical": "{\"hlc\":\"00000abcde-0000-dev1\",\"op\":\"upsert\",\"rowId\":\"row-123\",\"schemaVersion\":1,\"table\":\"todo\",\"value\":{\"done\":0,\"title\":\"Hello from JS\"}}",
+      "payloadCanonical": "{\"hlc\":\"00000abcde-0000-dev1\",\"op\":\"upsert\",\"rowId\":\"row-123\",\"schemaVersion\":1,\"table\":\"todo\",\"value\":{\"done\":0,\"title\":\"Hello \\\"q\\\" \\\\ 🌍 中文\\n\\t end\"}}",
       "nonceB64": "BRIfLDlGU2BteoeU",
-      "ciphertextB64": "YV13sD43t69ghwxD3GhWfFvFBKf7yDh26eR2uDcaG71DV0mj9XNWjhtON08GRYUT2Ad-FyMBbeaxXCncZxk0SapplwiBjjyIQEqi8eTXNUrhl_KUNcLv_h-ItVeYySPgvT-BF0arT-I0j1Rd8Uj4Ps0n-JwGx4YokNmrqEQdGpKMWK4oL5mKa2Yby2Y9N1oHEpjNpnPOAsSvMw"
+      "ciphertextB64": "YV13sD43t69ghwxD3GhWfFvFBKf7yDh26eR2uDcaG71DV0mj9XNWjhtON08GRYUT2Ad-FyMBbeaxXCncZxk0SapplwiBjjyIQEqi8eTXNUrhl_KUNcLv_h-ItVeYySPgvT-BF0arT-I0j1Rd8Uj4Ps0n-JwGx4YokNmrqEQdGpK2CLAZLfOFFTuWIf4bDdX9HShGQW8qIqhvya6L3FX9wASrd5vtnzXb8qUX2aWU3g"
     },
     "mnemonic": {
       "input": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
@@ -18,9 +18,9 @@
       "streamKeyB64": "1OpSGmZamF89ICkyVAAhE44I9WDxhbTGEruxK3FRBzg",
       "streamId": "cPQ2PXh8TqIG-zKnN9wNEt",
       "headerCanonical": "{\"createdAt\":\"2026-01-01T00:00:00.000Z\",\"deviceId\":\"dev1\",\"eventId\":\"00000abcde-0000-dev1\",\"ownerId\":\"ZFy7R58uNrdvMywuTD5eWA\",\"streamId\":\"cPQ2PXh8TqIG-zKnN9wNEt\",\"version\":1}",
-      "payloadCanonical": "{\"hlc\":\"00000abcde-0000-dev1\",\"op\":\"upsert\",\"rowId\":\"row-123\",\"schemaVersion\":1,\"table\":\"todo\",\"value\":{\"done\":0,\"title\":\"Hello from JS\"}}",
+      "payloadCanonical": "{\"hlc\":\"00000abcde-0000-dev1\",\"op\":\"upsert\",\"rowId\":\"row-123\",\"schemaVersion\":1,\"table\":\"todo\",\"value\":{\"done\":0,\"title\":\"Hello \\\"q\\\" \\\\ 🌍 中文\\n\\t end\"}}",
       "nonceB64": "BRIfLDlGU2BteoeU",
-      "ciphertextB64": "FWnUDjAHWA0x6lJhXGnxFaZ9inA7YXUSfcEcjP7WfcVkJsHHQaMvf4kcjB5BP0JPX8bynvGCcXcQfJWdzw9LSDcLlbfogvwnPqd13g1f1ECSBPNUarMChCO6plTDopKPvpvkW4mGBVE51OwI54-qfyx7y9FbjrZRyLrnzp5V8DPKGNoUEq-677EQYuViDco9aW3Wr6E3Y_qcxw"
+      "ciphertextB64": "FWnUDjAHWA0x6lJhXGnxFaZ9inA7YXUSfcEcjP7WfcVkJsHHQaMvf4kcjB5BP0JPX8bynvGCcXcQfJWdzw9LSDcLlbfogvwnPqd13g1f1ECSBPNUarMChCO6plTDopKPvpvkW4mGBVE51OwI54-qfyx7y9FbjrZRyLrnzp5V8DPwSMQlEMW1keydPaSMz4xcngEYS9HanMQLkBkktqol8LVRaYvPKISxDrP0phGqgw"
     }
   },
   "hlcOrder": [

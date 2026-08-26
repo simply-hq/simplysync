@@ -33,7 +33,7 @@ class ConformanceTest {
         hlc = "00000abcde-0000-dev1",
         value = linkedMapOf(
             "done" to JsonValue.IntVal(0),
-            "title" to JsonValue.Str("Hello from JS"),
+            "title" to JsonValue.Str("Hello \"q\" \\ 🌍 中文\n\t end"),
         ),
     )
 
@@ -94,7 +94,7 @@ class ConformanceTest {
             assertEquals("$name table", "todo", decrypted.table)
             assertEquals(
                 "$name value.title",
-                JsonValue.Str("Hello from JS"),
+                JsonValue.Str("Hello \"q\" \\ 🌍 中文\n\t end"),
                 decrypted.value["title"],
             )
         }

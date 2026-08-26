@@ -166,4 +166,32 @@ describe("query-cache result diffing (stable rows reference)", () => {
 
     unsubscribe();
   });
+
+  test("a re-subscribe after eviction still receives updates", async () => {
+    // The last unsubscribe evicts the cache entry. A re-subscribe (e.g. a
+    // memoized subscribe closure re-invoked on remount) must attach to a live
+    // entry, not an orphan refreshQueries never iterates — otherwise the query
+    // silently stops updating.
+    const engine = makeApp();
+    await engine.ready;
+    engine.insert("task", { title: "First", done: sqliteFalse });
+
+    const query = engine.createQuery(
+      (db) => db.selectFrom("task").select(["id", "title"]),
+      { includeDeleted: true },
+    );
+
+    // Subscribe then fully unsubscribe → entry evicted.
+    const subscribe = engine.subscribeQuery(query);
+    subscribe(() => {})();
+
+    // Re-subscribe against the same query and confirm a later mutation fires.
+    let fired = 0;
+    const unsubscribe = subscribe(() => {
+      fired += 1;
+    });
+    engine.insert("task", { title: "Second", done: sqliteFalse });
+    expect(fired).toBeGreaterThan(0);
+    unsubscribe();
+  });
 });

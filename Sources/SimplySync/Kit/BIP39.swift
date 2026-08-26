@@ -10,10 +10,25 @@ public enum BIP39 {
         return map
     }()
 
+    /// The exact character set JavaScript's /\s/u matches, so a phrase normalizes
+    /// byte-identically to `normalizeMnemonic` (TS). A phrase pasted with
+    /// non-breaking or thin spaces (from a PDF or password manager) must derive
+    /// the same identity here as on web, or "works on one device" is
+    /// indistinguishable from a lost recovery phrase.
+    private static let mnemonicWhitespace: Set<Unicode.Scalar> = [
+        "\u{0009}", "\u{000A}", "\u{000B}", "\u{000C}", "\u{000D}", "\u{0020}",
+        "\u{00A0}", "\u{1680}", "\u{2000}", "\u{2001}", "\u{2002}", "\u{2003}",
+        "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}",
+        "\u{200A}", "\u{2028}", "\u{2029}", "\u{202F}", "\u{205F}", "\u{3000}",
+        "\u{FEFF}",
+    ]
+
     /// Trim, lowercase, collapse internal whitespace — matches `normalizeMnemonic`.
     public static func normalize(_ mnemonic: String) -> String {
-        let lowered = mnemonic.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let parts = lowered.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == "\r" })
+        let parts = mnemonic.lowercased().split(whereSeparator: { char in
+            char.unicodeScalars.count == 1
+                && mnemonicWhitespace.contains(char.unicodeScalars.first!)
+        })
         return parts.joined(separator: " ")
     }
 

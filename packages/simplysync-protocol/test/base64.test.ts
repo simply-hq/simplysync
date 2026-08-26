@@ -52,4 +52,19 @@ describe("base64url", () => {
   test("rejects invalid characters", () => {
     expect(() => base64UrlDecode("not valid!")).toThrow();
   });
+
+  test("rejects an illegal length (remainder of one char)", () => {
+    // 5 chars = one full group + one leftover, which encodes no whole byte.
+    // Java/Swift decoders reject this; TS must too, so a recovery key can't be
+    // accepted on web and rejected on mobile.
+    expect(() => base64UrlDecode("abcde")).toThrow(/length/);
+  });
+
+  test("rejects non-canonical trailing bits (multiple spellings of one value)", () => {
+    // "AB" decodes to a single byte using only the top 8 of 12 bits; the low 4
+    // must be zero. "AB" (B = 000001) leaves bit set, so it is non-canonical.
+    // The canonical single-byte-0x00 spelling is "AA".
+    expect([...base64UrlDecode("AA")]).toEqual([0]);
+    expect(() => base64UrlDecode("AB")).toThrow(/canonical/);
+  });
 });

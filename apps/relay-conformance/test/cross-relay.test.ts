@@ -51,11 +51,14 @@ let go: LaunchedRelay;
 let goAdmin: LaunchedRelay;
 /** Go handed Cloudflare's kill switch, to pin that it ignores it. */
 let goDisabled: LaunchedRelay;
+/** Go with the limiters ON, to prove the per-IP owner-creation budget (most
+ * cross-relay tests disable limits so bulk operations don't trip them). */
+let goLimited: LaunchedRelay;
 let cf: LaunchedRelay | undefined;
 let cfDisabled: LaunchedRelay | undefined;
 
 beforeAll(async () => {
-  [go, goAdmin, goDisabled] = await Promise.all([
+  [go, goAdmin, goDisabled, goLimited] = await Promise.all([
     launchRelay({ RATE_LIMIT_ENABLED: "false" }),
     launchRelay({
       RATE_LIMIT_ENABLED: "false",
@@ -66,6 +69,7 @@ beforeAll(async () => {
       COMPACTION_INTERVAL_MS: "0",
     }),
     launchRelay({ RATE_LIMIT_ENABLED: "false", RELAY_DISABLED: "true" }),
+    launchRelay({ RATE_LIMIT_ENABLED: "true", RATE_LIMIT_CREATE: "5" }),
   ]);
   if (CLOUDFLARE) {
     [cf, cfDisabled] = await Promise.all([
@@ -80,6 +84,7 @@ afterAll(async () => {
     go?.kill(),
     goAdmin?.kill(),
     goDisabled?.kill(),
+    goLimited?.kill(),
     cf?.kill(),
     cfDisabled?.kill(),
   ]);
@@ -184,45 +189,46 @@ describe.skipIf(!CLOUDFLARE)("migrating an owner between relays", () => {
 
 // --- divergences: same request, two answers --------------------------------
 
-describe.skipIf(!CLOUDFLARE)("divergences between the implementations", () => {
-  test("a null streamId: Go accepts it, Cloudflare rejects it", async () => {
-    // Same request, two answers. A client that works against one relay can be
-    // rejected wholesale by the other.
-    const mk = async () => {
-      const who = await createTestIdentity();
-      const [event] = await makeEnvelopes(who, 1);
-      return { who, event: { ...event!, streamId: null } as never };
-    };
-    const a = await mk();
-    expect((await pushEvents(go.baseUrl, a.who, [a.event])).status).toBe(200);
-    const b = await mk();
-    expect((await pushEvents(cf!.baseUrl, b.who, [b.event])).status).toBe(400);
-  });
-
-  test("neither relay applies the streamId shape rule on push", async () => {
-    // Both enforce it on /v1/streams/compact and neither on the push path, so
-    // a stream id that could never be produced by the protocol is storable.
-    for (const [name, base] of [
+// Both relays now share one streamId contract: null / undefined / "" mean "no
+// stream" and are accepted; a present, non-empty id must be the exact shape
+// sealPayload emits. This block used to catch the divergences that gap hid.
+describe.skipIf(!CLOUDFLARE)("streamId validation parity", () => {
+  const relays = () =>
+    [
       ["go", go.baseUrl],
       ["cloudflare", cf!.baseUrl],
-    ] as const) {
+    ] as const;
+
+  test("both relays accept an absent (null) streamId as 'no stream'", async () => {
+    for (const [name, base] of relays()) {
       const who = await createTestIdentity();
       const [event] = await makeEnvelopes(who, 1);
-      const res = await pushEvents(base, who, [{ ...event!, streamId: "x" }]);
+      const res = await pushEvents(base, who, [
+        { ...event!, streamId: null } as never,
+      ]);
       expect([name, res.status]).toEqual([name, 200]);
+      expect([name, await streamCount(base, who)]).toEqual([name, 0]);
     }
   });
 
-  test("an empty streamId destroys an owner's log on Cloudflare, not on Go", async () => {
-    // The defect this whole file exists to catch. Go normalises "" to SQL NULL
-    // and compaction skips NULL streams. Cloudflare stores the empty string,
-    // and '' IS NOT NULL — so every event with an empty streamId is treated as
-    // ONE stream and the 6-hourly cron keeps only the highest event id.
-    //
-    // Fix is two lines, now in two files: reuse the existing STREAM_ID_SHAPE
-    // regex in `validateEnvelope`'s push path (apps/relay-cloudflare/src/handlers.ts),
-    // and store `streamId || null` instead of `streamId ?? null` in
-    // `insertAndCharge` (apps/relay-cloudflare/src/store.ts).
+  test("both relays reject a present, malformed streamId on push", async () => {
+    // "x" is not the 22-char base64url shape the protocol emits. The compaction
+    // grouping key is built from this id, so a malformed one must not reach
+    // storage — enforced on the push path now, not just /v1/streams/compact.
+    for (const [name, base] of relays()) {
+      const who = await createTestIdentity();
+      const [event] = await makeEnvelopes(who, 1);
+      const res = await pushEvents(base, who, [{ ...event!, streamId: "x" }]);
+      expect([name, res.status]).toEqual([name, 400]);
+    }
+  });
+
+  test("an empty streamId is 'no stream' on both, so compaction can't destroy a log", async () => {
+    // The defect this file was written to catch. Cloudflare used to store ""
+    // verbatim, and '' IS NOT NULL — so the 6-hourly cron grouped every
+    // empty-streamId event into ONE stream and kept only the highest event id,
+    // silently deleting the rest. Both relays now store "" as SQL NULL, which
+    // compaction skips, so all three rows survive on each.
     const blank = async (base: string) => {
       const who = await createTestIdentity();
       const events = (await makeEnvelopes(who, 3)).map((event) => ({
@@ -233,16 +239,15 @@ describe.skipIf(!CLOUDFLARE)("divergences between the implementations", () => {
       return who;
     };
 
-    const goWho = await blank(go.baseUrl);
-    expect(await streamCount(go.baseUrl, goWho)).toBe(0); // NULL: not a stream
+    for (const [name, base] of relays()) {
+      const who = await blank(base);
+      expect([name, await streamCount(base, who)]).toEqual([name, 0]);
+    }
 
+    // Run the Cloudflare cron and confirm the destruction no longer happens.
     const cfWho = await blank(cf!.baseUrl);
-    expect(await streamCount(cf!.baseUrl, cfWho)).toBe(1); // three rows, one stream
-
     await runCron(cf!.baseUrl);
-
-    expect(await eventIds(cf!.baseUrl, cfWho)).toHaveLength(1); // 2 of 3 gone
-    expect(await eventIds(go.baseUrl, goWho)).toHaveLength(3); // all survive
+    expect(await eventIds(cf!.baseUrl, cfWho)).toHaveLength(3);
   });
 
   test("compaction leaves well-formed streams alone", async () => {
@@ -385,31 +390,25 @@ describe.skipIf(!CLOUDFLARE)("cloudflare-only behaviour (not contract)", () => {
     expect((await pullEvents(cfDisabled!.baseUrl, who, "")).status).toBe(404);
   });
 
-  test("owner creation is rate limited per IP; the Go relay has no such limiter", async () => {
-    // Cloudflare's relay is a public URL on a metered account, so minting owner
-    // rows is the costliest thing to leave open and gets its own budget
-    // (5/min/IP). Go's fleet cap is MAX_OWNERS alone. The risk: several devices
-    // behind one NAT first-syncing at once are throttled on one relay only.
-    const shared = "203.0.113.7";
-    const statuses: number[] = [];
-    for (let i = 0; i < 7; i += 1) {
-      const who = await createTestIdentity();
-      const res = await pushEvents(cf!.baseUrl, who, [await makeEnvelope(who)], {
-        ip: shared,
-      });
-      statuses.push(res.status);
+  test("owner creation is rate limited per IP on both relays", async () => {
+    // Minting an owner row is the only way to grow the fleet, so it's the
+    // costliest path to leave open — both relays give it a per-IP budget
+    // (5/min). Several devices behind one NAT first-syncing at once are
+    // throttled identically, and a single host can't mint owners unbounded.
+    for (const [name, base, ip] of [
+      ["go", goLimited.baseUrl, "198.51.100.11"],
+      ["cloudflare", cf!.baseUrl, "198.51.100.12"],
+    ] as const) {
+      const statuses: number[] = [];
+      for (let i = 0; i < 7; i += 1) {
+        const who = await createTestIdentity();
+        const res = await pushEvents(base, who, [await makeEnvelope(who)], {
+          ip,
+        });
+        statuses.push(res.status);
+      }
+      expect([name, statuses.includes(429)]).toEqual([name, true]);
     }
-    expect(statuses).toContain(429);
-
-    const goStatuses: number[] = [];
-    for (let i = 0; i < 7; i += 1) {
-      const who = await createTestIdentity();
-      const res = await pushEvents(go.baseUrl, who, [await makeEnvelope(who)], {
-        ip: shared,
-      });
-      goStatuses.push(res.status);
-    }
-    expect(goStatuses).toEqual(Array(7).fill(200));
   });
 });
 
@@ -418,4 +417,118 @@ describe.skipIf(!CLOUDFLARE)("cloudflare-only behaviour (not contract)", () => {
 // RELAY_REQUIRE_CLOUDFLARE=1 makes the missing harness a failure instead.
 describe.skipIf(CLOUDFLARE)("cloudflare coverage", () => {
   test.skip("skipped: wrangler is not installed, so only Go was verified", () => {});
+});
+
+// Both relays bound a pull page by bytes, not just event count (the count cap
+// alone lets one page reach hundreds of MiB at the per-event max and OOM a
+// small VPS / Worker isolate). Exercised against the Go relay, which shares the
+// listEvents byte-budget contract with Cloudflare.
+describe("pull is bounded by bytes, not just event count", () => {
+  test("a byte budget splits a page and the cursor still advances", async () => {
+    const limited = await launchRelay({
+      RATE_LIMIT_ENABLED: "false",
+      MAX_PULL_BYTES: "2000",
+    });
+    try {
+      const who = await createTestIdentity();
+      const events = await makeEnvelopes(who, 10);
+      expect((await pushEvents(limited.baseUrl, who, events)).status).toBe(200);
+
+      const first = await pull(limited.baseUrl, who, "");
+      // The budget forces fewer than all ten events onto the first page...
+      expect(first.events.length).toBeGreaterThan(0);
+      expect(first.events.length).toBeLessThan(events.length);
+
+      // ...and draining on the cursor eventually returns every event.
+      let cursor = first.nextCursor;
+      const seen = new Set(first.events.map((e) => e.eventId));
+      for (let i = 0; i < events.length && seen.size < events.length; i += 1) {
+        const page = await pull(limited.baseUrl, who, cursor);
+        if (page.events.length === 0) break;
+        for (const e of page.events) seen.add(e.eventId);
+        cursor = page.nextCursor;
+      }
+      expect(seen.size).toBe(events.length);
+    } finally {
+      await limited.kill();
+    }
+  });
+});
+
+// A body sent with no Content-Length (a ReadableStream request body => chunked
+// transfer-encoding) slips past the Content-Length pre-filter, so both relays
+// must still bound the streamed read rather than buffer it whole into memory.
+describe("a chunked (Content-Length-less) body is bounded", () => {
+  test("an oversized streamed push is rejected, not buffered whole", async () => {
+    // Tiny caps so the test streams a few hundred KB rather than hundreds of MB.
+    // Go's push cap is MaxEventBytes*MaxEventsPerPush + 64 KiB, so 256 KiB
+    // exceeds both relays' caps here.
+    const tinyEnv = {
+      RATE_LIMIT_ENABLED: "false",
+      MAX_EVENT_BYTES: "1024",
+      MAX_EVENTS_PER_PUSH: "1",
+    };
+    const goTiny = await launchRelay(tinyEnv);
+    const cfTiny = CLOUDFLARE ? await launchCloudflareRelay(tinyEnv) : undefined;
+    const targets: Array<readonly [string, string]> = [["go", goTiny.baseUrl]];
+    if (cfTiny) targets.push(["cloudflare", cfTiny.baseUrl]);
+    try {
+      for (const [name, base] of targets) {
+        const who = await createTestIdentity();
+        let emitted = 0;
+        const body = new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (emitted >= 256 * 1024) {
+              controller.close();
+              return;
+            }
+            emitted += 8192;
+            controller.enqueue(new Uint8Array(8192).fill(120)); // 'x'
+          },
+        });
+        const res = await fetch(`${base}/v1/events`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${who.identity.relayAuth}`,
+            "CF-Connecting-IP": "198.51.100.60",
+          },
+          body,
+          // @ts-expect-error duplex is required for a streaming request body
+          duplex: "half",
+        });
+        expect([name, res.status]).toEqual([name, 413]);
+      }
+    } finally {
+      await goTiny.kill();
+      await cfTiny?.kill();
+    }
+  });
+});
+
+// Both relays enforce an opt-in global storage ceiling (MAX_TOTAL_BYTES) on top
+// of per-owner quotas — without it a few full owners fill the disk / metered
+// store and fail writes for every tenant. Exercised against the Go relay, which
+// shares the ceiling contract with Cloudflare.
+describe("a global storage ceiling bounds the whole relay", () => {
+  test("push returns 507 once the fleet total is exceeded", async () => {
+    const full = await launchRelay({
+      RATE_LIMIT_ENABLED: "false",
+      MAX_TOTAL_BYTES: "1500",
+      MAX_OWNER_BYTES: "100000000", // high, so the per-owner cap isn't what trips
+    });
+    try {
+      const who = await createTestIdentity();
+      let sawFull = false;
+      for (let i = 0; i < 20 && !sawFull; i += 1) {
+        const events = await makeEnvelopes(who, 2);
+        const res = await pushEvents(full.baseUrl, who, events);
+        if (res.status === 507) sawFull = true;
+        else expect(res.status).toBe(200);
+      }
+      expect(sawFull).toBe(true);
+    } finally {
+      await full.kill();
+    }
+  });
 });

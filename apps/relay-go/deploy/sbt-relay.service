@@ -21,6 +21,11 @@ ExecStart=/opt/sbt-relay/relay
 
 Environment=PORT=4100
 Environment=RELAY_DATA_DIR=/var/lib/sbt-relay
+# This unit deploys behind Caddy + Cloudflare (see deploy/Caddyfile), both of
+# which set an authoritative client-IP header, so trust it for the per-IP
+# limiters. NEVER set this when the relay is exposed directly to the internet —
+# the headers become client-forgeable and every per-IP limit is bypassable.
+Environment=TRUST_PROXY_HEADERS=1
 # Quota tunables (match the other relays' defaults; override as needed):
 Environment=MAX_OWNER_BYTES=1073741824
 Environment=MAX_EVENT_BYTES=262144
