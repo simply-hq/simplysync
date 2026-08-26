@@ -256,9 +256,6 @@ disagrees with code-unit order, which is a drift that has actually shipped.
 cd apps/todolist/swift
 # 1) crypto byte-compatibility vs @simplysync/protocol (verify/vectors.json)
 swiftc ../../../Sources/SimplySync/Kit/*.swift verify/main.swift -o /tmp/ssverify && /tmp/ssverify
-# 2) live end-to-end against a running relay (push → pull → decrypt)
-swiftc ../../../Sources/SimplySync/Kit/*.swift verify/itest/main.swift -o /tmp/ssintegration
-/tmp/ssintegration https://your-relay.workers.dev
 ```
 
 **Kotlin** — the JUnit suite covers the canonical BIP39 zero-entropy vector, the

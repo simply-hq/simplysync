@@ -56,7 +56,7 @@ const BLOB_ID_BYTES = 16;
 /** Default plaintext bytes per blob chunk (256 KiB). */
 export const DEFAULT_BLOB_CHUNK_BYTES = 256 * 1024;
 
-export function normalizeRecoveryKey(recoveryKey: string): string {
+function normalizeRecoveryKey(recoveryKey: string): string {
   return recoveryKey.trim();
 }
 
@@ -399,9 +399,6 @@ export async function decryptEnvelope<
   ) as SyncPayload<T, Version>;
 }
 
-export async function sha256Base64Url(value: string): Promise<string> {
-  return sha256Base64UrlBytes(encodeUtf8(value));
-}
 
 export async function sha256Base64UrlBytes(bytes: Uint8Array): Promise<string> {
   const crypto = await getCrypto();

@@ -15,5 +15,5 @@ export function saveRelayUrl(url: string): void {
 
 export function httpTransport(url: string): readonly Transport[] {
   const trimmed = url.trim();
-  return trimmed ? [{ type: "Http", url: trimmed }] : [];
+  return trimmed ? [{ url: trimmed }] : [];
 }

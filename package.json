@@ -29,7 +29,6 @@
     "protocol:demo": "turbo run build && bun run --cwd tools/protocol-demo demo:with-relay",
     "todo": "turbo run build && bun run --cwd apps/todolist/cli start",
     "todo:dev": "turbo run build && bun run --cwd apps/todolist/cli dev",
-    "todo:interop": "turbo run build && bun run --cwd apps/todolist/cli interop",
     "todo:expo": "turbo run build && bun run --cwd apps/todolist/expo start",
     "docs:dev": "turbo run build && bun run --cwd apps/docs dev",
     "kotlin:test": "cd apps/todolist/kotlin && ./gradlew test",
@@ -39,10 +38,9 @@
     "app-port:update": "node scripts/check-native-app-port-drift.mjs --update",
     "sync:diff": "node scripts/diff-sync-port.mjs",
     "vectors:gen": "bun run --cwd packages/simplysync-protocol gen:vectors",
-    "vectors:check": "node scripts/check-vector-corpus.mjs"
+    "vectors:check": "cmp -s packages/simplysync-protocol/test/vectors.json apps/todolist/swift/verify/vectors.json && cmp -s packages/simplysync-protocol/test/vectors.json apps/todolist/kotlin/src/test/resources/vectors.json && echo 'vector corpus in sync' || { echo 'vector corpus drifted - run: bun run vectors:gen' >&2; exit 1; }"
   },
   "devDependencies": {
-    "@types/node": "22.15.30",
     "turbo": "2.9.16"
   },
   "overrides": {

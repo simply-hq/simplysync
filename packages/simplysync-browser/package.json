@@ -9,10 +9,19 @@
     "url": "git+https://github.com/simply-hq/simplysync.git",
     "directory": "packages/simplysync-browser"
   },
-  "keywords": ["local-first", "offline-first", "sync", "indexeddb", "e2ee"],
+  "keywords": [
+    "local-first",
+    "offline-first",
+    "sync",
+    "indexeddb",
+    "e2ee"
+  ],
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -29,13 +38,16 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@simplysync/engine": "0.0.1",
     "@simplysync/protocol": "0.0.1",
     "@types/sql.js": "1.4.11",
     "sql.js": "1.14.1"
   },
   "devDependencies": {
+    "@simplysync/engine": "0.0.1",
     "@types/bun": "1.3.14",
     "typescript": "~5.9.2"
+  },
+  "peerDependencies": {
+    "@simplysync/engine": ">=0.0.1 <0.1.0"
   }
 }

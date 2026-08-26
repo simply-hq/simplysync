@@ -2,18 +2,13 @@ import {
   decryptEnvelope,
   deriveStreamId,
   encryptPayload,
-  getHlcAdmissibility,
-  HLC_MAX_FUTURE_DRIFT_MS,
-  parseHlc,
   SYNC_SCHEMA_VERSION,
-  type HlcAdmissibility,
   type SyncEnvelope,
 } from "@simplysync/protocol";
 import type {
   RelayStatus,
   SchemaDefinition,
   SyncEngineConfig,
-  SyncEngineDeps,
   SyncFailureKind,
   Transport,
 } from "../engine-types.js";
@@ -22,8 +17,7 @@ import {
 } from "./constants.js";
 import type { QueryCache } from "./query-cache.js";
 import type { EngineState } from "./state.js";
-import type { Clock, Store } from "./store.js";
-import type { TabBridge } from "./tab-sync.js";
+import type { Store } from "./store.js";
 import type { EventAdmission } from "./admission.js";
 import {
   type RuntimeSyncPayload,
@@ -35,21 +29,13 @@ export type RelaySync = ReturnType<typeof createRelaySync>;
  * Relay synchronization over HTTP: push the encrypted outbox, pull + decrypt +
  * apply remote events (last-writer-wins by HLC), and poll periodically. The
  * relay only ever sees opaque envelopes — all crypto happens here on the client.
- *
- * With tab coordination (deps.tabSync) only the leader tab syncs: followers'
- * writes reach the relay through the leader (which stages every broadcast
- * event in its own outbox), and relay-pulled rows reach followers through the
- * leader's re-broadcast below.
  */
 export function createRelaySync(
   state: EngineState,
   store: Store,
-  clock: Clock,
   admission: EventAdmission,
   queryCache: QueryCache,
-  bridge: TabBridge,
   schema: SchemaDefinition,
-  deps: SyncEngineDeps,
   config: SyncEngineConfig,
   fetchImpl: typeof fetch,
   schemaVersion: number = SYNC_SCHEMA_VERSION,
@@ -73,23 +59,6 @@ export function createRelaySync(
   // applyRemoteRow is idempotent (LWW) even if one were.
   const SEEN_CAP = 50_000;
   const DEFERRED_REPLAY_LIMIT = 256;
-  const DEFERRED_SCHEMA_TOKEN = JSON.stringify([
-    schemaVersion,
-    ...Object.keys(schema)
-      .sort()
-      .map((table) => [
-        table,
-        Object.entries(schema[table]!)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([name, type]) => [
-            name,
-            type.name,
-            type.sqlite,
-            type.nullable,
-            type.defaultValue,
-          ]),
-      ]),
-  ]);
   // Single-owner mutable state (never touched outside this module).
   let syncTimer: number | null = null;
   let pollIntervalMs = DEFAULT_POLL_MS;
@@ -328,7 +297,6 @@ export function createRelaySync(
   // only rows selected by normal sync passes.
   const replayDeferredRows = (staged: readonly DeferredRow[]): Set<string> => {
     const changed = new Set<string>();
-    const applied: Array<{ eventId: string; payloadJson: string }> = [];
     const { driver } = state;
     if (!driver || staged.length === 0) return changed;
     driver.transaction(() => {
@@ -341,43 +309,34 @@ export function createRelaySync(
           continue;
         }
         const outcome = admission.admit(row.eventId, rawPayload, row.payloadJson);
-        if (outcome.kind === "applied") {
-          changed.add(outcome.table);
-          applied.push({ eventId: row.eventId, payloadJson: row.payloadJson });
-        }
+        if (outcome.kind === "applied") changed.add(outcome.table);
       }
     });
     if (changed.size > 0) queryCache.refreshQueries(changed);
-    bridge.publish(
-      applied.map((e) => ({ ...e, outbox: false })),
-    );
     return changed;
   };
 
-  // Advance at most one opaque page when the supported local schema changed.
-  // The target token + cursor are durable: a large backlog progresses across
-  // syncs without launch-long work, while a completed schema never rescans
-  // permanently opaque rows on later launches or polls.
-  const replayEligibleOpaquePage = (): Set<string> => {
-    const scan = store.opaqueScanState();
-    if (scan.completedToken === DEFERRED_SCHEMA_TOKEN) return new Set<string>();
-    if (scan.activeToken !== DEFERRED_SCHEMA_TOKEN) {
-      store.startOpaqueScan(DEFERRED_SCHEMA_TOKEN);
-    }
-    const cursor =
-      scan.activeToken === DEFERRED_SCHEMA_TOKEN ? scan.cursor : null;
-    const page = store.listOpaqueDeferredEvents(cursor, DEFERRED_REPLAY_LIMIT);
-    const changed = replayDeferredRows(page);
-    if (page.length < DEFERRED_REPLAY_LIMIT) {
-      store.finishOpaqueScan(DEFERRED_SCHEMA_TOKEN);
-    } else {
-      store.advanceOpaqueScan(page[page.length - 1]!.eventId);
+  // Sweep every opaque row once per boot, paged so a large backlog never does
+  // launch-long work in one transaction. A row this schema can now interpret
+  // applies and leaves the queue; the rest stay opaque until a future upgrade.
+  // ponytail: rescans permanently-opaque rows on every boot; bring back a
+  // durable per-schema cursor if a large opaque backlog ever shows up in boot
+  // profiles.
+  const replayOpaqueBacklog = (): Set<string> => {
+    const changed = new Set<string>();
+    let cursor: string | null = null;
+    while (true) {
+      const page = store.listOpaqueDeferredEvents(cursor, DEFERRED_REPLAY_LIMIT);
+      if (page.length === 0) break;
+      for (const table of replayDeferredRows(page)) changed.add(table);
+      if (page.length < DEFERRED_REPLAY_LIMIT) break;
+      cursor = page[page.length - 1]!.eventId;
     }
     return changed;
   };
 
   const replayDeferredAtBoot = async (): Promise<Set<string>> => {
-    const changed = replayEligibleOpaquePage();
+    const changed = replayOpaqueBacklog();
     for (const table of replayDueDeferred()) changed.add(table);
     return changed;
   };
@@ -474,7 +433,6 @@ export function createRelaySync(
     // Everything here is a plain synchronous driver call (select/exec) —
     // nothing async runs inside the transaction callback.
     if (decrypted.length > 0) {
-      const appliedEvents: Array<{ eventId: string; payloadJson: string }> = [];
       driver.transaction(() => {
         for (const { eventId, payloadJson, rawPayload } of decrypted) {
           // Re-check "seen" here (not just in the async phase above): a
@@ -484,10 +442,7 @@ export function createRelaySync(
           const outcome = admission.admit(eventId, rawPayload, payloadJson);
           if (outcome.kind === "applied" || outcome.kind === "unchanged") {
             result.changed.add(outcome.table);
-            if (outcome.kind === "applied") {
-              result.applied += 1;
-              appliedEvents.push({ eventId, payloadJson });
-            }
+            if (outcome.kind === "applied") result.applied += 1;
           } else if (
             outcome.kind === "rejected"
             || outcome.reason === "applyFailed"
@@ -503,9 +458,6 @@ export function createRelaySync(
           store.markEventSeen(eventId);
         }
       });
-      // Relay-pulled rows reach follower tabs here (only the leader pulls).
-      // outbox: false — these events are already on the relay.
-      bridge.publish(appliedEvents.map((e) => ({ ...e, outbox: false })));
     }
 
     // Advance the cursor only after the transaction above has committed, so a
@@ -522,9 +474,6 @@ export function createRelaySync(
   const pruneSeen = () => store.pruneSeen(SEEN_CAP);
 
   const runSyncPass = async (): Promise<void> => {
-    // Followers don't seal or push: their in-memory copy is never at rest, and
-    // the leader stages every broadcast event in its own outbox (tab-sync.ts).
-    if (deps.tabSync && !deps.tabSync.isLeader()) return;
     if (!state.identity || state.syncing) return;
     state.syncing = true;
     const bases = relayBaseUrls();
@@ -544,11 +493,9 @@ export function createRelaySync(
       // crash between a prior write and its seal is repaired by the very
       // first sync() call.
       await sealPendingOutbox();
-      // A quarantined future HLC becomes admissible as wall time advances.
-      // Normal syncs select only a bounded due-clock page. An unfinished
-      // schema-change scan advances by one opaque page; once complete, polls
-      // never revisit permanently opaque rows for that same local schema.
-      replayEligibleOpaquePage();
+      // A quarantined future HLC becomes admissible as wall time advances;
+      // normal syncs select only a bounded due-clock page. Opaque rows are
+      // only reconsidered by the boot sweep above.
       replayDueDeferred();
       if (bases.length === 0) return;
       const changed = new Set<string>();
@@ -745,21 +692,16 @@ export function createRelaySync(
           firstError = caught;
         }
       }
-    } while (
-      syncQueued &&
-      state.identity &&
-      (!deps.tabSync || deps.tabSync.isLeader())
-    );
+    } while (syncQueued && state.identity);
 
     activeSync = null;
     if (failed) throw firstError;
   };
 
   const sync = (): Promise<void> => {
-    // Followers do not own relay work, and an identity-less engine cannot seal
-    // or authenticate. These checks also keep a queued pass from running after
-    // leadership/identity changes while the preceding pass was in flight.
-    if (deps.tabSync && !deps.tabSync.isLeader()) return Promise.resolve();
+    // An identity-less engine cannot seal or authenticate; this also keeps a
+    // queued pass from running after identity changes while the preceding
+    // pass was in flight.
     if (!state.identity) return Promise.resolve();
 
     // A pass is already in flight (commonly the background poller). Queue a
@@ -875,7 +817,6 @@ export function createRelaySync(
   // local writes and on web focus/online.
   const startPolling = () => {
     if (!autoSyncEnabled) return;
-    if (deps.tabSync && !deps.tabSync.isLeader()) return;
     if (syncTimer !== null || state.transports.length === 0) return;
     syncTimer = setInterval(() => {
       void sync().catch(() => undefined);

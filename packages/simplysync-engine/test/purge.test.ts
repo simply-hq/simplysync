@@ -248,7 +248,6 @@ describe("purge drain (relay stream compaction)", () => {
         syncIntervalMs: 3_600_000,
         // Existing apps may still pass the former option. It must not erase the
         // only durable delete marker, even when its window has elapsed.
-        tombstoneRetentionMs: 0,
       });
       return { db, engine };
     };
@@ -258,13 +257,13 @@ describe("purge drain (relay stream compaction)", () => {
 
     const inserted = online.engine.insert("todo", { title: "delete everywhere" });
     if (!inserted.ok) throw new Error("insert failed");
-    online.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    online.engine.setTransports([{ url: "http://relay.test" }]);
     for (let i = 0; i < 40 && events.length < 1; i++) {
       await online.engine.sync();
       await settle(online.engine);
     }
 
-    returning.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    returning.engine.setTransports([{ url: "http://relay.test" }]);
     for (let i = 0; i < 40 && rowCount(returning.db) < 1; i++) {
       await returning.engine.sync();
       await settle(returning.engine);
@@ -282,7 +281,7 @@ describe("purge drain (relay stream compaction)", () => {
     expect(events).toHaveLength(2);
     expect(compactCalls).toBe(0);
 
-    returning.engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    returning.engine.setTransports([{ url: "http://relay.test" }]);
     for (let i = 0; i < 40; i++) {
       await returning.engine.sync();
       const row = returning.db
@@ -329,14 +328,13 @@ describe("purge drain (relay stream compaction)", () => {
       fetch: fetchStub,
     })(schema, {
       name: "purge-retention-safety-test",
-      tombstoneRetentionMs: 0,
     });
     await engine.ready;
 
     const inserted = engine.insert("todo", { title: "keep tombstone" });
     if (!inserted.ok) throw new Error("insert failed");
     engine.delete("todo", inserted.value.id);
-    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    engine.setTransports([{ url: "http://relay.test" }]);
 
     for (let i = 0; i < 40 && engine.getPendingOutboxCount() > 0; i++) {
       await engine.sync();
@@ -413,8 +411,8 @@ describe("purge drain (relay stream compaction)", () => {
     }
 
     engine.setTransports([
-      { type: "Http", url: "http://relay-a.test" },
-      { type: "Http", url: "http://relay-b.test" },
+      { url: "http://relay-a.test" },
+      { url: "http://relay-b.test" },
     ]);
     // Deliver the events first so the purge guard sees them pushed. An
     // explicit sync() can no-op while setTransports' own kick-off sync is
@@ -610,7 +608,7 @@ describe("purge queue retention (no relay to notify)", () => {
 
     // Attaching a relay later is exactly what the retained entry was for: the
     // compaction goes out and only then does the entry leave the queue.
-    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    engine.setTransports([{ url: "http://relay.test" }]);
     await engine.sync();
     expect(queued()).toBe(0);
   });

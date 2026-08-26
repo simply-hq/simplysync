@@ -8,7 +8,7 @@
 //   Kotlin      apps/todolist/kotlin/src/test/kotlin/.../EngineTest.kt
 //
 // Changing a column here without changing the other two makes the platforms
-// disagree — `bun run todo:interop` is what catches that.
+// disagree — `bun run todo:e2e` is what catches that.
 
 import { id, NonEmptyString, SqliteBoolean } from "@simplysync/engine";
 

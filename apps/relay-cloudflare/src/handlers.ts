@@ -13,6 +13,7 @@ import {
   blobExists,
   compactStreams,
   ensureOwnerAuth,
+  type OwnerAuth,
   getBlob,
   listEvents,
   ownerStatus,
@@ -262,29 +263,42 @@ async function handleCompactStreams(
 // Pull (read events)
 // -----------------------------------------------------------------------------
 
+// Shared read-side preamble: ownerId + bearer token, then owner auth without
+// ever creating an owner. A Response result is the error to return as-is.
+async function authedOwner(
+  request: Request,
+  env: Env,
+  cfg: Config,
+  url: URL,
+): Promise<{ ownerId: string; auth: OwnerAuth & { ok: true } } | Response> {
+  const ownerId = url.searchParams.get("ownerId");
+  const relayAuth = getBearerToken(request);
+  if (!ownerId || !relayAuth) {
+    return json({ error: "Missing ownerId or bearer token" }, 401);
+  }
+  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
+    createIfMissing: false,
+  });
+  if (!auth.ok) return authDenied(auth.denial);
+  return { ownerId, auth };
+}
+
 async function handlePull(
   request: Request,
   env: Env,
   cfg: Config,
   url: URL,
 ): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
+  const authed = await authedOwner(request, env, cfg, url);
+  if (authed instanceof Response) return authed;
+  const { ownerId } = authed;
   const after = url.searchParams.get("after") ?? "";
-  const relayAuth = getBearerToken(request);
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
 
   const limit = clampPositiveInteger(
     Number(url.searchParams.get("limit") ?? cfg.defaultEventsPerPull),
     cfg.defaultEventsPerPull,
     cfg.maxEventsPerPull,
   );
-
-  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
-    createIfMissing: false,
-  });
-  if (!auth.ok) return authDenied(auth.denial);
 
   // Pull is the one large response, but do NOT compress it manually here: on
   // Workers, setting Content-Encoding on a hand-gzipped body without
@@ -302,18 +316,9 @@ async function handleUsage(
   cfg: Config,
   url: URL,
 ): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
-  const relayAuth = getBearerToken(request);
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
-    createIfMissing: false,
-  });
-  if (!auth.ok) return authDenied(auth.denial);
-
-  return json({ ownerId, storedBytes: auth.storedBytes });
+  const authed = await authedOwner(request, env, cfg, url);
+  if (authed instanceof Response) return authed;
+  return json({ ownerId: authed.ownerId, storedBytes: authed.auth.storedBytes });
 }
 
 // Per-owner health + quota surface a client app polls to tell apart "relay
@@ -326,16 +331,9 @@ async function handleStatus(
   cfg: Config,
   url: URL,
 ): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
-  const relayAuth = getBearerToken(request);
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
-    createIfMissing: false,
-  });
-  if (!auth.ok) return authDenied(auth.denial);
+  const authed = await authedOwner(request, env, cfg, url);
+  if (authed instanceof Response) return authed;
+  const { ownerId, auth } = authed;
 
   const info = await ownerStatus(env, ownerId);
   const usedBytes = auth.storedBytes;
@@ -351,7 +349,7 @@ async function handleStatus(
       headSeq: info.headSeq,
       streams: info.streams,
       events: info.events,
-      createdAt: info.createdAt,
+      createdAt: auth.createdAt,
     },
   });
 }
@@ -428,16 +426,9 @@ async function handleBlobGet(
   url: URL,
   hash: string,
 ): Promise<Response> {
-  const ownerId = url.searchParams.get("ownerId");
-  const relayAuth = getBearerToken(request);
-  if (!ownerId || !relayAuth) {
-    return json({ error: "Missing ownerId or bearer token" }, 401);
-  }
-
-  const auth = await ensureOwnerAuth(env, cfg, ownerId, relayAuth, {
-    createIfMissing: false,
-  });
-  if (!auth.ok) return authDenied(auth.denial);
+  const authed = await authedOwner(request, env, cfg, url);
+  if (authed instanceof Response) return authed;
+  const { ownerId } = authed;
 
   const object = await getBlob(env, ownerId, hash);
   if (!object) return json({ error: "Unknown blob" }, 404);

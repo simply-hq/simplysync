@@ -2,10 +2,8 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-
-const sleep = (milliseconds) =>
-  new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 
 export function deployedRelayUrl(wranglerOutput) {
   const entries = wranglerOutput
@@ -31,7 +29,7 @@ export function deployedRelayUrl(wranglerOutput) {
 
 export async function verifyRelayHealth(
   relayUrl,
-  { fetchImpl = fetch, intervalMs = 1_000, timeoutMs = 30_000 } = {},
+  { intervalMs = 1_000, timeoutMs = 30_000 } = {},
 ) {
   const healthUrl = new URL(relayUrl);
   if (!/^https?:$/u.test(healthUrl.protocol)) {
@@ -46,16 +44,10 @@ export async function verifyRelayHealth(
 
   do {
     const remaining = Math.max(1, deadline - Date.now());
-    const controller = new AbortController();
-    const abortTimer = setTimeout(
-      () => controller.abort(),
-      Math.min(5_000, remaining),
-    );
-
     try {
-      const response = await fetchImpl(healthUrl, {
+      const response = await fetch(healthUrl, {
         headers: { accept: "application/json" },
-        signal: controller.signal,
+        signal: AbortSignal.timeout(Math.min(5_000, remaining)),
       });
       const body = await response.text();
       if (response.ok) {
@@ -68,8 +60,6 @@ export async function verifyRelayHealth(
       lastFailure = `${response.status} ${body.slice(0, 160)}`.trim();
     } catch (error) {
       lastFailure = error instanceof Error ? error.message : String(error);
-    } finally {
-      clearTimeout(abortTimer);
     }
 
     const wait = Math.min(intervalMs, Math.max(0, deadline - Date.now()));

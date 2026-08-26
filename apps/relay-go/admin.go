@@ -2,9 +2,7 @@ package main
 
 import (
 	"crypto/subtle"
-	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -140,9 +138,3 @@ func handleAdmin(cfg Config, st *store, w http.ResponseWriter, r *http.Request) 
 
 	writeJSON(w, http.StatusMethodNotAllowed, errBody("Method not allowed"))
 }
-
-// --- small format helpers used in warning strings ---------------------------
-
-func pct0(x float64) string { return fmt.Sprintf("%.0f%%", x*100) }
-func itoa(n int64) string   { return strconv.FormatInt(n, 10) }
-func f2(x float64) string   { return fmt.Sprintf("%.2f", x) }

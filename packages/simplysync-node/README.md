@@ -21,7 +21,7 @@ const deps = createNodeSyncDeps({
 });
 const engine = createSync(deps)(schema, {
   name: "todos",
-  transports: [{ type: "Http", url: "https://relay.example.com" }],
+  transports: [{ url: "https://relay.example.com" }],
 });
 
 await engine.ready;
@@ -42,20 +42,15 @@ in the extension support path:
 
 ```ts
 import { environment, LocalStorage } from "@raycast/api";
-import {
-  createKeyValueSecureStorage,
-  createNodeSyncDeps,
-} from "@simplysync/node";
-
-const secureStorage = createKeyValueSecureStorage({
-  getItem: (key) => LocalStorage.getItem<string>(key),
-  setItem: (key, value) => LocalStorage.setItem(key, value),
-  removeItem: (key) => LocalStorage.removeItem(key),
-});
+import { createNodeSyncDeps } from "@simplysync/node";
 
 export const syncDeps = createNodeSyncDeps({
   directory: environment.supportPath,
-  secureStorage,
+  secureStorage: {
+    getItem: async (key) => (await LocalStorage.getItem<string>(key)) ?? null,
+    setItem: (key, value) => LocalStorage.setItem(key, value),
+    removeItem: (key) => LocalStorage.removeItem(key),
+  },
 });
 ```
 

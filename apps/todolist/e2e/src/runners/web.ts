@@ -2,7 +2,7 @@ import { openSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Mailbox } from "../mailbox.ts";
-import type { Runner } from "./runner.ts";
+import { stopRunner, type Runner } from "./runner.ts";
 
 /** Drives the TodoList browser schema through the production TypeScript engine. */
 export class WebRunner implements Runner {
@@ -33,13 +33,7 @@ export class WebRunner implements Runner {
 
   async stop(): Promise<void> {
     if (!this.proc) return;
-    try {
-      await this.mailbox.request({ cmd: "shutdown", device: "_" }, 10_000);
-    } catch {
-      // fall through to hard kill
-    }
-    await Promise.race([this.proc.exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-    this.proc.kill();
+    await stopRunner(this.proc, this.mailbox, 5_000);
     this.proc = null;
   }
 }

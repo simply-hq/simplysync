@@ -109,9 +109,10 @@ sudo systemctl start sbt-relay
 
 ## Operational dashboard
 
-The relay ships a built-in ops dashboard for capacity planning — disk usage and
-projected runway, DB growth, memory/load, request rate, per-endpoint counts, and
-top owners by storage, with 24h trend sparklines.
+The relay ships a built-in ops dashboard for its own counters — owners, events,
+stored bytes, request rate, per-endpoint counts, and top owners by storage.
+Host capacity (disk, memory, load) is the platform's job: `df`, `free`, and
+your process supervisor already report it.
 
 It is hardened against discovery and brute force:
 

@@ -27,7 +27,6 @@ Kotlin, and Swift — and all four must stay wire-compatible.
 | Go relay build/vet | `cd apps/relay-go && go build ./... && go vet ./...` | Go 1.25 toolchain (auto-fetched via `GOTOOLCHAIN=auto`), cgo-free |
 | Dev: canonical relay | `bun run relay:go` | Go relay, ciphertext-only store |
 | Dev: canonical app | `bun run todo:dev` | relay + two devices converging; stays up for `bun run todo …` |
-| Cross-platform check | `bun run todo:interop` | one owner across TS/Swift/Kotlin; skips missing toolchains loudly |
 | TodoList E2E | `bun run todo:e2e` | scenario matrix across local web, Swift, and Kotlin clients |
 | Protocol diagnostic | `bun run protocol:demo` | spins up a relay and exposes the raw envelope flow |
 | Dev: native todo | `bun run todo:expo` | Expo TodoList: expo-sqlite + expo-secure-store |
@@ -42,7 +41,7 @@ clients directly from this repository and does not require private app repos.
 ## Map
 
 - `packages/simplysync-protocol` — protocol core: identity, key derivation, AES-GCM envelopes, HLC, encoding. Pinned.
-- `packages/simplysync-engine` — schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted). `engine/admission.ts` is the single ladder deciding what happens to an arriving event — apply, defer, or reject — shared by the relay pull, the deferred replay, and the cross-tab bridge; change it there, not per path.
+- `packages/simplysync-engine` — schema + Kysely query layer + sync engine (where payloads get encrypted/decrypted). `engine/admission.ts` is the single ladder deciding what happens to an arriving event — apply, defer, or reject — shared by the relay pull and the deferred replay; change it there, not per path.
 - `packages/simplysync-react` — React hooks for binding the engine into a UI.
 - `packages/simplysync-react-native` — React Native bindings plus Expo SQLite, SecureStore, SQLCipher, and lifecycle adapters.
 - `packages/simplysync-node` — `node:sqlite` lifecycle adapters for Node, Raycast, and CLI clients.

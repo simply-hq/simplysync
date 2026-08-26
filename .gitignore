@@ -100,3 +100,7 @@ agent-native.json
 # leaves a dangling link in every fresh clone; the repo-owned host-relay and
 # clone-simplysync links above are the only ones that resolve.
 .claude/skills/improve
+
+# Agent-tool scratch state, not project source
+.hallmark/
+.impeccable/

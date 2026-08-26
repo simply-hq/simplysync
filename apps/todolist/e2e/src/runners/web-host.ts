@@ -13,6 +13,7 @@ import {
   type Transport,
 } from "@simplysync/engine";
 import { schema } from "../../../web/schema.ts";
+import { memorySecureStorage, memorySnapshotStore } from "../../../web/test-support.ts";
 import { writeAtomic } from "../mailbox.ts";
 
 const mailbox = process.env.SIMPLYSYNC_TODO_E2E_MAILBOX;
@@ -31,20 +32,11 @@ let running = true;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function createDevice(id: string, recoveryKey: string, deviceId: string): Promise<Device> {
-  const secureMap = new Map<string, string>([
+  const secureStorage: SecureStorage = memorySecureStorage([
     [`${id}:mnemonic`, recoveryKey],
     [`${id}:deviceId`, deviceId],
   ]);
-  const secureStorage: SecureStorage = {
-    getItem: (key) => secureMap.get(key) ?? null,
-    setItem: (key, value) => void secureMap.set(key, value),
-    removeItem: (key) => void secureMap.delete(key),
-  };
-  const snapshots = new Map<string, Uint8Array>();
-  const store: SnapshotStore = {
-    load: async (name) => snapshots.get(name) ?? null,
-    save: async (name, bytes) => void snapshots.set(name, bytes),
-  };
+  const store: SnapshotStore = memorySnapshotStore();
   let driver!: SqliteDriver;
   const factory = createSqlJsDriverFactory({
     store,
@@ -93,7 +85,7 @@ async function sync(device: Device, relayUrl: string) {
   const relay = normalizeRelay(relayUrl);
   await waitForOutboxSeal(device);
   const before = Math.max(0, ...device.engine.getSyncLog(100).map((entry) => entry.seq));
-  device.engine.setTransports([{ type: "Http", url: relay } satisfies Transport]);
+  device.engine.setTransports([{ url: relay } satisfies Transport]);
   await device.engine.sync();
   await settle(device.engine);
   const state = device.engine.getSyncState();
@@ -117,7 +109,7 @@ async function sync(device: Device, relayUrl: string) {
 async function syncExpectError(device: Device, relayUrl: string) {
   await waitForOutboxSeal(device);
   device.engine.setTransports([
-    { type: "Http", url: normalizeRelay(relayUrl) } satisfies Transport,
+    { url: normalizeRelay(relayUrl) } satisfies Transport,
   ]);
   await device.engine.sync();
   await settle(device.engine);
@@ -196,7 +188,7 @@ async function handle(command: Record<string, unknown>): Promise<unknown> {
     case "restoreOwner": {
       const relayUrl = normalizeRelay(String(command.relayUrl));
       device.engine.setTransports([
-        { type: "Http", url: relayUrl } satisfies Transport,
+        { url: relayUrl } satisfies Transport,
       ]);
       try {
         // setTransports starts a pass immediately. Let that old-owner pass

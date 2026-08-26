@@ -35,10 +35,6 @@ export interface ExpoSqliteDriverFactoryOptions {
 }
 
 export interface ExpoSqlCipherOptions {
-  /** SecureStore namespace for per-engine database keys. */
-  readonly keyPrefix?: string;
-  /** Random passphrase size. Default: 32 bytes. */
-  readonly keyBytes?: number;
   readonly secureStoreOptions?: ExpoSecureStorageOptions["secureStoreOptions"];
 }
 
@@ -85,20 +81,13 @@ export function createExpoSqliteDriverFactory(
   };
 }
 
-/**
- * Creates a SecureStore-backed SQLCipher key provider. It is exported so apps
- * with custom database-opening code can use the same key lifecycle.
- */
-export function createExpoSqlCipherKeyProvider(
+/** SecureStore-backed SQLCipher key provider: one random 32-byte key per engine. */
+function createExpoSqlCipherKeyProvider(
   secureStore: ExpoSecureStoreApi,
   options: ExpoSqlCipherOptions = {},
 ): ExpoDatabaseKeyProvider {
-  const keyBytes = options.keyBytes ?? 32;
-  if (!Number.isSafeInteger(keyBytes) || keyBytes < 16) {
-    throw new Error("SimplySync SQLCipher keys must contain at least 16 bytes.");
-  }
   const storage = createExpoSecureStorage(secureStore, {
-    keyPrefix: options.keyPrefix ?? "simplysync.sqlcipher.",
+    keyPrefix: "simplysync.sqlcipher.",
     secureStoreOptions: options.secureStoreOptions,
   });
 
@@ -107,7 +96,7 @@ export function createExpoSqlCipherKeyProvider(
     const existing = await storage.getItem(storageKey);
     if (existing) return existing;
 
-    const bytes = new Uint8Array(keyBytes);
+    const bytes = new Uint8Array(32);
     globalThis.crypto.getRandomValues(bytes);
     const generated = Array.from(
       bytes,

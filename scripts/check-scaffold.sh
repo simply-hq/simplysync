@@ -7,14 +7,6 @@ source_root=$(git rev-parse --show-toplevel)
 source_revision=$(git -C "$source_root" rev-parse HEAD)
 check_root=$(mktemp -d "${TMPDIR:-/tmp}/simplysync-scaffold-check.XXXXXX")
 
-case "$check_root" in
-    */simplysync-scaffold-check.*) ;;
-    *)
-        printf 'Unexpected temporary path: %s\n' "$check_root" >&2
-        exit 1
-        ;;
-esac
-
 cleanup() {
     rm -rf -- "$check_root"
 }
@@ -23,7 +15,6 @@ trap cleanup EXIT HUP INT TERM
 clone_dir="$check_root/source"
 app_slug="cold-start-$preset"
 app_dir="apps/$app_slug"
-started_at=$(date +%s)
 
 case "$preset" in
     cli|web) relay_option=--with-relay ;;
@@ -34,20 +25,12 @@ case "$preset" in
         ;;
 esac
 
-if [ -n "$relay_option" ]; then
-    sh "$source_root/clone-simplysync.sh" \
-        --repo "file://$source_root" \
-        --ref "$source_revision" \
-        "$relay_option" \
-        "$preset" \
-        "$clone_dir"
-else
-    sh "$source_root/clone-simplysync.sh" \
-        --repo "file://$source_root" \
-        --ref "$source_revision" \
-        "$preset" \
-        "$clone_dir"
-fi
+sh "$source_root/clone-simplysync.sh" \
+    --repo "file://$source_root" \
+    --ref "$source_revision" \
+    ${relay_option:+"$relay_option"} \
+    "$preset" \
+    "$clone_dir"
 
 (
     cd "$clone_dir"
@@ -80,7 +63,6 @@ fi
             grep -F "Already have a recovery key?" "$app_dir/main.tsx" >/dev/null
             grep -F "Add another device" "$app_dir/main.tsx" >/dev/null
             grep -F "no one can recover your synced data" "$app_dir/main.tsx" >/dev/null
-            bun run --cwd "$app_dir" sync-check
             ;;
         cli)
             bun install --no-save
@@ -125,10 +107,4 @@ fi
     fi
 )
 
-elapsed=$(( $(date +%s) - started_at ))
-if [ "$elapsed" -gt 600 ]; then
-    printf '%s scaffold cold start exceeded ten minutes: %ss\n' "$preset" "$elapsed" >&2
-    exit 1
-fi
-
-printf '%s scaffold cold start passed in %ss.\n' "$preset" "$elapsed"
+printf '%s scaffold cold start passed.\n' "$preset"

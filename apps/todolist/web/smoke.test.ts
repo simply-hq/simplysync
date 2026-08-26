@@ -13,35 +13,13 @@ import {
 } from "@simplysync/browser";
 import { schema, type TodoSchema } from "./schema";
 import { createTodoListQuery } from "./todo-query";
+import { memorySecureStorage, memorySnapshotStore } from "./test-support";
 
 const WASM_PATH = Bun.resolveSync("sql.js/dist/sql-wasm.wasm", import.meta.dir);
 
-// In-memory stand-ins for the browser's IndexedDB + localStorage.
-function makeStore(): SnapshotStore & { snapshots: Map<string, Uint8Array> } {
-  const snapshots = new Map<string, Uint8Array>();
-  return {
-    snapshots,
-    async load(name) {
-      return snapshots.get(name) ?? null;
-    },
-    async save(name, bytes) {
-      snapshots.set(name, bytes);
-    },
-  };
-}
-
-function makeSecureStorage() {
-  const map = new Map<string, string>();
-  return {
-    getItem: (k: string) => map.get(k) ?? null,
-    setItem: (k: string, v: string) => void map.set(k, v),
-    removeItem: (k: string) => void map.delete(k),
-  };
-}
-
 function makeEngine(
   store: SnapshotStore,
-  secureStorage: ReturnType<typeof makeSecureStorage>,
+  secureStorage: ReturnType<typeof memorySecureStorage>,
 ): SyncEngine<TodoSchema> {
   return createSync({
     createSqliteDriver: createSqlJsDriverFactory({
@@ -84,8 +62,8 @@ async function waitFor<T>(fn: () => T | null | undefined, ms = 3000): Promise<T>
   throw new Error("waitFor timed out");
 }
 
-const store = makeStore();
-const secureStorage = makeSecureStorage();
+const store = memorySnapshotStore();
+const secureStorage = memorySecureStorage();
 
 afterAll(async () => {
   await closeSqlJsDatabases();

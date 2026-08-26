@@ -45,49 +45,10 @@ import {
   putBlob,
 } from "./conformance/http";
 
+import { eventIds, pull, seed, storedBytes } from "./conformance/reads";
+
 // Cloudflare's first boot on a machine may have to fetch and unpack workerd.
 const BOOT_MS = 240_000;
-
-// --- reads, phrased the way a client would phrase them ----------------------
-
-interface PullBody {
-  readonly events: SyncEnvelope[];
-  readonly nextCursor: string;
-}
-
-async function pull(
-  base: string,
-  who: TestIdentity,
-  after = "",
-  limit?: number,
-): Promise<PullBody> {
-  const res = await pullEvents(base, who, after, { limit });
-  expect(res.status).toBe(200);
-  return (await res.json()) as PullBody;
-}
-
-async function eventIds(base: string, who: TestIdentity): Promise<string[]> {
-  return (await pull(base, who)).events.map((event) => event.eventId);
-}
-
-async function storedBytes(base: string, who: TestIdentity): Promise<number> {
-  const res = await getUsage(base, who);
-  expect(res.status).toBe(200);
-  return ((await res.json()) as { storedBytes: number }).storedBytes;
-}
-
-/** A fresh owner with `count` events already pushed. */
-async function seed(
-  base: string,
-  count = 3,
-): Promise<{ who: TestIdentity; events: SyncEnvelope[] }> {
-  const who = await createTestIdentity();
-  const events = await makeEnvelopes(who, count);
-  const res = await pushEvents(base, who, events);
-  expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({ accepted: count, duplicate: 0 });
-  return { who, events };
-}
 
 /**
  * Spend a limiter's budget until it answers 429, in parallel waves.

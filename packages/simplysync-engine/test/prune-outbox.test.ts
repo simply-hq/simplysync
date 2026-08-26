@@ -30,7 +30,7 @@ describe("pruneOutbox (store)", () => {
     const { driver, db } = memoryDriver();
     const state = createEngineState({ name: "prune" });
     state.driver = driver;
-    state.transports = bases.map((url) => ({ type: "Http" as const, url }));
+    state.transports = bases.map((url) => ({ url }));
     const store = createStore(state, schema, { name: "prune" });
     store.ensureSchema();
     return { store, db, bases };
@@ -102,7 +102,7 @@ describe("sync prunes the outbox automatically", () => {
     }
     expect(outboxCount(handle.db)).toBe(2);
 
-    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    engine.setTransports([{ url: "http://relay.test" }]);
     for (let i = 0; i < 40 && outboxCount(handle.db) > 0; i++) {
       await engine.sync();
       await new Promise((r) => setTimeout(r, 20));

@@ -64,7 +64,7 @@ async function makeHarness(
     })(schema, {
       name: "pull-batching",
       externalAppOwner: { id: "", mnemonic: MNEMONIC, writeKey: "" },
-      transports: [{ type: "Http", url: RELAY }],
+      transports: [{ url: RELAY }],
       schemaVersion,
       // The supported off-switch, in place of the earlier trick of assigning
       // state.transports behind setTransports' back to keep the timers quiet.

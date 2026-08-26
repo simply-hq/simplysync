@@ -1,5 +1,5 @@
-// Engine-internal table names + the legacy-import version, shared by the store,
-// relay, and lifecycle modules.
+// Engine-internal table names, shared by the store, relay, and lifecycle
+// modules.
 
 export const SYNC_OUTBOX_TABLE = "_sync_outbox";
 // Exact per-relay delivery acknowledgements for outbox rows. Push cursors are
@@ -31,8 +31,3 @@ export const SYNC_PURGE_TABLE = "_sync_purge";
 // tombstones are retained until the protocol has a cross-device delete
 // watermark; an elapsed grace period alone cannot prove every device saw one.
 export const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-
-// Bumped when the legacy importer changes. Stored in _sync_meta as
-// "legacyImported". After an explicit erase/restore we set it so the one-time
-// legacy import does NOT resurrect the wiped data on the next boot.
-export const LEGACY_IMPORT_VERSION = 3;

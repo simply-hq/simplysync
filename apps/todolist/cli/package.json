@@ -6,7 +6,6 @@
   "scripts": {
     "start": "bun run src/cli.ts",
     "dev": "bun run src/dev.ts",
-    "interop": "bun run src/interop.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf data"

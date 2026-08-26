@@ -132,7 +132,7 @@ export async function openDevice(options: DeviceOptions): Promise<TodoEngine> {
   })(todoSchema, {
     name: options.name,
     ...(options.relayUrl
-      ? { transports: [{ type: "Http" as const, url: options.relayUrl }] }
+      ? { transports: [{ url: options.relayUrl }] }
       : {}),
     syncIntervalMs: 1000,
   });
@@ -144,7 +144,7 @@ export async function openDevice(options: DeviceOptions): Promise<TodoEngine> {
 /**
  * Stop the background sync poller so a short-lived process (a CLI, a script, a
  * test) can exit. The poller is the engine's only long-lived timer, and clearing
- * the transports is what stops it — the disposer `useOwner()` returns does the
+ * the transports is what stops it — `setTransports([])` does the
  * same thing. Long-running UIs never need this.
  */
 export function closeDevice(engine: TodoEngine): void {

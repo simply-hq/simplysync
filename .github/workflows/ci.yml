@@ -48,13 +48,8 @@ jobs:
       # clean runner does not spend the whole deadline downloading Go/sqlite.
       - run: go build ./...
         working-directory: apps/relay-go
-      # The relay's own unit tests. `bun run test` covers the relay only as a
-      # black box over HTTP, so the pure functions guarding every request —
-      # HLC classification, bearer parsing, envelope and stream-id validation —
-      # are only exercised here. `-race` because a relay is concurrent by
-      # definition and quota accounting had a lock-scope bug before (SECURITY-03).
-      - run: go test -race ./...
-        working-directory: apps/relay-go
+      # The relay's own `go test -race` unit tests run in the go-relay job
+      # (check-selective-clone.sh relay-go), not here.
       # The relay contract is asserted of BOTH relay implementations, and the
       # Cloudflare half skips itself when wrangler can't be resolved. Skipping
       # is right on a machine that only has Go; in CI it would be a green run

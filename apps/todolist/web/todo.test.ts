@@ -4,45 +4,21 @@
 //   bun test apps/todolist/web/todo.test.ts
 import { expect, test } from "bun:test";
 import { createSync, type SyncEngine } from "@simplysync/engine";
-import {
-  closeSqlJsDatabases,
-  createSqlJsDriverFactory,
-  type SnapshotStore,
-} from "@simplysync/browser";
+import { closeSqlJsDatabases, createSqlJsDriverFactory } from "@simplysync/browser";
 import { schema, type TodoSchema } from "./schema";
 import { createTodoListQuery } from "./todo-query";
+import { memorySecureStorage, memorySnapshotStore } from "./test-support";
 
 const WASM_PATH = Bun.resolveSync("sql.js/dist/sql-wasm.wasm", import.meta.dir);
-
-function makeStore(): SnapshotStore {
-  const snapshots = new Map<string, Uint8Array>();
-  return {
-    async load(name) {
-      return snapshots.get(name) ?? null;
-    },
-    async save(name, bytes) {
-      snapshots.set(name, bytes);
-    },
-  };
-}
-
-function makeSecureStorage() {
-  const values = new Map<string, string>();
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => void values.set(key, value),
-    removeItem: (key: string) => void values.delete(key),
-  };
-}
 
 function makeEngine(): SyncEngine<TodoSchema> {
   return createSync({
     createSqliteDriver: createSqlJsDriverFactory({
-      store: makeStore(),
+      store: memorySnapshotStore(),
       locateFile: () => WASM_PATH,
       writerLock: "disabled",
     }),
-    secureStorage: makeSecureStorage(),
+    secureStorage: memorySecureStorage(),
     reloadApp: () => undefined,
   })(schema, { name: "todolist-web-contract" });
 }

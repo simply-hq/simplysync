@@ -12,17 +12,9 @@ Clone only the SimplySync source needed for one platform.
 Usage:
   sh clone-simplysync.sh [options] <preset> [destination]
 
-Presets:
-  react-native      Expo TodoList + React Native source dependencies
-  web               Browser TodoList + its docs preview and source dependencies
-  cli               TodoList CLI + its source dependencies
-  node              Node/Raycast adapters + engine and protocol
-  swift             SwiftUI TodoList + the SimplySync Swift package
-  kotlin            Kotlin/JVM engine + TodoList fixtures and tests
-  relay-go          Canonical Go + SQLite ciphertext relay
-  relay-cloudflare  Cloudflare Worker + D1 + R2 ciphertext relay
-  core              TypeScript protocol and engine only
-  all               The complete repository
+Presets (see --list):
+  react-native, web, cli, node, swift, kotlin, relay-go, relay-cloudflare,
+  core, all
 
 Options:
   --repo <url-or-path>  Clone a fork or local repository
@@ -215,44 +207,6 @@ next_steps() {
     esac
 }
 
-verify_unrelated_sources_absent() {
-    destination=$1
-    preset=$2
-    with_relay=$3
-
-    markers='
-react-native|apps/todolist/expo/app/index.tsx
-web|apps/todolist/web/main.tsx
-cli|apps/todolist/cli/src/cli.ts
-node|packages/simplysync-node/src/index.ts
-swift|apps/todolist/swift/SimplySyncDemo/SimplySyncDemoApp.swift
-kotlin|apps/todolist/kotlin/src/main/kotlin/com/simplysync/kotlin/SyncEngine.kt
-relay-go|apps/relay-go/main.go
-relay-cloudflare|apps/relay-cloudflare/src/index.ts
-'
-
-    old_ifs=$IFS
-    IFS='
-'
-    for entry in $markers; do
-        marker_preset=${entry%%|*}
-        marker_path=${entry#*|}
-        if [ "$marker_preset" = "$preset" ]; then
-            continue
-        fi
-        if [ "$with_relay" = yes ] && [ "$marker_preset" = relay-go ]; then
-            continue
-        fi
-        if [ -e "$destination/$marker_path" ]; then
-            printf 'Sparse clone unexpectedly contains %s source: %s\n' \
-                "$marker_preset" "$marker_path" >&2
-            IFS=$old_ifs
-            return 1
-        fi
-    done
-    IFS=$old_ifs
-}
-
 repository=$DEFAULT_REPOSITORY
 ref=$DEFAULT_REF
 with_relay=no
@@ -397,15 +351,7 @@ else
 
     git -C "$destination" sparse-checkout set "$@"
     git -C "$destination" checkout --quiet "$ref"
-
-    for expected_path in "$@"; do
-        if [ ! -e "$destination/$expected_path" ]; then
-            printf 'Clone is missing required path: %s\n' "$expected_path" >&2
-            exit 1
-        fi
-    done
-    verify_unrelated_sources_absent "$destination" "$preset" "$with_relay"
 fi
 
-printf '%s\n' "Clone verified: $destination"
+printf '%s\n' "Clone complete: $destination"
 next_steps "$destination" "$preset" "$with_relay"

@@ -49,18 +49,6 @@ a:active {
   color: var(--color-ink);
 }
 
-.pg-visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .pg-topnav {
   width: min(100%, 1180px);
   min-height: var(--topbar-h);
@@ -489,8 +477,7 @@ button.pg-danger {
   margin-left: var(--space-2xs);
 }
 
-.pg-hint,
-.pg-note {
+.pg-hint {
   margin: 0;
   color: var(--color-ink-2);
   font-size: var(--text-sm);
@@ -624,10 +611,6 @@ button.pg-danger {
 
 .pg-badge-sync {
   color: var(--color-accent-2);
-}
-
-.pg-badge-ok {
-  color: var(--color-pos);
 }
 
 .pg-badge-err {

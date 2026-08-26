@@ -61,7 +61,7 @@ function makeDevice(fetchImpl: typeof fetch, name: string) {
 
 /** Attach the fake relay and wait for the connect-time sync it triggers. */
 async function connect(engine: SyncEngine<typeof schema>): Promise<void> {
-  const transports: Transport[] = [{ type: "Http", url: RELAY_URL }];
+  const transports: Transport[] = [{ url: RELAY_URL }];
   engine.setTransports(transports);
   await settle(engine);
 }
@@ -533,7 +533,7 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
         isDeleted: 0,
       },
     });
-    oldEngine.setTransports([{ type: "Http", url: RELAY_URL }]);
+    oldEngine.setTransports([{ url: RELAY_URL }]);
     await settle(oldEngine as SyncEngine<typeof schema>);
     expect(
       db.prepare(`select count(*) as c from _sync_deferred`).get(),
@@ -695,7 +695,11 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     expect(engine.getSyncLog(5).some((entry) => entry.kind === "applyFailed")).toBe(false);
   });
 
-  test("opaque replay is schema-gated, bounded, and advances without starvation", async () => {
+  test("opaque rows are swept once at boot and left alone by normal syncs", async () => {
+    // Stage a backlog bigger than one replay page, then boot a fresh engine
+    // over the same database: the boot sweep must consider every opaque row
+    // (not just the first page), retain the still-unknown ones, and normal
+    // syncs afterwards must not rewrite them.
     const relay = fakeRelay();
     const { engine, db } = makeDevice(relay.fetch, "bounded-deferred-replay");
     await engine.ready;
@@ -718,23 +722,13 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
         }),
       );
     }
-    db.prepare(
-      `delete from _sync_meta where key in ('deferred:opaque:activeSchema', 'deferred:opaque:completeSchema', 'deferred:opaque:cursor')`,
-    ).run();
 
-    await engine.sync();
-    const firstCursor = db
-      .prepare(`select value from _sync_meta where key = 'deferred:opaque:cursor'`)
-      .get() as { value: string };
-    expect(firstCursor.value).not.toBe("");
-    expect(
-      db.prepare(`select value from _sync_meta where key = 'deferred:opaque:completeSchema'`).get(),
-    ).toBeNull();
-
-    await engine.sync();
-    expect(
-      db.prepare(`select value from _sync_meta where key = 'deferred:opaque:completeSchema'`).get(),
-    ).not.toBeNull();
+    const rebooted = createSync({
+      createSqliteDriver: () => memoryDriver(db).driver,
+      secureStorage: memoryStorage(),
+      fetch: relay.fetch,
+    })(schema, { name: "bounded-deferred-replay", syncIntervalMs: 3_600_000 });
+    await rebooted.ready;
     expect(db.prepare(`select count(*) as c from _sync_deferred`).get()).toEqual({ c: 300 });
 
     db.exec(`create table deferred_rewrites (count integer not null)`);
@@ -743,7 +737,7 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
       create trigger count_deferred_rewrites after insert on _sync_deferred
       begin update deferred_rewrites set count = count + 1; end
     `);
-    await engine.sync();
+    await rebooted.sync();
     expect(db.prepare(`select count from deferred_rewrites`).get()).toEqual({ count: 0 });
   });
 

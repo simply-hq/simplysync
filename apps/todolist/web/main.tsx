@@ -46,9 +46,32 @@ async function reloadApp(): Promise<void> {
   location.reload();
 }
 
-function buildQueries(engine: Engine) {
-  const todos = createTodoListQuery(engine);
-  return { todos };
+type Notify = (text: string | null) => void;
+
+async function copyRecoveryKey(owner: AppOwner, setMessage: Notify, setError: Notify) {
+  try {
+    await navigator.clipboard.writeText(owner.recoveryKey);
+    setMessage("Recovery key copied.");
+    setError(null);
+  } catch (caught) {
+    setError(caught instanceof Error ? caught.message : String(caught));
+  }
+}
+
+async function restoreOwner(
+  ownerStore: BrowserOwnerStore,
+  snapshots: IndexedDbSnapshotStore,
+  credential: string,
+  setError: Notify,
+) {
+  try {
+    await ownerStore.setRecoveryKey(credential);
+    await closeSqlJsDatabases();
+    await snapshots.clear();
+    location.reload();
+  } catch (caught) {
+    setError(caught instanceof Error ? caught.message : String(caught));
+  }
 }
 
 function rawSelect(dbName: string, sql: string): Record<string, unknown>[] {
@@ -283,16 +306,16 @@ function Internals({ name }: { name: string }) {
 function DeviceBody({
   name,
   label,
-  queries,
+  todosQuery,
   relayUrl,
 }: {
   name: string;
   label: string;
-  queries: { todos: Query<TodoRow> };
+  todosQuery: Query<TodoRow>;
   relayUrl: string;
 }) {
   const engine = useSync<TodoSchema>();
-  const todos = useQuery(queries.todos);
+  const todos = useQuery(todosQuery);
   const syncState = useSyncState();
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const completed = todos.filter((todo) => todo.done !== 0).length;
@@ -355,28 +378,6 @@ function DeviceBody({
       {syncMessage ? <p className="pg-sync-message" role="status">{syncMessage}</p> : null}
       <Internals name={name} />
     </>
-  );
-}
-
-function DeviceColumn({
-  engine,
-  name,
-  label,
-  queries,
-  relayUrl,
-}: {
-  engine: Engine;
-  name: string;
-  label: string;
-  queries: { todos: Query<TodoRow> };
-  relayUrl: string;
-}) {
-  return (
-    <section className="pg-card pg-device" aria-labelledby={`device-${label.toLowerCase()}-title`}>
-      <SyncProvider value={engine}>
-        <DeviceBody name={name} label={label} queries={queries} relayUrl={relayUrl} />
-      </SyncProvider>
-    </section>
   );
 }
 
@@ -450,33 +451,12 @@ function TopBar({
     setError(null);
   }
 
-  async function copyRecoveryKey() {
-    try {
-      await navigator.clipboard.writeText(owner.recoveryKey);
-      setMessage("Recovery key copied.");
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }
-
   async function reset() {
     if (!confirm("Reset to a brand-new owner? This wipes both local devices.")) return;
     await closeSqlJsDatabases();
     await snapshots.clear();
     await ownerStore.rotateRecoveryKey();
     location.reload();
-  }
-
-  async function restore() {
-    try {
-      await ownerStore.setRecoveryKey(credential);
-      await closeSqlJsDatabases();
-      await snapshots.clear();
-      location.reload();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
   }
 
   return (
@@ -526,7 +506,10 @@ function TopBar({
             <p className="pg-hint">Restore this recovery key on the other device.</p>
             <p className="pg-mnemonic">{owner.recoveryKey}</p>
             <p className="pg-warning">If you lose this key, no one can recover your synced data.</p>
-            <button className="pg-ghost" onClick={() => void copyRecoveryKey()}>
+            <button
+              className="pg-ghost"
+              onClick={() => void copyRecoveryKey(owner, setMessage, setError)}
+            >
               Copy recovery key
             </button>
           </div>
@@ -540,7 +523,10 @@ function TopBar({
               onChange={(event) => setCredential(event.target.value)}
               rows={3}
             />
-            <button disabled={!credential.trim()} onClick={() => void restore()}>
+            <button
+              disabled={!credential.trim()}
+              onClick={() => void restoreOwner(ownerStore, snapshots, credential, setError)}
+            >
               Restore owner
             </button>
             <button className="pg-danger" onClick={() => void reset()}>
@@ -568,27 +554,6 @@ function RecoverySetup({
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function copyRecoveryKey() {
-    try {
-      await navigator.clipboard.writeText(owner.recoveryKey);
-      setMessage("Recovery key copied.");
-      setError(null);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }
-
-  async function restore() {
-    try {
-      await ownerStore.setRecoveryKey(credential);
-      await closeSqlJsDatabases();
-      await snapshots.clear();
-      location.reload();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }
-
   return (
     <main className="pg-onboarding">
       <p className="pg-onboarding-kicker">Before you start</p>
@@ -602,7 +567,10 @@ function RecoverySetup({
         If you lose this key, no one can recover your synced data.
       </p>
       <div className="pg-actions">
-        <button className="pg-ghost" onClick={() => void copyRecoveryKey()}>
+        <button
+          className="pg-ghost"
+          onClick={() => void copyRecoveryKey(owner, setMessage, setError)}
+        >
           Copy recovery key
         </button>
         <button
@@ -625,7 +593,10 @@ function RecoverySetup({
           onChange={(event) => setCredential(event.target.value)}
           rows={3}
         />
-        <button disabled={!credential.trim()} onClick={() => void restore()}>
+        <button
+          disabled={!credential.trim()}
+          onClick={() => void restoreOwner(ownerStore, snapshots, credential, setError)}
+        >
           Restore this owner
         </button>
       </details>
@@ -637,14 +608,14 @@ function RecoverySetup({
 function App({
   engines,
   owner,
-  queries,
+  todosQuery,
   initialRelayUrl,
   ownerStore,
   snapshots,
 }: {
   engines: readonly Engine[];
   owner: AppOwner;
-  queries: { todos: Query<TodoRow> };
+  todosQuery: Query<TodoRow>;
   initialRelayUrl: string;
   ownerStore: BrowserOwnerStore;
   snapshots: IndexedDbSnapshotStore;
@@ -684,14 +655,20 @@ function App({
       />
       <main className="pg-grid" aria-label="Synced todo devices">
         {DEVICES.map((device, index) => (
-          <DeviceColumn
+          <section
             key={device.name}
-            engine={engines[index]}
-            name={device.name}
-            label={device.label}
-            queries={queries}
-            relayUrl={relayUrl}
-          />
+            className="pg-card pg-device"
+            aria-labelledby={`device-${device.label.toLowerCase()}-title`}
+          >
+            <SyncProvider value={engines[index]}>
+              <DeviceBody
+                name={device.name}
+                label={device.label}
+                todosQuery={todosQuery}
+                relayUrl={relayUrl}
+              />
+            </SyncProvider>
+          </section>
         ))}
       </main>
     </>
@@ -728,7 +705,7 @@ async function bootstrap(): Promise<void> {
       },
     );
   const engines: Engine[] = DEVICES.map((device) => make(device.name));
-  const queries = buildQueries(engines[0]);
+  const todos = createTodoListQuery(engines[0]);
 
   window.addEventListener("pagehide", () => void persistNow());
 
@@ -739,7 +716,7 @@ async function bootstrap(): Promise<void> {
         <App
           engines={engines}
           owner={owner}
-          queries={queries}
+          todosQuery={todos}
           initialRelayUrl={relayUrl}
           ownerStore={ownerStore}
           snapshots={snapshots}

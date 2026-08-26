@@ -36,7 +36,7 @@ describe("a never-synced owner pulls empty, not terminal", () => {
       fetch: fetchImpl,
     })(schema, {
       name: "fresh-owner-test",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
     });
     await engine.ready;
 
@@ -66,7 +66,7 @@ describe("a never-synced owner pulls empty, not terminal", () => {
       fetch: fetchImpl,
     })(schema, {
       name: "fresh-owner-fail-test",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
     });
     await engine.ready;
 

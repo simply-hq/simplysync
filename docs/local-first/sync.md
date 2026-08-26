@@ -18,9 +18,6 @@ outbox intent in one SQLite transaction. Before any network request,
 `sealPendingOutbox()` encrypts each intent and fills its `envelope_json`. Push
 explicitly ignores unsealed rows, so `payload_json` never crosses the device
 boundary. Re-running the seal is harmless; already sealed rows are skipped.
-With browser tab coordination, only the elected leader seals. A follower's own
-pending local copy can remain unsealed until promotion, while the leader stages
-and seals its separate copy for relay delivery.
 
 **Push.** For each relay, select up to 1000 sealed outbox events that do not yet
 have an exact `(eventId, relay)` acknowledgement, `POST /v1/events`, record the
@@ -57,9 +54,8 @@ five-minute backoff but remains nonterminal; network and 5xx failures retry at
 the normal cadence.
 
 Set `autoSync: false` to switch all of that off — no poll timer, and no
-opportunistic pass after a write, at boot, when transports are attached, on
-focus/online, or on promotion to leader. `engine.sync()` still runs a full
-pass, so the host decides exactly when the device talks to a relay. Useful for
+opportunistic pass after a write, at boot, when transports are attached, or on
+focus/online. `engine.sync()` still runs a full pass, so the host decides exactly when the device talks to a relay. Useful for
 a CLI that syncs once and exits, or a diagnostic that wants to report what one
 observable pass did.
 

@@ -2,6 +2,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { Harness, type Pairing } from "./harness.ts";
 import { cleanupGoBinary, isGoAvailable } from "./relay.ts";
 import type { Platform } from "./roots.ts";
@@ -9,14 +10,18 @@ import type { Scenario } from "./scenario.ts";
 
 const scenariosDir = resolve(dirname(fileURLToPath(import.meta.url)), "../scenarios");
 
-interface Options {
-  matrix: Pairing[];
-  scenarioFilter?: string;
-  keepArtifacts: boolean;
-}
-
 export async function run(argv: string[]): Promise<number> {
-  const opts = parseArgs(argv);
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      matrix: { type: "string", default: "swift-kotlin,kotlin-kotlin,swift-swift,web-swift,web-kotlin" },
+      scenario: { type: "string" },
+    },
+  });
+  const opts = {
+    matrix: values.matrix.split(",").map(parsePairing),
+    scenarioFilter: values.scenario,
+  };
 
   if (!isGoAvailable()) {
     console.error("✗ `go` is not on PATH — the Go relay can't be launched. Install Go and retry.");
@@ -58,29 +63,11 @@ export async function run(argv: string[]): Promise<number> {
   } finally {
     await harness.shutdown();
     cleanupGoBinary();
-    if (opts.keepArtifacts) console.log(`artifacts kept in ${workDir}`);
-    else rmSync(workDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
   }
 
   console.log(failures === 0 ? "\nall scenarios passed" : `\n${failures} scenario(s) failed`);
   return failures === 0 ? 0 : 1;
-}
-
-function parseArgs(argv: string[]): Options {
-  let matrixRaw = "swift-kotlin,kotlin-kotlin,swift-swift,web-swift,web-kotlin";
-  let scenarioFilter: string | undefined;
-  let keepArtifacts = false;
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--matrix") matrixRaw = argv[++i] ?? matrixRaw;
-    else if (arg === "--scenario") scenarioFilter = argv[++i];
-    else if (arg === "--keep-artifacts") keepArtifacts = true;
-    else throw new Error(`unknown argument '${arg}'`);
-  }
-
-  const matrix = matrixRaw.split(",").map(parsePairing);
-  return { matrix, scenarioFilter, keepArtifacts };
 }
 
 function parsePairing(token: string): Pairing {

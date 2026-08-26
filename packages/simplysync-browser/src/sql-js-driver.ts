@@ -5,13 +5,12 @@ import initSqlJs, {
 } from "sql.js";
 import type { SqliteDriver } from "@simplysync/engine";
 import type { SnapshotStore } from "./snapshot-store.js";
-import type { TabCoordinator } from "./tab-coordinator.js";
 import {
   acquireBrowserWriterLock,
   type BrowserWriterLockResult,
 } from "./writer-lock.js";
 
-export type WriterLockMode = "required" | "best-effort" | "disabled";
+export type WriterLockMode = "required" | "disabled";
 
 export interface SqlJsDriverOptions {
   readonly store: SnapshotStore;
@@ -29,21 +28,12 @@ export interface SqlJsDriverOptions {
   /**
    * Whole-database snapshots require one writer. Browser consumers should keep
    * the default ("required"); tests and non-browser tooling may opt out.
-   * Ignored when a coordinating `coordinator` is supplied — leadership then
-   * owns the same lock and followers open cooperatively instead of failing.
    */
   readonly writerLock?: WriterLockMode;
   /** Test seam for the Web Locks API. */
   readonly acquireWriterLock?: (
     name: string,
   ) => Promise<BrowserWriterLockResult>;
-  /**
-   * Multi-tab coordination (see tab-coordinator.ts): only the leader tab
-   * writes snapshots; followers boot behind a fresh-snapshot barrier and
-   * forward explicit `persistNow` calls to the leader. Pass the same instance
-   * as `SyncEngineDeps.tabSync`.
-   */
-  readonly coordinator?: TabCoordinator;
 }
 
 interface OpenDb {
@@ -51,7 +41,6 @@ interface OpenDb {
   readonly store: SnapshotStore;
   readonly onPersistError?: (error: unknown) => void;
   readonly releaseWriterLock?: () => Promise<void>;
-  readonly coordinator?: TabCoordinator;
 }
 
 const registry = new Map<string, OpenDb>();
@@ -104,14 +93,6 @@ export async function persistNow(name?: string): Promise<void> {
     const open = registry.get(key);
     if (!open) continue;
 
-    // A follower never writes the shared snapshot (the leader's copy is the
-    // canonical one and already contains this tab's broadcast writes) — it
-    // asks the leader to persist instead. A false return means this tab got
-    // promoted while waiting: fall through and persist locally.
-    if (open.coordinator?.isCoordinating() && !open.coordinator.isLeader()) {
-      if (await open.coordinator.requestPersist()) continue;
-    }
-
     // Capture at call time, then serialize saves so an older async IndexedDB
     // write can never finish after (and overwrite) a newer snapshot.
     const bytes = open.db.export();
@@ -141,11 +122,6 @@ export async function closeSqlJsDatabases(name?: string): Promise<void> {
 }
 
 function schedulePersist(name: string, debounceMs: number, maxWaitMs: number): void {
-  // Followers skip write-triggered persistence entirely: their writes reach
-  // the leader as broadcasts, and the leader's own apply schedules its save.
-  const open = registry.get(name);
-  if (open?.coordinator?.isCoordinating() && !open.coordinator.isLeader())
-    return;
   const now = Date.now();
   let dirtySince = firstDirtyAt.get(name);
   if (dirtySince === undefined) {
@@ -191,21 +167,12 @@ export function createSqlJsDriverFactory(
       throw new Error(`SimplySync database ${name} is already open in this page.`);
     }
 
-    // Cooperative multi-tab open: the coordinator owns the writer lock
-    // (leadership election), so the fail-fast acquisition below is skipped.
-    // Followers first wait for the current leader to persist a fresh
-    // snapshot, so they never boot from a stale save.
-    const coordinator = options.coordinator?.isCoordinating()
-      ? options.coordinator
-      : undefined;
     let releaseWriterLock: (() => Promise<void>) | undefined;
-    if (coordinator) {
-      await coordinator.ensureFreshSnapshot();
-    } else if (writerLock !== "disabled") {
+    if (writerLock !== "disabled") {
       const lock = await acquireWriterLock(name);
       if (lock.acquired) {
         releaseWriterLock = lock.release;
-      } else if (writerLock === "required") {
+      } else {
         const detail =
           lock.reason === "held"
             ? "another tab or window is already using it"
@@ -229,7 +196,6 @@ export function createSqlJsDriverFactory(
         store: options.store,
         onPersistError: options.onPersistError,
         releaseWriterLock,
-        coordinator,
       });
       lastOpened = name;
       registerHideFlush();

@@ -131,7 +131,7 @@ export type AuthDenial =
   | "create-rate-limited";
 
 export type OwnerAuth =
-  | { readonly ok: true; readonly storedBytes: number }
+  | { readonly ok: true; readonly storedBytes: number; readonly createdAt: string }
   | { readonly ok: false; readonly denial: AuthDenial };
 
 export async function ensureOwnerAuth(
@@ -143,10 +143,10 @@ export async function ensureOwnerAuth(
 ): Promise<OwnerAuth> {
   const relayAuthHash = await sha256Base64Url(relayAuth);
   const owner = await env.DB.prepare(
-    `select relay_auth_hash, stored_bytes from owners where owner_id = ?`,
+    `select relay_auth_hash, stored_bytes, created_at from owners where owner_id = ?`,
   )
     .bind(ownerId)
-    .first<{ relay_auth_hash: string; stored_bytes: number }>();
+    .first<{ relay_auth_hash: string; stored_bytes: number; created_at: string }>();
 
   if (!owner) {
     if (!opts.createIfMissing) return { ok: false, denial: "unknown-owner" };
@@ -170,12 +170,13 @@ export async function ensureOwnerAuth(
       return { ok: false, denial: "relay-at-capacity" };
     }
 
+    const createdAt = new Date().toISOString();
     const inserted = await env.DB.prepare(
       `insert or ignore into owners
          (owner_id, relay_auth_hash, stored_bytes, created_at)
        values (?, ?, 0, ?)`,
     )
-      .bind(ownerId, relayAuthHash, new Date().toISOString())
+      .bind(ownerId, relayAuthHash, createdAt)
       .run();
 
     // Lost a creation race: roll the counter back so it stays accurate.
@@ -185,28 +186,32 @@ export async function ensureOwnerAuth(
       ).run();
       // Re-read the row the winner created and fall through to auth-check it.
       const racedOwner = await env.DB.prepare(
-        `select relay_auth_hash, stored_bytes from owners where owner_id = ?`,
+        `select relay_auth_hash, stored_bytes, created_at from owners where owner_id = ?`,
       )
         .bind(ownerId)
-        .first<{ relay_auth_hash: string; stored_bytes: number }>();
+        .first<{ relay_auth_hash: string; stored_bytes: number; created_at: string }>();
       if (racedOwner && timingSafeEqual(racedOwner.relay_auth_hash, relayAuthHash)) {
-        return { ok: true, storedBytes: racedOwner.stored_bytes };
+        return {
+          ok: true,
+          storedBytes: racedOwner.stored_bytes,
+          createdAt: racedOwner.created_at,
+        };
       }
       return { ok: false, denial: "invalid-token" };
     }
 
-    return { ok: true, storedBytes: 0 };
+    return { ok: true, storedBytes: 0, createdAt };
   }
 
   if (!timingSafeEqual(owner.relay_auth_hash, relayAuthHash)) {
     return { ok: false, denial: "invalid-token" };
   }
-  return { ok: true, storedBytes: owner.stored_bytes };
+  return { ok: true, storedBytes: owner.stored_bytes, createdAt: owner.created_at };
 }
 
-/** The per-owner snapshot behind GET /v1/status, minus the usage auth read. */
+/** The per-owner snapshot behind GET /v1/status. `createdAt` rides on the
+ * auth read (see OwnerAuth) so this never re-reads the owner row. */
 export interface OwnerStatusInfo {
-  createdAt: string;
   headSeq: number;
   events: number;
   streams: number;
@@ -216,11 +221,6 @@ export async function ownerStatus(
   env: Env,
   ownerId: string,
 ): Promise<OwnerStatusInfo> {
-  const ownerRow = await env.DB.prepare(
-    `select created_at from owners where owner_id = ?`,
-  )
-    .bind(ownerId)
-    .first<{ created_at: string }>();
   // Head cursor + counts use the owner-scoped indexes, so these stay cheap.
   const agg = await env.DB.prepare(
     `select coalesce(max(seq), 0) as head_seq, count(*) as events,
@@ -231,7 +231,6 @@ export async function ownerStatus(
     .first<{ head_seq: number; events: number; streams: number }>();
 
   return {
-    createdAt: ownerRow?.created_at ?? "",
     headSeq: agg?.head_seq ?? 0,
     events: agg?.events ?? 0,
     streams: agg?.streams ?? 0,
@@ -590,12 +589,6 @@ export interface CompactionOutcome {
   readonly reclaimedBytes: number;
 }
 
-/** One statement of a compaction batch, plus what its `changes` means. */
-interface CompactionStep {
-  readonly statement: D1PreparedStatement;
-  readonly countsDeletes: boolean;
-}
-
 /**
  * Drops every event of the named streams — winners and tombstones alike: the
  * owner has asserted the logical rows are fully purged. Idempotent: unknown
@@ -616,10 +609,9 @@ export async function compactStreams(
   // subquery is what actually adjusts usage, atomically with the delete); a
   // concurrent push racing this call can skew the *reported* number only.
   let reclaimedBytes = 0;
-  // Each step declares at construction time whether its `changes` counts as
-  // deleted events, so decoding the batch below never has to re-derive that
-  // from a statement's position in the list.
-  const plan: CompactionStep[] = [];
+  // Statements alternate reclaim/delete by construction, so odd indexes are
+  // the deletes whose `changes` count as deleted events.
+  const plan: D1PreparedStatement[] = [];
 
   for (const chunk of chunked(streamIds)) {
     const inList = chunk.map(() => "?").join(", ");
@@ -631,31 +623,25 @@ export async function compactStreams(
       .first<{ b: number }>();
     reclaimedBytes += preRead?.b ?? 0;
     plan.push(
-      {
-        statement: env.DB.prepare(
-          `update owners set stored_bytes = max(0, stored_bytes - coalesce((
-             select sum(stored_bytes) from events
-             where owner_id = ?1 and stream_id in (${chunk
-               .map((_, j) => `?${j + 2}`)
-               .join(", ")})), 0))
-           where owner_id = ?1`,
-        ).bind(ownerId, ...chunk),
-        countsDeletes: false,
-      },
-      {
-        statement: env.DB.prepare(
-          `delete from events where owner_id = ? and stream_id in (${inList})`,
-        ).bind(ownerId, ...chunk),
-        countsDeletes: true,
-      },
+      env.DB.prepare(
+        `update owners set stored_bytes = max(0, stored_bytes - coalesce((
+           select sum(stored_bytes) from events
+           where owner_id = ?1 and stream_id in (${chunk
+             .map((_, j) => `?${j + 2}`)
+             .join(", ")})), 0))
+         where owner_id = ?1`,
+      ).bind(ownerId, ...chunk),
+      env.DB.prepare(
+        `delete from events where owner_id = ? and stream_id in (${inList})`,
+      ).bind(ownerId, ...chunk),
     );
   }
 
-  const results = await env.DB.batch(plan.map((step) => step.statement));
+  const results = await env.DB.batch(plan);
   let deletedEvents = 0;
-  plan.forEach((step, i) => {
-    if (step.countsDeletes) deletedEvents += results[i]?.meta?.changes ?? 0;
-  });
+  for (let i = 1; i < results.length; i += 2) {
+    deletedEvents += results[i]?.meta?.changes ?? 0;
+  }
 
   return { deletedEvents, reclaimedBytes };
 }

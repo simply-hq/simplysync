@@ -17,7 +17,7 @@ function makeStore(bases: string[] = []) {
   const { driver, db } = memoryDriver();
   const state = createEngineState({ name: "outbox" });
   state.driver = driver;
-  state.transports = bases.map((url) => ({ type: "Http" as const, url }));
+  state.transports = bases.map((url) => ({ url }));
   const store = createStore(state, schema, { name: "outbox" });
   store.ensureSchema();
   return { store, db };

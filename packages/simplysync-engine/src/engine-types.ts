@@ -127,61 +127,12 @@ export interface SecureStorage {
   removeItem(key: string): Promise<void> | void;
 }
 
-/**
- * One committed event crossing the tab channel: the outbox row's identity plus
- * its plaintext payload (same trust level as the local database — the channel
- * is same-origin only and never leaves the machine). `outbox` distinguishes
- * local-origin writes (receivers stage the same outbox row so ANY tab promoted
- * to leader can push it) from relay-pulled or `local: true` events (already on
- * the relay / deliberately unsynced — applied to the receiver's rows only).
- */
-export interface TabSyncEvent {
-  readonly eventId: string;
-  readonly payloadJson: string;
-  readonly outbox: boolean;
-}
-
-/**
- * Cross-instance coordination for platforms where several engine instances
- * share one persisted database (browser tabs). Every instance applies every
- * other instance's events through the normal LWW path; exactly one instance —
- * the "leader" — persists snapshots and talks to relays. Absent (native, CLI,
- * tests) the engine behaves exactly as before.
- */
-export interface TabSync {
-  isLeader(): boolean;
-  /** Fires when THIS instance becomes the leader (the previous one closed). */
-  onPromoted(listener: () => void): () => void;
-  publishEvents(events: readonly TabSyncEvent[]): void;
-  subscribeEvents(
-    listener: (events: readonly TabSyncEvent[]) => void,
-  ): () => void;
-  /** Leader → followers mirror, so sync UI works in every tab. */
-  publishSyncState(state: SyncState): void;
-  subscribeSyncState(listener: (state: SyncState) => void): () => void;
-  /** Cross-tab critical section (e.g. first-boot identity creation). */
-  withLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
-  /**
-   * Destructive-op barrier (owner restore/reset, database import): every other
-   * tab stops writing/persisting and reboots; resolves once this tab is the
-   * sole writer. Rebooting tabs block in their boot barrier until the
-   * initiating tab has persisted the post-op snapshot and reloaded.
-   */
-  acquireExclusive(): Promise<void>;
-}
-
 export interface SyncEngineDeps {
   readonly createSqliteDriver: (
     name: string,
   ) => SqliteDriver | Promise<SqliteDriver>;
   readonly secureStorage: SecureStorage;
   readonly fetch?: typeof fetch;
-  /**
-   * Multi-instance coordination (browser tabs sharing one database). When
-   * present the engine also stamps a per-instance suffix onto the HLC device
-   * id so two tabs can never mint the same event id in the same millisecond.
-   */
-  readonly tabSync?: TabSync;
   /**
    * Platform reload used after restore/reset to re-evaluate app state. On web
    * the engine falls back to `location.reload()`; React Native must provide one
@@ -231,19 +182,15 @@ export interface DbSnapshot {
 }
 
 export interface Transport {
-  readonly type: "WebSocket" | "Http";
   readonly url: string;
 }
 
-export interface IndexCreate {
-  on(table: string): IndexCreate;
-  column(column: string): IndexCreate;
-  readonly __spec: { name: string; table: string; columns: string[] };
+/** One SQLite index to create alongside the tables (additive-only). */
+export interface IndexSpec {
+  readonly name: string;
+  readonly table: string;
+  readonly columns: readonly string[];
 }
-
-export type IndexBuilder = (
-  create: (name: string) => IndexCreate,
-) => IndexCreate[];
 
 export interface AppOwner {
   readonly id: string;
@@ -311,16 +258,15 @@ export interface SyncEngineConfig {
    * `_sync_deferred` and replay them after an app upgrade declares support.
    */
   readonly schemaVersion?: number;
-  readonly indexes?: IndexBuilder;
+  readonly indexes?: readonly IndexSpec[];
   readonly transports?: readonly Transport[];
   readonly externalAppOwner?: ExternalAppOwner | null;
-  readonly encryptionKey?: unknown;
   /** Poll interval (ms) for pulling remote changes. Default 60000. */
   readonly syncIntervalMs?: number;
   /**
    * Set `false` to stop the engine scheduling sync for itself: no poll timer,
    * and no opportunistic pass after a local write, at boot, when transports
-   * are attached, on web focus/online, or on promotion to Leader.
+   * are attached, or on web focus/online.
    * `engine.sync()` still runs a full pass, so the host decides exactly when
    * this Device talks to a Relay.
    *
@@ -329,18 +275,6 @@ export interface SyncEngineConfig {
    * pass did, a test that needs the Outbox to sit still. Default: on.
    */
   readonly autoSync?: boolean;
-  /**
-   * Reserved retention setting kept for source compatibility.
-   *
-   * Automatic hard deletion is disabled until the protocol has a durable
-   * cross-device delete watermark. Without one, a long-offline device could
-   * resurrect a row after its tombstone and relay stream were erased. Manual
-   * purge methods remain available only for databases that have never used a
-   * relay.
-   *
-   * @deprecated Currently has no effect.
-   */
-  readonly tombstoneRetentionMs?: number | false;
   /**
    * Reject a write whose encrypted event would exceed this many bytes, at write
    * time, with a clear error — instead of letting it into the outbox where a
@@ -541,16 +475,6 @@ export interface SyncEngine<S extends SchemaDefinition> {
     rows: ReadonlyArray<{ table: keyof S & string; id: Id }>,
   ): { purged: number };
   readonly appOwner: Promise<AppOwner | null>;
-  useOwner(options: { transports?: readonly Transport[] }): () => void;
-  /**
-   * One-time best-effort import of rows from a legacy SQLite database
-   * with the same per-table layout. Safe to call always: it no-ops if the
-   * legacy db is missing/incompatible or already imported. Imported rows are
-   * re-emitted as sync events so they propagate to the new relay.
-   */
-  importLegacy(
-    legacyDbName: string,
-  ): Promise<{ imported: number; skipped: number }>;
   /**
    * Restore an owner from a native `sf1_` recovery key or BIP39 phrase. By
    * default this refuses to wipe local data unless the relay confirms the owner

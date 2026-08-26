@@ -63,7 +63,7 @@ const engine = createSync(createExpoSyncDeps({
   sqlCipher: {},
 }))(schema, {
   name: "todos",
-  transports: [{ type: "Http", url: "https://relay.example.com" }],
+  transports: [{ url: "https://relay.example.com" }],
 });
 
 const activeTodos = engine.createQuery((db) =>

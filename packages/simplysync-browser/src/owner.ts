@@ -1,11 +1,5 @@
 import type { AppOwner, SecureStorage } from "@simplysync/engine";
-import {
-  createMnemonic,
-  createRecoveryKey,
-  deriveIdentity,
-  isRecoveryMnemonic,
-  normalizeMnemonic,
-} from "@simplysync/protocol";
+import { createRecoveryKey, deriveIdentity } from "@simplysync/protocol";
 
 export interface BrowserOwnerStore {
   /** Loads an sf1_ key or mnemonic, creating a new sf1_ key when absent. */
@@ -14,12 +8,6 @@ export interface BrowserOwnerStore {
   setRecoveryKey(recoveryKey: string): Promise<string>;
   /** Replaces the credential with a newly generated sf1_ key. */
   rotateRecoveryKey(): Promise<string>;
-  /** @deprecated Prefer loadOrCreateRecoveryKey for new cross-platform apps. */
-  loadOrCreateMnemonic(): Promise<string>;
-  /** @deprecated Prefer setRecoveryKey, which also accepts sf1_ keys. */
-  setMnemonic(mnemonic: string): Promise<string>;
-  /** @deprecated Prefer rotateRecoveryKey for new cross-platform apps. */
-  rotateMnemonic(): Promise<string>;
   clear(): Promise<void>;
 }
 
@@ -73,34 +61,6 @@ export function createBrowserOwnerStore(
       const recoveryKey = await createRecoveryKey();
       await secureStorage.setItem(key, recoveryKey);
       return recoveryKey;
-    },
-
-    async loadOrCreateMnemonic() {
-      const stored = await secureStorage.getItem(key);
-      if (stored && isRecoveryMnemonic(stored)) return normalizeMnemonic(stored);
-      if (stored) {
-        throw new Error(
-          "This browser owner uses an sf1_ recovery key; load it with loadOrCreateRecoveryKey().",
-        );
-      }
-      const mnemonic = createMnemonic();
-      await secureStorage.setItem(key, mnemonic);
-      return mnemonic;
-    },
-
-    async setMnemonic(mnemonic) {
-      const normalized = normalizeMnemonic(mnemonic);
-      if (!isRecoveryMnemonic(normalized)) {
-        throw new Error("That is not a valid BIP39 recovery phrase.");
-      }
-      await secureStorage.setItem(key, normalized);
-      return normalized;
-    },
-
-    async rotateMnemonic() {
-      const mnemonic = createMnemonic();
-      await secureStorage.setItem(key, mnemonic);
-      return mnemonic;
     },
 
     async clear() {

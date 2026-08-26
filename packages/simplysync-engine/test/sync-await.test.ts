@@ -16,7 +16,7 @@ function makeEngine(name: string, fetchImpl: typeof fetch) {
     fetch: fetchImpl,
   })(schema, {
     name,
-    transports: [{ type: "Http", url: "http://relay.test" }],
+    transports: [{ url: "http://relay.test" }],
   });
 }
 

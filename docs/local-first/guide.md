@@ -357,7 +357,7 @@ edit stays on-device. Configure one (or several) via `transports`, either at
 creation or at runtime:
 
 ```ts
-engine.setTransports([{ type: "Http", url: "https://relay.example.com" }]);
+engine.setTransports([{ url: "https://relay.example.com" }]);
 ```
 
 Setting transports triggers an immediate sync and starts the background poller.
@@ -376,16 +376,7 @@ relay—not that every configured relay acknowledged it—so inspect
 
 **Stopping the engine.** The sync poller is the engine's only long-lived timer, so
 a short-lived process (a CLI, a script, a test) must clear it or the process never
-exits. `engine.setTransports([])` stops it, and that is exactly what the disposer
-returned by `useOwner({ transports })` does:
-
-```ts
-const stop = engine.useOwner({ transports });
-// …later, on teardown:
-stop();
-```
-
-Long-running apps never need this. See `apps/todolist/cli/src` for a
+exits. `engine.setTransports([])` stops it. Long-running apps never need this. See `apps/todolist/cli/src` for a
 CLI that does it.
 
 The engine also syncs opportunistically after local writes and on web
@@ -423,8 +414,8 @@ Each `RelayStatus` combines this device's last sync outcome (`lastSyncedAt`,
 `usedBytes` / `quotaBytes` / `usedPct` (storage against the relay's per-owner
 quota — warn the user well before a `413`), plus `headSeq`, `streams`, `events`
 and the relay `version`. A relay that has never seen this owner reports
-`reachable: true` with no account block. In React, `useRelayStatuses()` polls it
-for you (default every 30 s) — right-sized for a diagnostics or settings screen.
+`reachable: true` with no account block. Poll it at UI cadence (a diagnostics
+or settings screen), not per frame.
 
 `reseeding: true` means that relay **lost its data** — a wiped volume, a fresh
 deploy, or a restore from an older backup — and this device is re-uploading the
@@ -482,16 +473,10 @@ interface SecureStorage {
 
 ## 9. Importing legacy data
 
-If you're migrating from a previous SQLite database with the same per-table
-layout, `importLegacy` does a one-time, best-effort import and re-emits the rows
-as sync events so they propagate to the relay:
-
-```ts
-const { imported, skipped } = await engine.importLegacy("old-db-name");
-```
-
-It's safe to call on every boot — it no-ops if the legacy DB is missing,
-incompatible, or already imported.
+Migrating from a previous SQLite database with the same per-table layout is a
+plain batch: read the legacy rows with your own driver and write them with
+`engine.batch(...)` (guard with a one-time marker in your own storage). The
+rows re-emit as sync events, so they propagate to the relay.
 
 ## Engine API reference
 
@@ -515,14 +500,12 @@ incompatible, or already imported.
 | `engine.restoreAppOwner` | `(recoveryKey, { force? }) => Promise<void>` | Restore from an `sf1_` key or BIP39 phrase. |
 | `engine.resetAppOwner` | `({ force? }) => Promise<void>` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
 | `engine.setTransports` | `(transports) => void` | Set relays; triggers sync + polling. `[]` stops the poller. |
-| `engine.useOwner` | `({ transports }) => () => void` | Set relays and get a disposer that stops syncing. |
 | `engine.sync` | `() => Promise<void>` | Push outbox, pull + apply; resolves after a pass covering your writes. |
 | `engine.getSyncState` / `subscribeSyncState` | — | Backing store for `useSyncState`. |
 | `engine.getRelayStatuses` | `() => Promise<RelayStatus[]>` | Per-relay health + storage usage (live `GET /v1/status` probe per relay). |
 | `engine.getSyncLog` | `(limit?) => SyncLogEntry[]` | Most-recent-first on-device sync diagnostics log. |
 | `engine.getPendingOutboxCount` | `() => number` | Events not yet accepted by **any** relay. Zero does not prove every configured relay acknowledged the retained outbox. |
 | `engine.getError` / `subscribeError` | — | Backing store for `useSyncError`. |
-| `engine.importLegacy` | `(name) => Promise<{ imported, skipped }>` | One-time legacy row import. |
 | `engine.exportDatabase` | `({ passphrase? }?) => Promise<EncryptedEnvelopeV1>` | Encrypted application-state snapshot: app rows + metadata, not outbox state or blob chunk bytes. Pause writes/sync for a self-consistent export. |
 | `engine.importDatabase` | `(file, { recoveryKey \| passphrase }) => Promise<void>` | Restore a backup: adopts its identity and REPLACES local data. |
 
@@ -534,9 +517,7 @@ incompatible, or already imported.
 | `useSync<S>` | `() => SyncEngine<S>` | The engine; throws outside a provider. |
 | `useQuery` | `(query) => readonly R[]` | Reactive rows. |
 | `useSyncState` | `() => SyncState` | Reactive sync status. |
-| `useRelayStatuses` | `({ refreshMs? }?) => readonly RelayStatus[]` | Per-relay health + storage usage, polled (default 30 s). |
 | `useSyncError` | `() => SyncError \| null` | Reactive last error. |
-| `createUseSync` | `(engine) => () => mutations` | Hook bound to one engine's mutations + owner helpers. |
 
 ### Key types
 
@@ -544,7 +525,7 @@ incompatible, or already imported.
 | --- | --- |
 | `MutationResult` | `{ ok: true, value: { id } } \| { ok: false, error: { message } }` |
 | `AppOwner` | `{ id, recoveryKey, mnemonic?, writeKey }` |
-| `Transport` | `{ type: "Http" \| "WebSocket", url }` |
+| `Transport` | `{ url }` |
 | `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, autoSync?, indexes? }` |
 | `SyncState` | `Initial \| IsSyncing \| IsSynced{lastSyncedAt} \| IsNotSynced{error?,status?,terminal?}` |
 | `Query<R>` | `{ sql, parameters, Row }` (the `Row` field is a phantom type carrier) |

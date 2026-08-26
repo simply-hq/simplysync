@@ -4,11 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createSync, id, NonEmptyString, SqliteBoolean } from "@simplysync/engine";
-import {
-  createKeyValueSecureStorage,
-  createNodeSqliteDriver,
-  createNodeSyncDeps,
-} from "../dist/index.js";
+import { createNodeSqliteDriver, createNodeSyncDeps } from "../dist/index.js";
 
 test("node:sqlite driver commits and rolls back nested transactions", () => {
   const driver = createNodeSqliteDriver(":memory:");
@@ -31,11 +27,11 @@ test("node:sqlite driver commits and rolls back nested transactions", () => {
 test("complete Node deps run the canonical todo engine", async () => {
   const directory = mkdtempSync(join(tmpdir(), "simplysync-node-"));
   const values = new Map();
-  const secureStorage = createKeyValueSecureStorage({
-    getItem: (key) => values.get(key),
+  const secureStorage = {
+    getItem: (key) => values.get(key) ?? null,
     setItem: (key, value) => void values.set(key, value),
     removeItem: (key) => void values.delete(key),
-  });
+  };
   const deps = createNodeSyncDeps({ directory, secureStorage });
   const schema = {
     todo: { id: id("todo"), title: NonEmptyString, done: SqliteBoolean },

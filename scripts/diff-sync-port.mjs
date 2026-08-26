@@ -3,7 +3,17 @@
 // the app-owned ports. Strips the known mechanical rewrites (Swift `public`,
 // Kotlin package rename) so only *real* divergence shows — the lines a human
 // must port deliberately. Writes nothing; pairs with check-native-app-port-drift.mjs.
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,52 +62,30 @@ function listFiles(dir, ext) {
     .sort();
 }
 
-// LCS line diff. a = upstream, b = app.
-function diffLines(a, b) {
-  const n = a.length;
-  const m = b.length;
-  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
-    }
+// git owns the diffing: write both normalized texts to temp files and run
+// `git diff --no-index`, which brings hunking and color for free.
+function gitDiff(upText, appText, label) {
+  const dir = mkdtempSync(join(tmpdir(), "simplysync-port-diff-"));
+  try {
+    const upPath = join(dir, `upstream-${label}`);
+    const appPath = join(dir, `app-${label}`);
+    writeFileSync(upPath, upText);
+    writeFileSync(appPath, appText);
+    const result = spawnSync(
+      "git",
+      ["diff", "--no-index", `--color=${useColor ? "always" : "never"}`, "--", upPath, appPath],
+      { encoding: "utf8" },
+    );
+    if (result.status === 0) return null;
+    // Drop git's header noise (diff --git/index/---/+++ over temp paths).
+    return result.stdout
+      .split("\n")
+      .filter((l) => !/^(diff --git|index |--- |\+\+\+ )/.test(l))
+      .join("\n")
+      .trimEnd();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  const out = [];
-  let i = 0;
-  let j = 0;
-  while (i < n && j < m) {
-    if (a[i] === b[j]) out.push({ t: " ", line: a[i++] }), j++;
-    else if (dp[i + 1][j] >= dp[i][j + 1]) out.push({ t: "-", line: a[i++] });
-    else out.push({ t: "+", line: b[j++] });
-  }
-  while (i < n) out.push({ t: "-", line: a[i++] });
-  while (j < m) out.push({ t: "+", line: b[j++] });
-  return out;
-}
-
-// Collapse to hunks with up to CONTEXT unchanged lines around each change.
-function hunks(diff, context = 3) {
-  const keep = new Array(diff.length).fill(false);
-  for (let k = 0; k < diff.length; k++) {
-    if (diff[k].t !== " ") {
-      for (let d = -context; d <= context; d++) {
-        if (k + d >= 0 && k + d < diff.length) keep[k + d] = true;
-      }
-    }
-  }
-  const groups = [];
-  let cur = null;
-  for (let k = 0; k < diff.length; k++) {
-    if (keep[k]) {
-      if (!cur) cur = [];
-      cur.push(diff[k]);
-    } else if (cur) {
-      groups.push(cur);
-      cur = null;
-    }
-  }
-  if (cur) groups.push(cur);
-  return groups;
 }
 
 function main() {
@@ -127,25 +115,16 @@ function main() {
 
     for (const f of shared) {
       if (fileFilter.length && !fileFilter.some((q) => f.toLowerCase().includes(q.toLowerCase()))) continue;
-      const up = pair.normalize(readFileSync(join(upDir, f), "utf8")).split("\n");
-      const app = pair.normalize(readFileSync(join(appDir, f), "utf8")).split("\n");
-      const diff = diffLines(up, app);
-      const added = diff.filter((d) => d.t === "+").length;
-      const removed = diff.filter((d) => d.t === "-").length;
-      if (added === 0 && removed === 0) {
+      const up = pair.normalize(readFileSync(join(upDir, f), "utf8"));
+      const app = pair.normalize(readFileSync(join(appDir, f), "utf8"));
+      const diff = gitDiff(up, app, f);
+      if (diff === null) {
         console.log(`  ${green("✓")} ${f} ${dim("in sync")}`);
         continue;
       }
       diverged++;
-      console.log(`  ${red("✗")} ${f}  ${red(`-${removed}`)} ${green(`+${added}`)}`);
-      for (const g of hunks(diff)) {
-        console.log(dim("      @@"));
-        for (const d of g) {
-          if (d.t === "+") console.log("      " + green(`+ ${d.line}`));
-          else if (d.t === "-") console.log("      " + red(`- ${d.line}`));
-          else console.log("      " + dim(`  ${d.line}`));
-        }
-      }
+      console.log(`  ${red("✗")} ${f}`);
+      console.log(diff.replace(/^/gm, "      "));
     }
 
     if (appOnly.length) console.log(dim(`  • app-only (kept, no upstream file): ${appOnly.join(", ")}`));

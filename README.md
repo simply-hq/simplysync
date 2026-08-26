@@ -154,7 +154,7 @@ core engine.
 | --- | --- |
 | [`@simplysync/react`](packages/simplysync-react) | React context and hooks for queries, sync status, and errors. |
 | [`@simplysync/react-native`](packages/simplysync-react-native) | React Native hooks plus Expo SQLite, SecureStore, optional SQLCipher, native crypto, and app-lifecycle wiring. |
-| [`@simplysync/browser`](packages/simplysync-browser) | Browser storage, encrypted recovery-secret storage, and safe multi-tab coordination. |
+| [`@simplysync/browser`](packages/simplysync-browser) | Browser storage, encrypted recovery-secret storage, and a single-writer tab lock. |
 | [`@simplysync/node`](packages/simplysync-node) | Built-in `node:sqlite` driver and lifecycle wiring for Raycast, Node CLIs, and desktop commands. |
 | [`SimplySync` Swift source module](Package.swift) | Swift package sources with the native engine, SwiftUI `LiveQuery`, Keychain/SQLite adapters, and protocol core. |
 | [Kotlin/JVM source module](apps/todolist/kotlin) | Kotlin engine with `StateFlow` queries and Android-injectable storage. |

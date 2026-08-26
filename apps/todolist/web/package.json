@@ -8,13 +8,11 @@
     "dev": "bun run build.ts && bun run serve.ts",
     "serve": "bun run serve.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "sync-check": "bun run sync-check.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@simplysync/browser": "workspace:*",
     "@simplysync/engine": "workspace:*",
-    "@simplysync/protocol": "workspace:*",
     "@simplysync/react": "workspace:*",
     "react": "19.2.0",
     "react-dom": "19.2.0",

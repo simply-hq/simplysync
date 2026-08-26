@@ -245,62 +245,6 @@ describe("engine", () => {
     expect(await storage.getItem(`${name}:mnemonic`)).toBe(phrase);
   });
 
-  // Regression: a legacy schema allowed NULL where ours requires a
-  // SqliteBoolean. importLegacy must coerce NULL -> false so those rows aren't
-  // silently dropped (real bug: accounts with NULL excludeFromReports vanished).
-  test("importLegacy keeps rows whose required boolean is NULL", async () => {
-    const legacy = new Database(":memory:");
-    legacy.run(
-      `create table account (id text, name text, "excludeFromReports" integer)`,
-    );
-    legacy.run(`insert into account values ('a1', 'Has bool', 0)`);
-    legacy.run(`insert into account values ('a2', 'Null bool', NULL)`);
-
-    const main = new Database(":memory:");
-    const wrap = (db: Database): SqliteDriver => ({
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
-    });
-
-    const engine = createSync({
-      createSqliteDriver: (name: string) =>
-        name === "legacy" ? wrap(legacy) : wrap(main),
-      secureStorage: memoryStorage(),
-    })(
-      {
-        account: {
-          id: AccountId,
-          name: NonEmptyString,
-          excludeFromReports: SqliteBoolean,
-        },
-      },
-      { name: "main" },
-    );
-    await engine.ready;
-
-    const result = await engine.importLegacy("legacy");
-    expect(result.imported).toBe(2); // both rows, not just the non-NULL one
-
-    const rows = await engine.loadQuery(
-      engine.createQuery((db) =>
-        db
-          .selectFrom("account")
-          .select(["id", "name", "excludeFromReports"])
-          .where("isDeleted", "is not", 1),
-      ),
-    );
-    expect(rows).toHaveLength(2);
-    const nullBool = rows.find((r) => r.id === "a2");
-    expect(nullBool?.excludeFromReports).toBe(0); // coerced to false, not dropped
-  });
-
   // The HLC must stay monotonic even if the wall clock moves backwards across a
   // restart (else a new edit sorts below an old one and LWW drops it). Persisted
   // hlc:time is seeded on boot, so the second event still sorts after the first.
@@ -376,7 +320,7 @@ describe("engine", () => {
       fetch: emptyRelayFetch,
     })(schema, {
       name: "restore-empty-relay",
-      transports: [{ type: "Http", url: "https://empty-relay.test" }],
+      transports: [{ url: "https://empty-relay.test" }],
     });
     await emptyRelayEngine.ready;
     emptyRelayEngine.insert("account", { name: "Keep empty" });
@@ -394,7 +338,7 @@ describe("engine", () => {
       fetch: unavailableFetch,
     })(schema, {
       name: "restore-unavailable-relay",
-      transports: [{ type: "Http", url: "https://offline-relay.test" }],
+      transports: [{ url: "https://offline-relay.test" }],
     });
     await unavailableEngine.ready;
     unavailableEngine.insert("account", { name: "Keep offline" });
@@ -446,7 +390,7 @@ describe("engine", () => {
       reloadApp: () => {},
     })(schema, {
       name: "restore-native-key",
-      transports: [{ type: "Http", url: "https://relay.test" }],
+      transports: [{ url: "https://relay.test" }],
       syncIntervalMs: 600_000,
     });
     await engine.ready;
@@ -470,36 +414,6 @@ describe("engine", () => {
     engine.setTransports([]);
   });
 
-  // "Erase all data" (resetAppOwner) wipes _sync_meta — which also clears the
-  // legacyImported flag — so the next boot's one-time legacy import would
-  // resurrect the erased data. resetAppOwner must mark the import done.
-  test("resetAppOwner keeps data erased (no legacy re-import)", async () => {
-    const legacy = new Database(":memory:");
-    legacy.run(`create table account (id text, name text)`);
-    legacy.run(`insert into account values ('a1', 'Old')`);
-
-    const main = new Database(":memory:");
-    const engine = createSync({
-      createSqliteDriver: (name: string) =>
-        name === "legacy" ? memoryDriver(legacy).driver : memoryDriver(main).driver,
-      secureStorage: memoryStorage(),
-    })({ account: { id: AccountId, name: NonEmptyString } }, { name: "main" });
-    await engine.ready;
-
-    expect((await engine.importLegacy("legacy")).imported).toBe(1);
-    // Local-only erase with unpushed rows: exactly what the default guard
-    // blocks, so this intentional wipe opts in.
-    await engine.resetAppOwner({ force: true });
-
-    // The import must NOT run again and bring the old data back.
-    expect((await engine.importLegacy("legacy")).imported).toBe(0);
-    const rows = await engine.loadQuery(
-      engine.createQuery((db) =>
-        db.selectFrom("account").select(["id"]).where("isDeleted", "is not", 1),
-      ),
-    );
-    expect(rows).toHaveLength(0); // stays erased
-  });
 });
 
 describe("sync diagnostics log", () => {

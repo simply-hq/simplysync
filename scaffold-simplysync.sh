@@ -109,7 +109,6 @@ should_copy() {
 }
 
 mkdir -p "$destination"
-copied=0
 git -C "$repo_root" ls-files -- "$source_path" |
 while IFS= read -r file; do
     if ! should_copy "$file"; then continue; fi
@@ -117,7 +116,6 @@ while IFS= read -r file; do
     target="$destination/$relative"
     mkdir -p "$(dirname -- "$target")"
     cp -p "$repo_root/$file" "$target"
-    copied=$((copied + 1))
 done
 
 if [ ! -f "$destination/README.md" ]; then
@@ -166,7 +164,6 @@ case "$preset" in
         replace_text 'simplysync-todolist-web' "$slug" "$destination/schema.ts"
         replace_text 'simplysync-todolist' "$slug" "$destination/relay.ts"
         replace_text '../../docs/tokens.css' '../docs/tokens.css' "$destination/build.ts"
-        replace_text 'resolve(import.meta.dir, "../../relay-go")' 'resolve(import.meta.dir, "../relay-go")' "$destination/sync-check.ts"
         start_command="bun run --cwd $destination_rel dev"
         verify_command="bun run --cwd $destination_rel typecheck && bun run --cwd $destination_rel build"
         sync_hint="Paste a relay URL into the app and choose Connect."

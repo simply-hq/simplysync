@@ -64,7 +64,7 @@ function makeEngine(fetchStub: typeof fetch, name: string, url: string) {
     fetch: fetchStub,
   })(schema, {
     name,
-    transports: [{ type: "Http", url }],
+    transports: [{ url }],
     syncIntervalMs: 3_600_000,
   });
 }
@@ -87,7 +87,7 @@ describe("migrating between relays", () => {
     expect(pushes).toContain(GO);
     expect(pulls.some((p) => p.base === GO && p.cursor === "5000")).toBe(true);
 
-    engine.setTransports([{ type: "Http", url: CF }]);
+    engine.setTransports([{ url: CF }]);
     await engine.sync();
 
     const cfPulls = pulls.filter((p) => p.base === CF);
@@ -117,9 +117,9 @@ describe("migrating between relays", () => {
     await engine.sync();
     await engine.sync();
 
-    engine.setTransports([{ type: "Http", url: CF }]);
+    engine.setTransports([{ url: CF }]);
     await engine.sync();
-    engine.setTransports([{ type: "Http", url: GO }]);
+    engine.setTransports([{ url: GO }]);
     pulls.length = 0;
     await engine.sync();
 

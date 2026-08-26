@@ -169,7 +169,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     const owner = await engine.appOwner;
     expect(owner).not.toBeNull();
 
-    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    engine.setTransports([{ url: "http://relay.test" }]);
     for (let i = 0; i < 40 && pushedEvents.length < 1; i++) {
       await engine.sync();
       await settle(engine);
@@ -245,7 +245,7 @@ describe("write atomicity (Plan 005, Option 2)", () => {
         }),
       );
 
-    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    engine.setTransports([{ url: "http://relay.test" }]);
     for (let i = 0; i < 40 && pushedEvents.length < 1; i++) {
       await engine.sync();
       await settle(engine);
@@ -321,8 +321,8 @@ describe("write atomicity (Plan 005, Option 2)", () => {
     expect(result.ok).toBe(true);
 
     engine.setTransports([
-      { type: "Http", url: "http://relay-good.test" },
-      { type: "Http", url: "http://relay-bad.test" },
+      { url: "http://relay-good.test" },
+      { url: "http://relay-bad.test" },
     ]);
     for (let i = 0; i < 40 && goodEvents.length < 1; i++) {
       await engine.sync();
@@ -402,7 +402,7 @@ describe("seal robustness", () => {
       .run(corruptEventId, "{not json");
     expect(corruptEventId < goodEventId).toBe(true);
 
-    engine.setTransports([{ type: "Http", url: "http://relay.test" }]);
+    engine.setTransports([{ url: "http://relay.test" }]);
     await engine.sync();
     await settle(engine);
 

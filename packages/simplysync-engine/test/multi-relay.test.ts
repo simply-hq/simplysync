@@ -58,8 +58,8 @@ describe("multi-relay push redundancy", () => {
     expect(engine.getPendingOutboxCount()).toBe(3);
 
     engine.setTransports([
-      { type: "Http", url: "http://relay-a.test" },
-      { type: "Http", url: "http://relay-b.test" },
+      { url: "http://relay-a.test" },
+      { url: "http://relay-b.test" },
     ]);
     for (let i = 0; i < 40 && (received.a.size < 3 || received.b.size < 3); i++) {
       await engine.sync();
@@ -106,7 +106,7 @@ describe("multi-relay push redundancy", () => {
     }
     expect(engine.getPendingOutboxCount()).toBe(2);
 
-    engine.setTransports([{ type: "Http", url: "http://relay-a.test" }]);
+    engine.setTransports([{ url: "http://relay-a.test" }]);
     for (let i = 0; i < 40 && received.a.size < 2; i++) {
       await engine.sync();
       await settle(engine);
@@ -119,7 +119,7 @@ describe("multi-relay push redundancy", () => {
     }
     expect(engine.getPendingOutboxCount()).toBe(0);
 
-    engine.setTransports([{ type: "Http", url: "http://relay-b.test" }]);
+    engine.setTransports([{ url: "http://relay-b.test" }]);
     for (let i = 0; i < 40 && received.b.size < 2; i++) {
       await engine.sync();
       await settle(engine);
@@ -160,8 +160,8 @@ describe("multi-relay push redundancy", () => {
 
     expect(engine.insert("note", { body: "advances both cursors" }).ok).toBe(true);
     engine.setTransports([
-      { type: "Http", url: "http://relay-a.test" },
-      { type: "Http", url: "http://relay-b.test" },
+      { url: "http://relay-a.test" },
+      { url: "http://relay-b.test" },
     ]);
     for (let i = 0; i < 40 && (received.a.size < 1 || received.b.size < 1); i++) {
       await engine.sync();

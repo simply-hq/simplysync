@@ -7,7 +7,6 @@ import {
   compareHlc,
   decryptEnvelope,
   deriveIdentity,
-  deriveIdentityFromMnemonic,
   unsafeSealPayloadWithNonce,
   type SyncPayload,
 } from "../src/index.ts";
@@ -34,11 +33,6 @@ const PAYLOAD: SyncPayload<{ done: number; title: string }> = {
   value: { done: 0, title: 'Hello "q" \\ 🌍 中文\n\t end' },
 };
 
-const DERIVERS = {
-  sf1: deriveIdentity,
-  mnemonic: deriveIdentityFromMnemonic,
-} as const;
-
 describe("cross-language crypto conformance corpus", () => {
   for (const [name, entry] of Object.entries(vectors.identities)) {
     describe(name, () => {
@@ -47,8 +41,7 @@ describe("cross-language crypto conformance corpus", () => {
       // sort or a changed header shape both surface as "ciphertext differs",
       // which names neither.
       test("canonicalizes the header and payload byte-for-byte", async () => {
-        const derive = DERIVERS[name as keyof typeof DERIVERS];
-        const identity = await derive(entry.input);
+        const identity = await deriveIdentity(entry.input);
         const nonce = base64UrlDecode(entry.nonceB64);
         const envelope = await unsafeSealPayloadWithNonce(
           identity,
@@ -71,8 +64,7 @@ describe("cross-language crypto conformance corpus", () => {
       });
 
       test("derives the locked identity", async () => {
-        const derive = DERIVERS[name as keyof typeof DERIVERS];
-        const identity = await derive(entry.input);
+        const identity = await deriveIdentity(entry.input);
         expect(identity.ownerId).toBe(entry.ownerId);
         expect(identity.relayAuth).toBe(entry.relayAuth);
         expect(identity.streamKey).toBeDefined();
@@ -80,8 +72,7 @@ describe("cross-language crypto conformance corpus", () => {
       });
 
       test("seals to the exact recorded ciphertext with the fixed nonce", async () => {
-        const derive = DERIVERS[name as keyof typeof DERIVERS];
-        const identity = await derive(entry.input);
+        const identity = await deriveIdentity(entry.input);
         const nonce = base64UrlDecode(entry.nonceB64);
 
         const envelope = await unsafeSealPayloadWithNonce(
@@ -97,8 +88,7 @@ describe("cross-language crypto conformance corpus", () => {
       });
 
       test("round-trips through decryptEnvelope", async () => {
-        const derive = DERIVERS[name as keyof typeof DERIVERS];
-        const identity = await derive(entry.input);
+        const identity = await deriveIdentity(entry.input);
         const nonce = base64UrlDecode(entry.nonceB64);
 
         const envelope = await unsafeSealPayloadWithNonce(

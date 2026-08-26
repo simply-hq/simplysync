@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { sqliteFalse, sqliteTrue } from "@simplysync/engine";
 import {
   closeDevice,
@@ -24,15 +25,20 @@ import { relayUrl } from "./support";
 
 const defaultRelay = process.env.RELAY_URL ?? "off";
 
-function flag(name: string): string | undefined {
-  const index = Bun.argv.indexOf(`--${name}`);
-  return index === -1 ? undefined : Bun.argv[index + 1];
-}
+const { values: flags, positionals } = parseArgs({
+  args: Bun.argv.slice(2),
+  options: {
+    device: { type: "string", default: "cli" },
+    relay: { type: "string" },
+    key: { type: "string" },
+    confirm: { type: "boolean", default: false },
+  },
+  allowPositionals: true,
+});
 
 /** The owner every device joins: `--key`, else the one `todo:dev` wrote. */
 function sharedRecoveryKey(): string | undefined {
-  const explicit = flag("key");
-  if (explicit) return explicit;
+  if (flags.key) return flags.key;
   if (!existsSync(OWNER_FILE)) return undefined;
   return (JSON.parse(readFileSync(OWNER_FILE, "utf8")) as { recoveryKey: string })
     .recoveryKey;
@@ -66,15 +72,15 @@ Options:
   --key <key>        join a specific owner instead of the shared dev owner`;
 
 async function main(): Promise<void> {
-  const [command, argument] = Bun.argv.slice(2).filter((a) => !a.startsWith("--"));
+  const [command, argument] = positionals;
   if (!command || command === "help") {
     console.log(USAGE);
     return;
   }
 
-  const relay = flag("relay") ?? defaultRelay;
-  const device = flag("device") ?? "cli";
-  if (command === "restore" && !flag("key")) {
+  const relay = flags.relay ?? defaultRelay;
+  const device = flags.device;
+  if (command === "restore" && !flags.key) {
     throw new Error("restore needs --key <recovery-key>");
   }
   const recoveryKey = sharedRecoveryKey();
@@ -88,7 +94,7 @@ async function main(): Promise<void> {
   // `closeDevice` stops the sync poller — without it the process never exits.
   try {
     await run(command, argument, engine, device);
-    if (flag("key")) confirmRecoverySaved(device);
+    if (flags.key) confirmRecoverySaved(device);
     if (
       !recoveryWasConfirmed(device) &&
       !["setup", "key", "add-device", "restore"].includes(command)
@@ -108,7 +114,7 @@ async function run(
 ): Promise<void> {
   switch (command) {
     case "setup": {
-      if (Bun.argv.includes("--confirm")) {
+      if (flags.confirm) {
         confirmRecoverySaved(device);
         console.log(`Recovery key confirmed for device ${device}.`);
       } else {

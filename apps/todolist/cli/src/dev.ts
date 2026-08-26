@@ -15,11 +15,10 @@ import {
 import { OWNER_FILE, todoDataDir } from "./paths";
 import { startRelay } from "./relay";
 
-const fresh = !Bun.argv.includes("--keep-data");
 const once = Bun.argv.includes("--once");
 
 async function main(): Promise<void> {
-  if (fresh) rmSync(todoDataDir, { recursive: true, force: true });
+  rmSync(todoDataDir, { recursive: true, force: true });
   mkdirSync(todoDataDir, { recursive: true });
 
   const relay = await startRelay();
@@ -55,8 +54,7 @@ async function main(): Promise<void> {
       `\nOwner ${owner.id}\n  both devices derived the same owner: true`,
     );
 
-    // Laptop writes -> relay -> phone reads. With --keep-data this is
-    // idempotent, so rerunning the demo doesn't add duplicate seed rows.
+    // Laptop writes -> relay -> phone reads.
     console.log("\n1. laptop ensures two todos exist and pushes");
     await laptop.sync();
     await ensureTodo(laptop, "Buy milk");
@@ -120,7 +118,6 @@ Same schema, other platforms — all join this owner:
   React Native bun run todo:expo       (open settings, paste the key)
   iOS/Swift    apps/todolist/swift  — README “See it interoperate”
   Kotlin       apps/todolist/kotlin — ./gradlew test -PrelayUrl=${relay.url}
-  interop      bun run todo:interop    (drives TS/Swift/Kotlin and diffs rows)
 
 Ctrl-C to stop the relay.`);
 

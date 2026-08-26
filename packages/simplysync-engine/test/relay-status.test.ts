@@ -55,13 +55,13 @@ describe("getRelayStatuses", () => {
       fetch: fetchStub,
     })(schema, {
       name: "relay-transport-replacement-test",
-      transports: [{ type: "Http", url: "http://relay-old.test" }],
+      transports: [{ url: "http://relay-old.test" }],
       syncIntervalMs: 3_600_000,
     });
     await engine.ready;
     await oldPullStarted;
 
-    engine.setTransports([{ type: "Http", url: "http://relay-new.test" }]);
+    engine.setTransports([{ url: "http://relay-new.test" }]);
     expect(newRelayPulls).toBe(0);
     releaseOldPull();
 
@@ -114,8 +114,8 @@ describe("getRelayStatuses", () => {
     })(schema, {
       name: "relay-status-test",
       transports: [
-        { type: "Http", url: "http://relay-a.test" },
-        { type: "Http", url: "http://relay-b.test" },
+        { url: "http://relay-a.test" },
+        { url: "http://relay-b.test" },
       ],
     });
     await engine.ready;
@@ -166,8 +166,8 @@ describe("getRelayStatuses", () => {
     })(schema, {
       name: "relay-status-partial-test",
       transports: [
-        { type: "Http", url: "http://relay-good.test" },
-        { type: "Http", url: "http://relay-bad.test" },
+        { url: "http://relay-good.test" },
+        { url: "http://relay-bad.test" },
       ],
     });
     await engine.ready;
@@ -211,14 +211,14 @@ describe("getRelayStatuses", () => {
     })(schema, {
       name: "relay-status-prune-test",
       transports: [
-        { type: "Http", url: "http://relay-good.test" },
-        { type: "Http", url: "http://relay-bad.test" },
+        { url: "http://relay-good.test" },
+        { url: "http://relay-bad.test" },
       ],
     });
     await engine.ready;
     await engine.sync();
 
-    engine.setTransports([{ type: "Http", url: "http://relay-good.test" }]);
+    engine.setTransports([{ url: "http://relay-good.test" }]);
     const statuses = await engine.getRelayStatuses();
     expect(statuses.length).toBe(1);
     expect(statuses[0]!.url).toContain("relay-good");
@@ -263,7 +263,7 @@ describe("failure classification", () => {
         fetch: fetchStub,
       })(schema, {
         name: `classify-${status}`,
-        transports: [{ type: "Http", url: "http://relay.test" }],
+        transports: [{ url: "http://relay.test" }],
         syncIntervalMs: 3_600_000,
       });
       await engine.ready;
@@ -297,7 +297,7 @@ describe("failure classification", () => {
       fetch: fetchStub,
     })(schema, {
       name: "classify-network",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       syncIntervalMs: 3_600_000,
     });
     await engine.ready;
@@ -329,7 +329,7 @@ describe("failure classification", () => {
       fetch: fetchStub,
     })(schema, {
       name: "classify-recovery",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       syncIntervalMs: 3_600_000,
     });
     await engine.ready;
@@ -374,7 +374,7 @@ describe("poll cadence", () => {
         fetch: fetchStub,
       })(schema, {
         name,
-        transports: [{ type: "Http", url: "http://relay.test" }],
+        transports: [{ url: "http://relay.test" }],
         syncIntervalMs: POLL_MS,
       });
       await engine.ready;

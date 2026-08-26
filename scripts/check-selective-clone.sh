@@ -7,14 +7,6 @@ SOURCE_ROOT=$(git rev-parse --show-toplevel)
 SOURCE_REVISION=$(git -C "$SOURCE_ROOT" rev-parse HEAD)
 CHECK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/simplysync-clone-check.XXXXXX")
 
-case "$CHECK_ROOT" in
-    */simplysync-clone-check.*) ;;
-    *)
-        printf 'Unexpected temporary path: %s\n' "$CHECK_ROOT" >&2
-        exit 1
-        ;;
-esac
-
 cleanup() {
     rm -rf -- "$CHECK_ROOT"
 }

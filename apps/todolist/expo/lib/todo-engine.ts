@@ -33,7 +33,7 @@ export const ONBOARDING_COMPLETE_KEY =
 
 export function relayTransport(url: string): Transport | null {
   const normalized = url.trim().replace(/\/+$/u, "");
-  return normalized ? { type: "Http", url: normalized } : null;
+  return normalized ? { url: normalized } : null;
 }
 
 const defaultTransport = relayTransport(DEFAULT_RELAY_URL);

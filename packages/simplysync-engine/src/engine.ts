@@ -22,7 +22,6 @@ import { createStore, createClock } from "./engine/store.js";
 import { createEventAdmission } from "./engine/admission.js";
 import { createQueryCache } from "./engine/query-cache.js";
 import { createRelaySync } from "./engine/relay.js";
-import { createTabBridge } from "./engine/tab-sync.js";
 import {
   createLifecycle,
   createMutations,
@@ -36,7 +35,6 @@ import {
 //   query-cache.ts       — the reactive, stable-reference query cache
 //   relay.ts             — push/pull/poll sync against a relay
 //   mutations-lifecycle  — the write path + boot/owner management
-export { createIdFromString } from "./engine/ids.js";
 
 /** Builds a compile-only Kysely instance (SQLite dialect, no real driver). */
 function createCompiler<S extends SchemaDefinition>(): Kysely<Database<S>> {
@@ -112,25 +110,15 @@ export const createSync =
     const store = createStore(state, schema, config, schemaVersion);
     const clock = createClock(state, store);
     const queryCache = createQueryCache(state, schema);
-    // One ladder decides what happens to an arriving event, whichever of the
-    // three paths delivered it (relay pull, deferred replay, sibling tab).
+    // One ladder decides what happens to an arriving event, whichever path
+    // delivered it (relay pull or deferred replay).
     const admission = createEventAdmission(store, clock, schema, schemaVersion);
-    const bridge = createTabBridge(
-      state,
-      store,
-      admission,
-      queryCache,
-      deps.tabSync,
-    );
     const relay = createRelaySync(
       state,
       store,
-      clock,
       admission,
       queryCache,
-      bridge,
       schema,
-      deps,
       config,
       fetchImpl,
       schemaVersion,
@@ -141,7 +129,6 @@ export const createSync =
       clock,
       queryCache,
       relay,
-      bridge,
       schema,
       schemaVersion,
       config.maxEventBytes ?? 256 * 1024,
@@ -151,30 +138,14 @@ export const createSync =
       store,
       queryCache,
       relay,
-      mutations,
-      bridge,
       schema,
       deps,
       config,
       fetchImpl,
     );
 
-    // Only the leader talks to relays; mirror its sync state to followers so
-    // sync UI (useSyncState) is truthful in every tab.
-    const tabSync = deps.tabSync;
-    if (tabSync) {
-      const emit = state.setSyncState;
-      state.setSyncState = (next) => {
-        emit(next);
-        if (tabSync.isLeader()) tabSync.publishSyncState(next);
-      };
-      tabSync.subscribeSyncState((next) => {
-        if (!tabSync.isLeader()) emit(next);
-      });
-    }
-
     // engine.ready: kick off init exactly once; every awaiting method uses this
-    // single promise (loadQuery, importLegacy, the appOwner getter).
+    // single promise (loadQuery, the appOwner getter).
     const ready = lifecycle.init();
 
     // Retain synced tombstones until the protocol has a durable, cross-device
@@ -257,14 +228,6 @@ export const createSync =
           ids.map((id) => ({ table, values: { id }, mode: "delete" as const })),
           options,
         );
-      },
-      useOwner(options) {
-        if (options.transports) instance.setTransports(options.transports);
-        return () => instance.setTransports([]);
-      },
-      async importLegacy(legacyDbName) {
-        await ready;
-        return lifecycle.importLegacy(legacyDbName);
       },
       get appOwner() {
         // STABLE promise reference (React `use()`); reset only on owner switch.

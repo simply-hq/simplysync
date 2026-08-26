@@ -91,48 +91,15 @@ afterAll(async () => {
   cleanupGoBinary();
 });
 
+import { eventIds, pull, seed, storedBytes } from "./conformance/reads";
+
 // --- helpers ---------------------------------------------------------------
-
-interface PullBody {
-  readonly events: SyncEnvelope[];
-  readonly nextCursor: string;
-}
-
-async function pull(
-  base: string,
-  who: TestIdentity,
-  after = "",
-): Promise<PullBody> {
-  const res = await pullEvents(base, who, after);
-  expect(res.status).toBe(200);
-  return (await res.json()) as PullBody;
-}
-
-async function eventIds(base: string, who: TestIdentity): Promise<string[]> {
-  return (await pull(base, who)).events.map((event) => event.eventId);
-}
-
-async function usedBytes(base: string, who: TestIdentity): Promise<number> {
-  const res = await getUsage(base, who);
-  expect(res.status).toBe(200);
-  return ((await res.json()) as { storedBytes: number }).storedBytes;
-}
 
 async function streamCount(base: string, who: TestIdentity): Promise<number> {
   const body = (await (await getStatus(base, who)).json()) as {
     account?: { streams?: number };
   };
   return body.account?.streams ?? -1;
-}
-
-async function seed(
-  base: string,
-  count = 3,
-): Promise<{ who: TestIdentity; events: SyncEnvelope[] }> {
-  const who = await createTestIdentity();
-  const events = await makeEnvelopes(who, count);
-  expect((await pushEvents(base, who, events)).status).toBe(200);
-  return { who, events };
 }
 
 /** Runs the Cloudflare compaction cron on demand (`wrangler dev --test-scheduled`). */
@@ -159,8 +126,8 @@ describe.skipIf(!CLOUDFLARE)("migrating an owner between relays", () => {
     expect(fromCf.events).toEqual(fromGo.events);
     // ...and both charge the owner the same, so a migration doesn't silently
     // change how close they are to quota.
-    expect(await usedBytes(cf!.baseUrl, who)).toBe(
-      await usedBytes(go.baseUrl, who),
+    expect(await storedBytes(cf!.baseUrl, who)).toBe(
+      await storedBytes(go.baseUrl, who),
     );
   });
 

@@ -47,7 +47,7 @@ const schema = {
 // Inject a platform SQLite driver + secure storage for the recovery key/phrase.
 const engine = createSync({ createSqliteDriver, secureStorage })(schema, {
   name: "my-app",
-  transports: [{ type: "Http", url: "https://relay.example" }], // optional
+  transports: [{ url: "https://relay.example" }], // optional
 });
 await engine.ready;
 
@@ -193,8 +193,7 @@ declares support.
 - **Synced tombstones are retained.** Until the protocol has a durable
   cross-device delete watermark, automatically hard-deleting an old tombstone
   could let a device that was offline past the retention window resurrect its
-  stale row. The legacy `tombstoneRetentionMs` option is therefore retained for
-  source compatibility but currently has no effect.
+  stale row.
 - **`engine.purgeDeleted({ olderThanMs? })`** — hard-delete old tombstones for a
   database that has never used a relay. It deliberately returns
   `{ purged: 0 }` after any relay history exists, even if transports are later

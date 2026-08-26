@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Mailbox } from "../mailbox.ts";
 import { kotlinRoot } from "../roots.ts";
-import type { Runner } from "./runner.ts";
+import { stopRunner, type Runner } from "./runner.ts";
 
 /**
  * Drives the TodoList Kotlin engine through a long-lived JUnit host. Gradle
@@ -16,7 +16,7 @@ export class KotlinRunner implements Runner {
 
   constructor(mailboxDir: string, private logPath: string) {
     this.mailbox = new Mailbox(mailboxDir);
-    this.root = kotlinRoot();
+    this.root = kotlinRoot;
   }
 
   async start(): Promise<void> {
@@ -63,15 +63,7 @@ export class KotlinRunner implements Runner {
 
   async stop(): Promise<void> {
     if (!this.proc) return;
-    try {
-      await this.mailbox.request({ cmd: "shutdown", device: "_" }, 10_000);
-    } catch {
-      // fall through to hard kill
-    }
-    await Promise.race([this.proc.exited, timeout(15_000)]);
-    this.proc.kill();
+    await stopRunner(this.proc, this.mailbox, 15_000);
     this.proc = null;
   }
 }
-
-const timeout = (ms: number) => new Promise((r) => setTimeout(r, ms));

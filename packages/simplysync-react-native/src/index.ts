@@ -1,7 +1,5 @@
 export {
-  createUseSync,
   useQuery,
-  useRelayStatuses,
   useSync,
   useSyncError,
   useSyncState,

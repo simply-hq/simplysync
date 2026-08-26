@@ -29,13 +29,11 @@ import type {
   SyncEngineConfig,
   SyncEngineDeps,
 } from "../engine-types.js";
-import { LEGACY_IMPORT_VERSION } from "./constants.js";
 import { createId } from "./ids.js";
 import type { QueryCache } from "./query-cache.js";
 import type { RelaySync } from "./relay.js";
 import type { EngineState } from "./state.js";
 import type { Clock, Store } from "./store.js";
-import type { TabBridge } from "./tab-sync.js";
 
 export type Mutations = ReturnType<typeof createMutations>;
 
@@ -55,7 +53,6 @@ export function createMutations(
   clock: Clock,
   queryCache: QueryCache,
   relay: RelaySync,
-  bridge: TabBridge,
   schema: SchemaDefinition,
   schemaVersion: number = SYNC_SCHEMA_VERSION,
   maxEventBytes: number = 256 * 1024,
@@ -284,10 +281,6 @@ export function createMutations(
     // no-ops the network push/pull when there's nothing to push to, but still
     // runs the seal step (see relay.ts `sealPendingOutbox`).
     if (!local) void relay.sync().catch(() => undefined);
-    // Other tabs see even `local` writes live; they just don't stage them.
-    bridge.publish([
-      { eventId: prep.prepared.hlc, payloadJson, outbox: !local },
-    ]);
     queryCache.refreshQueries([table]);
     options?.onComplete?.();
     return { ok: true, value: { id } };
@@ -360,13 +353,6 @@ export function createMutations(
 
     // One sync for the whole batch, same fire-and-forget seal+push as `mutate`.
     if (!local && prepared.length > 0) void relay.sync().catch(() => undefined);
-    bridge.publish(
-      prepared.map((row, i) => ({
-        eventId: row.hlc,
-        payloadJson: payloads[i]!,
-        outbox: !local,
-      })),
-    );
     queryCache.refreshQueries([...new Set(prepared.map((r) => r.table))]);
     options?.onComplete?.();
     return { ok: true, ids: prepared.map((r) => r.id) };
@@ -377,16 +363,14 @@ export function createMutations(
 
 /**
  * Boot + owner management: derive/persist the identity and device id, open the
- * DB and create the schema (`init`), the one-time legacy importer, and the
- * restore/reset owner flows (which wipe local data and adopt a new identity).
+ * DB and create the schema (`init`), and the restore/reset owner flows (which
+ * wipe local data and adopt a new identity).
  */
 export function createLifecycle(
   state: EngineState,
   store: Store,
   queryCache: QueryCache,
   relay: RelaySync,
-  mutations: Mutations,
-  bridge: TabBridge,
   schema: SchemaDefinition,
   deps: SyncEngineDeps,
   config: SyncEngineConfig,
@@ -429,31 +413,24 @@ export function createLifecycle(
   };
 
   // Load a valid persisted credential or create-and-persist a fresh mnemonic.
-  // With tab coordination this must run
-  // inside a cross-tab lock: two tabs cold-booting the same fresh profile
-  // would otherwise each mint a DIFFERENT mnemonic and race the write — two
-  // identities in one session, events sealed under two owners.
   const ensureIdentity = async (): Promise<LocalFirstIdentity> => {
-    const create = async (): Promise<LocalFirstIdentity> => {
-      const existing = await deps.secureStorage.getItem(mnemonicKey);
-      const existingIdentity = await tryDeriveIdentity(existing);
-      if (existingIdentity) {
-        // Persist the protocol-normalized spelling (trimmed native key or
-        // normalized mnemonic) so every later boot sees one canonical value.
-        if (existing !== existingIdentity.recoveryKey) {
-          await deps.secureStorage.setItem(
-            mnemonicKey,
-            existingIdentity.recoveryKey,
-          );
-        }
-        return existingIdentity;
+    const existing = await deps.secureStorage.getItem(mnemonicKey);
+    const existingIdentity = await tryDeriveIdentity(existing);
+    if (existingIdentity) {
+      // Persist the protocol-normalized spelling (trimmed native key or
+      // normalized mnemonic) so every later boot sees one canonical value.
+      if (existing !== existingIdentity.recoveryKey) {
+        await deps.secureStorage.setItem(
+          mnemonicKey,
+          existingIdentity.recoveryKey,
+        );
       }
-      const fresh = createMnemonic();
-      const freshIdentity = await deriveIdentity(fresh);
-      await deps.secureStorage.setItem(mnemonicKey, freshIdentity.recoveryKey);
-      return freshIdentity;
-    };
-    return deps.tabSync ? deps.tabSync.withLock("identity", create) : create();
+      return existingIdentity;
+    }
+    const fresh = createMnemonic();
+    const freshIdentity = await deriveIdentity(fresh);
+    await deps.secureStorage.setItem(mnemonicKey, freshIdentity.recoveryKey);
+    return freshIdentity;
   };
 
   const loadIdentity = async (): Promise<void> => {
@@ -472,25 +449,15 @@ export function createLifecycle(
       await deps.secureStorage.setItem(deviceKey, storedDevice);
     }
     state.deviceId = storedDevice;
-    if (deps.tabSync) {
-      // Each tab is an independent HLC writer. A shared device id would let
-      // two tabs mint the SAME event id in the same millisecond — colliding
-      // outbox rows (one event silently dropped) and unresolvable LWW ties.
-      const tag = new Uint8Array(3);
-      globalThis.crypto.getRandomValues(tag);
-      state.deviceId = `${storedDevice}.${base64UrlEncode(tag)}`;
-    }
   };
 
   // Switch to a different owner (restore an existing key/phrase, or reset to a
   // fresh one): persist the credential, wipe local data, adopt the new identity,
-  // and re-point the cached appOwner promise. Marks the one-time legacy import
-  // as done so the post-reload boot doesn't resurrect the wiped legacy db.
-  // Callers handle reload (and any post-switch sync) themselves.
+  // and re-point the cached appOwner promise. Callers handle reload (and any
+  // post-switch sync) themselves.
   const switchOwner = async (derived: LocalFirstIdentity): Promise<void> => {
     await deps.secureStorage.setItem(mnemonicKey, derived.recoveryKey);
     store.wipeLocalData();
-    store.setLegacyImportVersion(LEGACY_IMPORT_VERSION);
     state.identity = derived;
     state.appOwnerValue = appOwnerFromIdentity(derived);
     state.appOwnerPromise = Promise.resolve(state.appOwnerValue);
@@ -519,25 +486,6 @@ export function createLifecycle(
       state.schemaReady = true;
       // hydrate any active queries created before init finished
       queryCache.refreshQueries(Object.keys(schema));
-      // Cross-tab events buffered while the snapshot was loading apply now;
-      // from here on they apply live.
-      bridge.start();
-      // A promoted follower takes over the dead leader's relay duties. (The
-      // snapshot persist that heals an unpersisted tail is the platform
-      // coordinator's job — the engine doesn't own persistence.)
-      deps.tabSync?.onPromoted(() => {
-        if (state.transports.length > 0) {
-          void relay.sync().catch(() => undefined);
-          relay.startPolling();
-        }
-      });
-      // A follower's staged foreign events should push promptly, not on the
-      // next poll tick: when the leader applies a broadcast batch that staged
-      // outbox rows, kick a sync.
-      bridge.onApplied = () => {
-        if (!deps.tabSync?.isLeader()) return;
-        void relay.sync().catch(() => undefined);
-      };
       if (state.transports.length > 0) {
         void relay.sync().catch(() => undefined);
         relay.startPolling();
@@ -562,89 +510,6 @@ export function createLifecycle(
       });
       throw caught;
     }
-  };
-
-  const importLegacy = async (
-    legacyDbName: string,
-  ): Promise<{ imported: number; skipped: number }> => {
-    // Versioned so a fixed importer re-runs for users imported by an older,
-    // buggy version. v2: coerce NULL booleans (legacy schemas allowed NULL where
-    // ours requires SqliteBoolean) so those rows aren't silently dropped — v1
-    // lost e.g. accounts whose `excludeFromReports` was NULL. v3: also count +
-    // LOG rows we can't import (required non-boolean column NULL/invalid in
-    // legacy data) instead of dropping them silently.
-    const IMPORT_VERSION = LEGACY_IMPORT_VERSION;
-    const done = store.legacyImportVersion();
-    if (!state.driver || done >= IMPORT_VERSION)
-      return { imported: 0, skipped: 0 };
-    let imported = 0;
-    let skipped = 0;
-    const skipReasons: string[] = [];
-    try {
-      const legacy = await deps.createSqliteDriver(legacyDbName);
-      for (const table of Object.keys(schema)) {
-        const columns = schema[table];
-        // SqliteBoolean columns accept 0 and 1 but reject 2 — used to spot
-        // required booleans so a legacy NULL/missing becomes `false`, not a
-        // drop. (PositiveInt/FiniteNumber/strings don't match, so e.g. `order`
-        // stays untouched.)
-        const boolColumns = Object.entries(columns)
-          .filter(
-            ([, type]) =>
-              type.from(0).ok && type.from(1).ok && !type.from(2).ok,
-          )
-          .map(([name]) => name);
-        let rows: Record<string, unknown>[] = [];
-        try {
-          rows = legacy.select<Record<string, unknown>>(
-            `select * from "${table}"`,
-          );
-        } catch {
-          continue; // table absent in legacy db
-        }
-        for (const row of rows) {
-          if (typeof row.id !== "string") continue;
-          // Re-run recovers only rows not already imported (no churn on the rows
-          // a prior import got right).
-          const exists =
-            state.driver.select(
-              `select 1 from "${table}" where id = ? limit 1`,
-              [row.id],
-            ).length > 0;
-          if (exists) continue;
-          const sanitized: Record<string, unknown> = { ...row };
-          for (const name of boolColumns) {
-            if (sanitized[name] === null || sanitized[name] === undefined) {
-              sanitized[name] = sqliteFalse;
-            }
-          }
-          const result = mutations.mutate(table, sanitized, "upsert");
-          if (result.ok) {
-            imported += 1;
-          } else {
-            skipped += 1;
-            if (skipReasons.length < 20) {
-              skipReasons.push(`${table}#${row.id}: ${result.error.message}`);
-            }
-          }
-        }
-      }
-    } catch (caught) {
-      // No legacy database, or incompatible — leave the new db untouched.
-      console.warn("importLegacy: legacy db unreadable", caught);
-    }
-    store.setLegacyImportVersion(IMPORT_VERSION);
-    if (imported > 0) queryCache.refreshQueries(Object.keys(schema));
-    if (skipped > 0) {
-      // Visible, not silent: a column was NULL/invalid for a required field we
-      // can't safely default (e.g. a NULL amount/date/name). Surfaced so it can
-      // be investigated rather than vanishing.
-      console.warn(
-        `importLegacy: skipped ${skipped} legacy row(s) that failed validation:`,
-        skipReasons,
-      );
-    }
-    return { imported, skipped };
   };
 
   const restoreAppOwner = async (
@@ -725,10 +590,6 @@ export function createLifecycle(
     // above), then sync and reload so the engine reboots with the restored owner
     // and pulls fresh. The soft switch also covers platforms without a hard
     // reload (RN); on web the reload supersedes it.
-    // Whole-database replacement: every other tab must stop writing/persisting
-    // and reboot from the post-op snapshot (barrier placed AFTER verification,
-    // so a wrong phrase doesn't reboot the other tabs for nothing).
-    await deps.tabSync?.acquireExclusive();
     await switchOwner(restored);
     if (state.transports.length > 0) void relay.sync().catch(() => undefined);
     reloadApp();
@@ -776,7 +637,6 @@ export function createLifecycle(
         );
       }
     }
-    await deps.tabSync?.acquireExclusive();
     const mnemonic = createMnemonic();
     await switchOwner(await deriveIdentity(mnemonic));
     reloadApp();
@@ -863,8 +723,6 @@ export function createLifecycle(
     // The subsequent SQLite replacement is transactional, but secure storage
     // is not part of that transaction.
     store.validateSnapshot(snapshot);
-    // Whole-database replacement — same barrier rationale as restoreAppOwner.
-    await deps.tabSync?.acquireExclusive();
     const previousRecoveryKey = await deps.secureStorage.getItem(mnemonicKey);
     try {
       await deps.secureStorage.setItem(mnemonicKey, derived.recoveryKey);
@@ -965,7 +823,6 @@ export function createLifecycle(
 
   return {
     init,
-    importLegacy,
     restoreAppOwner,
     resetAppOwner,
     exportDatabase,

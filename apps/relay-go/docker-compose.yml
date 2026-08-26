@@ -6,11 +6,6 @@
 #
 # All sqlite state (relay.db + -wal + -shm) lives under /data, so the single
 # named volume below captures everything. The relay only ever stores ciphertext.
-#
-# For LAN mDNS auto-discovery (see docs/local-first/self-hosting.md), set
-# MDNS_ENABLE=1 AND switch to host networking — multicast cannot escape the
-# default bridge network. Uncomment `network_mode: host` and drop the `ports`
-# mapping in that case.
 
 services:
   relay:
@@ -24,12 +19,10 @@ services:
       # (printed to the logs on startup). Leave unset to disable admin entirely.
       ADMIN_TOKEN: "${ADMIN_TOKEN:-}"
       MAX_OWNER_BYTES: "${MAX_OWNER_BYTES:-1073741824}"
-      # MDNS_ENABLE: "1"            # advertise on the LAN (requires host networking)
     volumes:
       - relay-data:/data
     # The image is distroless (no shell), so a Docker healthcheck CMD cannot run
     # inside it. Probe externally instead: `curl http://HOST:4100/health`.
-    # network_mode: host           # uncomment for MDNS_ENABLE (drop `ports` above)
 
 volumes:
   relay-data:

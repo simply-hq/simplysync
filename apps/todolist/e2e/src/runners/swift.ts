@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import type { Subprocess } from "bun";
 import { Mailbox } from "../mailbox.ts";
 import { swiftRoot } from "../roots.ts";
-import type { Runner } from "./runner.ts";
+import { stopRunner, type Runner } from "./runner.ts";
 
 /** Compiles and drives the repository's TodoList Swift engine. */
 export class SwiftRunner implements Runner {
@@ -14,7 +14,7 @@ export class SwiftRunner implements Runner {
 
   constructor(mailboxDir: string, private logPath: string) {
     this.mailbox = new Mailbox(mailboxDir);
-    this.root = swiftRoot();
+    this.root = swiftRoot;
     this.binary = join(dirname(mailboxDir), "todolist-swift-runner");
   }
 
@@ -42,13 +42,7 @@ export class SwiftRunner implements Runner {
 
   async stop(): Promise<void> {
     if (!this.proc) return;
-    try {
-      await this.mailbox.request({ cmd: "shutdown", device: "_" }, 10_000);
-    } catch {
-      // fall through to hard kill
-    }
-    await Promise.race([this.proc.exited, timeout(5_000)]);
-    this.proc.kill();
+    await stopRunner(this.proc, this.mailbox, 5_000);
     this.proc = null;
   }
 
@@ -67,5 +61,3 @@ export class SwiftRunner implements Runner {
     await Promise.race([ready, exited]);
   }
 }
-
-const timeout = (ms: number) => new Promise((r) => setTimeout(r, ms));

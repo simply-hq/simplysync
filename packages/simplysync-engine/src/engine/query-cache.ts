@@ -51,31 +51,10 @@ export function createQueryCache(state: EngineState, schema: SchemaDefinition) {
     `${query.sql}::${JSON.stringify(query.parameters)}`;
 
   // Structural row-set equality used to decide whether a re-run result is
-  // identical to what's cached (see refreshQueries). Deliberately NOT
-  // `JSON.stringify` comparison: the schema's column type system allows
-  // `"blob"` columns (see SqliteColumnType in type.ts), and drivers that
-  // support them (e.g. sql.js, bun:sqlite) surface BLOBs as `Uint8Array`,
-  // which `JSON.stringify` does not serialize meaningfully — that would let
-  // two different byte buffers compare "equal" and produce a stale read, or
-  // vice versa. Compare byte-for-byte for `Uint8Array`/`ArrayBuffer` views and
-  // with `Object.is` (stricter than `===`: distinguishes `NaN`/`NaN` as equal
-  // and `0`/`-0` as different) for everything else. Err strict: a too-loose
-  // compare causes a stale UI (a real bug); a too-strict one only loses the
-  // optimization (harmless, just re-renders).
-  const bytesEqual = (a: Uint8Array, b: Uint8Array): boolean => {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-      if (a[i] !== b[i]) return false;
-    }
-    return true;
-  };
-
-  const cellsEqual = (a: unknown, b: unknown): boolean => {
-    if (a instanceof Uint8Array || b instanceof Uint8Array) {
-      return a instanceof Uint8Array && b instanceof Uint8Array && bytesEqual(a, b);
-    }
-    return Object.is(a, b);
-  };
+  // identical to what's cached (see refreshQueries). `Object.is` per cell
+  // (stricter than `===`: NaN equals NaN, 0 differs from -0). No built-in
+  // column type produces SQLite BLOBs, so cells are always primitives here.
+  const cellsEqual = (a: unknown, b: unknown): boolean => Object.is(a, b);
 
   const rowEqual = (
     a: Record<string, unknown>,

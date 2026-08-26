@@ -17,7 +17,6 @@ import type { Clock, Store } from "./store.js";
 export type DeferReason =
   | "futureVersion"
   | "futureClock"
-  | "clockRefused"
   | "unknownTable"
   | "applyFailed";
 
@@ -38,14 +37,10 @@ export type EventAdmission = ReturnType<typeof createEventAdmission>;
 /**
  * The single answer to "an event arrived — may it touch the database?".
  *
- * Events reach a device three ways: pulled from a relay, replayed from the
- * deferred queue after an upgrade, and broadcast by a sibling tab. All three
- * must reach the same verdict, because they carry the same events — a relay
- * pull on the leader and the broadcast of that same event to a follower are
- * one event arriving at two databases. This module was extracted because they
- * had drifted into three: a clock-refused event was terminally dropped on the
- * pull path, retried forever on the replay path, and silently discarded (along
- * with its outbox marker) on the tab path.
+ * Events reach a device two ways: pulled from a relay, and replayed from the
+ * deferred queue after an upgrade. Both must reach the same verdict, because
+ * they carry the same events. This module was extracted because the paths had
+ * drifted apart in how they treated events that could not be applied yet.
  *
  * The unified rule is retain-and-retry. An event that decrypted and
  * authenticated is the owner's own data; the only outcomes that discard it are
@@ -56,10 +51,10 @@ export type EventAdmission = ReturnType<typeof createEventAdmission>;
  * converges rather than diverging from them.
  *
  * The module owns the bookkeeping as well as the decision. Returning a verdict
- * alone would leave the same five-branch switch at each of the three call
- * sites, which relocates the divergence rather than removing it. Both queue
- * calls are idempotent for callers whose event was never deferred, so one
- * ladder serves all three paths.
+ * alone would leave the same five-branch switch at each call site, which
+ * relocates the divergence rather than removing it. Both queue calls are
+ * idempotent for callers whose event was never deferred, so one ladder serves
+ * every path.
  *
  * Every entry point must be called inside a driver transaction: it writes the
  * row, the deferred queue, and the clock's high-water mark, and a partial
@@ -153,16 +148,9 @@ export function createEventAdmission(
 
     // Absorb the sender's time even for tables this app does not have, so a
     // later local write always sorts above what this device has already seen.
-    // A refusal here means the clock would not take the value; retry shortly
-    // rather than dropping the event, which is what the pull path used to do.
-    if (!clock.observeHlc(payload.hlc)) {
-      return deferUntil(
-        eventId,
-        payloadJson,
-        Math.max(Date.now() + 1_000, futureRetryAfter(eventId, payload.hlc)),
-        "clockRefused",
-      );
-    }
+    // Malformed and future stamps were rejected/deferred above, which are the
+    // only values the clock refuses, so this always succeeds here.
+    clock.observeHlc(payload.hlc);
 
     // A table this build does not declare. Retained verbatim for the upgrade
     // that introduces it.

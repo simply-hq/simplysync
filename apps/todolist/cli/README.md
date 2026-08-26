@@ -32,9 +32,6 @@ bun run todo add "From a third device" --device tablet
 bun run todo toggle <id> --device laptop
 ```
 
-Use `bun run todo:interop` to drive the TypeScript, Swift, and Kotlin engines
-against one owner and relay.
-
 Create an independently named command-line app from this exact source with:
 
 ```sh

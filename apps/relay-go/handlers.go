@@ -76,6 +76,23 @@ func routeHandler(cfg Config, st *store) http.Handler {
 	})
 }
 
+// authedOwner reads the query ownerId + bearer token, runs owner auth, and
+// writes the denial response itself. ok=false means the response is written.
+func authedOwner(st *store, w http.ResponseWriter, r *http.Request) (string, bool) {
+	ownerID := r.URL.Query().Get("ownerId")
+	relayAuth := bearerToken(r)
+	if ownerID == "" || relayAuth == "" {
+		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
+		return "", false
+	}
+	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
+	if !auth.ok {
+		writeAuthDenied(w, auth)
+		return "", false
+	}
+	return ownerID, true
+}
+
 // authDeniedStatus maps a store-level denial to its status code and body
 // message. The store deals in reasons; this is the only place they become HTTP,
 // so a change to the wire contract can't hide inside a storage decision.
@@ -253,11 +270,9 @@ func handleCompactStreams(cfg Config, st *store, w http.ResponseWriter, r *http.
 
 func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	ownerID := q.Get("ownerId")
 	after := q.Get("after")
-	relayAuth := bearerToken(r)
-	if ownerID == "" || relayAuth == "" {
-		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
+	ownerID, ok := authedOwner(st, w, r)
+	if !ok {
 		return
 	}
 
@@ -269,12 +284,6 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 	}
 	if limit > cfg.MaxEventsPerPull {
 		limit = cfg.MaxEventsPerPull
-	}
-
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
-	if !auth.ok {
-		writeAuthDenied(w, auth)
-		return
 	}
 
 	events, cursor, err := st.listEvents(ownerID, after, limit, cfg.MaxPullBytes)
@@ -292,15 +301,8 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 }
 
 func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {
-	ownerID := r.URL.Query().Get("ownerId")
-	relayAuth := bearerToken(r)
-	if ownerID == "" || relayAuth == "" {
-		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
-		return
-	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
-	if !auth.ok {
-		writeAuthDenied(w, auth)
+	ownerID, ok := authedOwner(st, w, r)
+	if !ok {
 		return
 	}
 	n, _ := st.ownerStoredBytes(ownerID)
@@ -312,15 +314,8 @@ func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {
 // A reachable-but-never-synced owner gets 404 (Unknown owner) from auth, which
 // the client reads as "relay up, account empty".
 func handleStatus(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
-	ownerID := r.URL.Query().Get("ownerId")
-	relayAuth := bearerToken(r)
-	if ownerID == "" || relayAuth == "" {
-		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
-		return
-	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
-	if !auth.ok {
-		writeAuthDenied(w, auth)
+	ownerID, ok := authedOwner(st, w, r)
+	if !ok {
 		return
 	}
 	status, err := st.ownerStatus(ownerID)
@@ -442,15 +437,8 @@ func handleBlobPut(cfg Config, st *store, w http.ResponseWriter, r *http.Request
 }
 
 func handleBlobGet(st *store, w http.ResponseWriter, r *http.Request, hash string) {
-	ownerID := r.URL.Query().Get("ownerId")
-	relayAuth := bearerToken(r)
-	if ownerID == "" || relayAuth == "" {
-		writeJSON(w, http.StatusUnauthorized, errBody("Missing ownerId or bearer token"))
-		return
-	}
-	auth := st.ensureOwnerAuth(ownerID, relayAuth, false, "")
-	if !auth.ok {
-		writeAuthDenied(w, auth)
+	ownerID, authed := authedOwner(st, w, r)
+	if !authed {
 		return
 	}
 	bytes, ok, err := st.getBlob(ownerID, hash)

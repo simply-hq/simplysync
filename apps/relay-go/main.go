@@ -135,9 +135,7 @@ func main() {
 		log.Fatalf("migrate: %v", err)
 	}
 
-	// Sample storage/system stats for the dashboard (only when admin is on).
 	if cfg.AdminToken != "" {
-		startSampler(st, cfg.DataDir)
 		go adminSweepLoop()
 	}
 
@@ -161,18 +159,14 @@ func main() {
 		}()
 	}
 
-	// Optional LAN discovery (off unless MDNS_ENABLE is set).
-	if mdnsEnabled() {
-		if shutdownMDNS, err := startMDNS(cfg.Port); err != nil {
-			log.Printf("mDNS: advertisement disabled (%v)", err)
-		} else {
-			defer shutdownMDNS()
-		}
-	}
-
 	initRateLimiters(cfg)
-	// metrics outermost so 429s are counted; then the per-IP rate limit; then routes.
-	handler := withMetrics(cfg, withRateLimit(routeHandler(cfg, st)))
+	// metrics outermost so 429s are counted; then the per-IP rate limit; then
+	// routes. The counters are only readable through the admin dashboard, so
+	// skip the per-request lock entirely when admin is off (the default).
+	handler := withRateLimit(routeHandler(cfg, st))
+	if cfg.AdminToken != "" {
+		handler = withMetrics(cfg, handler)
+	}
 	server := &http.Server{
 		Addr:    ":" + strconv.Itoa(cfg.Port),
 		Handler: handler,

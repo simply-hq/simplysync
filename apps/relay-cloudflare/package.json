@@ -8,7 +8,6 @@
     "verify": "node scripts/verify.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
-    "deploy:worker": "wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply sbt-relay --local",
     "migrate:remote": "wrangler d1 migrations apply sbt-relay --remote",
     "typecheck": "tsc --noEmit",

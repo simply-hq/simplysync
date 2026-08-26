@@ -93,32 +93,23 @@ function sleep(ms: number): Promise<void> {
 export function tailCollector(stream: ReadableStream<Uint8Array> | null): {
   tail(): string;
 } {
-  const lines: string[] = [];
-  const maxLines = 200;
+  let tail = "";
   if (stream) {
+    const reader = stream.getReader();
+    const decoder = new TextDecoder();
     void (async () => {
-      const reader = stream.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       try {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx: number;
-          // eslint-disable-next-line no-cond-assign
-          while ((idx = buffer.indexOf("\n")) >= 0) {
-            lines.push(buffer.slice(0, idx));
-            if (lines.length > maxLines) lines.shift();
-            buffer = buffer.slice(idx + 1);
-          }
+          tail = (tail + decoder.decode(value, { stream: true })).slice(-8_000);
         }
       } catch {
         // stream closed/killed — nothing more to collect
       }
     })();
   }
-  return { tail: () => lines.join("\n") };
+  return { tail: () => tail };
 }
 
 export async function waitForHealth(

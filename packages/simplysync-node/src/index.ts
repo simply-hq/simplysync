@@ -152,37 +152,6 @@ export function createNodeSqliteDriverFactory(
   return factory;
 }
 
-/**
- * Minimal encrypted key/value shape used by Raycast LocalStorage and similar
- * host-owned secret stores. The host must encrypt values at rest.
- */
-export interface EncryptedStringStore {
-  getItem(key: string): unknown | Promise<unknown>;
-  setItem(key: string, value: string): void | Promise<void>;
-  removeItem(key: string): void | Promise<void>;
-}
-
-/** Validate a host encrypted key/value store before exposing it to the engine. */
-export function createKeyValueSecureStorage(
-  storage: EncryptedStringStore,
-): SecureStorage {
-  return {
-    async getItem(key) {
-      const value = await storage.getItem(key);
-      if (value === undefined || value === null) return null;
-      if (typeof value !== "string") {
-        throw new Error(`Secure storage value for "${key}" is not a string.`);
-      }
-      return value;
-    },
-    async setItem(key, value) {
-      await storage.setItem(key, value);
-    },
-    async removeItem(key) {
-      await storage.removeItem(key);
-    },
-  };
-}
 
 export interface NodeSyncDepsOptions extends NodeSqliteDriverFactoryOptions {
   readonly secureStorage: SecureStorage;

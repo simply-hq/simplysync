@@ -9,10 +9,19 @@
     "url": "git+https://github.com/simply-hq/simplysync.git",
     "directory": "packages/simplysync-react"
   },
-  "keywords": ["local-first", "offline-first", "sync", "react", "e2ee"],
+  "keywords": [
+    "local-first",
+    "offline-first",
+    "sync",
+    "react",
+    "e2ee"
+  ],
   "type": "module",
   "sideEffects": false,
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -28,13 +37,12 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
-  "dependencies": {
-    "@simplysync/engine": "0.0.1"
-  },
   "peerDependencies": {
+    "@simplysync/engine": ">=0.0.1 <0.1.0",
     "react": ">=18.0.0 <20.0.0"
   },
   "devDependencies": {
+    "@simplysync/engine": "0.0.1",
     "@types/react": "19.2.16",
     "@types/react-dom": "19.2.2",
     "react": "19.2.0",

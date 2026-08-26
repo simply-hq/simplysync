@@ -50,7 +50,7 @@ describe("relay data loss", () => {
       fetch: fetchStub,
     })(schema, {
       name: "relay-wipe-test",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       syncIntervalMs: 3_600_000,
     });
     await engine.ready;
@@ -109,7 +109,7 @@ describe("relay data loss", () => {
       fetch: fetchStub,
     })(schema, {
       name: "relay-truncated-test",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       syncIntervalMs: 3_600_000,
     });
     await engine.ready;
@@ -125,7 +125,7 @@ describe("resetAppOwner guard", () => {
   const makeEngine = (
     options: {
       fetch?: typeof fetch;
-      transports?: { type: "Http"; url: string }[];
+      transports?: { url: string }[];
       name: string;
     },
   ) =>
@@ -159,7 +159,7 @@ describe("resetAppOwner guard", () => {
   test("refuses when the relay is unreachable (the offline case)", async () => {
     const engine = makeEngine({
       name: "reset-offline",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       fetch: (async () => {
         throw new TypeError("Network request failed");
       }) as typeof fetch,
@@ -173,7 +173,7 @@ describe("resetAppOwner guard", () => {
   test("refuses when a reachable relay holds no copy of this owner", async () => {
     const engine = makeEngine({
       name: "reset-empty-relay",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       // Alive, but this owner has never pushed: status 404, /health answers.
       fetch: (async (input: RequestInfo | URL) =>
         String(input).includes("/v1/status")
@@ -187,7 +187,7 @@ describe("resetAppOwner guard", () => {
   test("proceeds when a relay confirms it holds the data, and always under force", async () => {
     const confirmed = makeEngine({
       name: "reset-confirmed",
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
         if (init?.method === "POST") return okPush();
         if (String(input).includes("/v1/events")) {
@@ -224,7 +224,7 @@ describe("wipe detection does not fire on a healthy relay", () => {
       fetch: fetchImpl,
     })(schema, {
       name,
-      transports: [{ type: "Http", url: "http://relay.test" }],
+      transports: [{ url: "http://relay.test" }],
       syncIntervalMs: 3_600_000,
     });
 

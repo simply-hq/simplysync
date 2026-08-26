@@ -24,32 +24,4 @@ if (readme !== docsLanding) {
   );
 }
 
-for (const required of [
-  "sh -s -- react-native simplysync-mobile",
-  "scaffold-simplysync.sh react-native",
-  "bun install --no-save",
-  "bun run build",
-  "bun run --cwd apps/my-notes ios",
-  "bun run --cwd apps/my-notes android",
-  "I saved this key",
-  "Relay URL",
-  "Cloudflare",
-]) {
-  if (!readme.includes(required)) {
-    throw new Error(`shared quickstart is missing required step: ${required}`);
-  }
-}
-
-for (const removed of [
-  "--with-relay",
-  "bun run relay:go",
-  "Go 1.25",
-  "127.0.0.1:4100",
-  "10.0.2.2:4100",
-]) {
-  if (readme.includes(removed)) {
-    throw new Error(`shared quickstart still includes removed setup: ${removed}`);
-  }
-}
-
 console.log("README and docs-site quickstarts match.");

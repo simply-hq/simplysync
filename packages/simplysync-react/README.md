@@ -47,6 +47,4 @@ export function App() {
 ```
 
 `useQuery` subscribes with `useSyncExternalStore`, so local writes and applied
-remote changes both update React. `useRelayStatuses()` is intended for
-diagnostics/settings UI rather than hot render paths because it probes each
-configured relay.
+remote changes both update React.

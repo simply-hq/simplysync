@@ -8,12 +8,10 @@ import {
 } from "@simplysync/protocol";
 import type {
   DbSnapshot,
-  IndexCreate,
   SchemaDefinition,
   SyncEngineConfig,
 } from "../engine-types.js";
 import {
-  LEGACY_IMPORT_VERSION,
   OUTBOX_PUSH_BATCH,
   SYNC_DEFERRED_TABLE,
   SYNC_LOG_CAP,
@@ -31,22 +29,6 @@ import type { EngineState } from "./state.js";
 // (`base36(millis,10)-base36(counter,4)-deviceId`). Returns null if malformed.
 function hlcMillis(hlc: string): number | null {
   return parseHlc(hlc)?.millis ?? null;
-}
-
-function makeIndexCreate(name: string): IndexCreate {
-  const spec = { name, table: "", columns: [] as string[] };
-  const api: IndexCreate = {
-    __spec: spec,
-    on(table) {
-      spec.table = table;
-      return api;
-    },
-    column(column) {
-      spec.columns.push(column);
-      return api;
-    },
-  };
-  return api;
 }
 
 export type Store = ReturnType<typeof createStore>;
@@ -123,16 +105,13 @@ export function createStore(
         }
       }
     }
-    if (config.indexes) {
-      for (const index of config.indexes(makeIndexCreate)) {
-        const { name, table, columns } = index.__spec;
-        if (!table || columns.length === 0) continue;
-        driver.exec(
-          `create index if not exists "${name}" on "${table}" (${columns
-            .map((c) => `"${c}"`)
-            .join(", ")});`,
-        );
-      }
+    for (const { name, table, columns } of config.indexes ?? []) {
+      if (!table || columns.length === 0) continue;
+      driver.exec(
+        `create index if not exists "${name}" on "${table}" (${columns
+          .map((c) => `"${c}"`)
+          .join(", ")});`,
+      );
     }
     // `payload_json` holds the plaintext event (same trust level as the local
     // row itself) written SYNCHRONOUSLY, in the same transaction as the row it
@@ -344,31 +323,6 @@ export function createStore(
   const setClockHighWaterMark = (time: number, counter: number): void => {
     setMeta("hlc:time", String(time));
     setMeta("hlc:counter", String(counter));
-  };
-
-  const legacyImportVersion = (): number =>
-    Number(getMeta("legacyImported") ?? "0") || 0;
-  const setLegacyImportVersion = (version: number): void =>
-    setMeta("legacyImported", String(version));
-
-  // Where the bounded rescan of permanently-opaque deferred events has got to
-  // for a given schema token. Durable so a large backlog progresses across
-  // syncs, and so a schema already scanned to completion never rescans.
-  const opaqueScanState = (): { activeToken: string; completedToken: string; cursor: string | null } => ({
-    activeToken: getMeta("deferred:opaque:activeSchema") ?? "",
-    completedToken: getMeta("deferred:opaque:completeSchema") ?? "",
-    cursor: getMeta("deferred:opaque:cursor") || null,
-  });
-  const startOpaqueScan = (token: string): void => {
-    setMeta("deferred:opaque:activeSchema", token);
-    setMeta("deferred:opaque:cursor", "");
-  };
-  const advanceOpaqueScan = (cursor: string): void =>
-    setMeta("deferred:opaque:cursor", cursor);
-  const finishOpaqueScan = (token: string): void => {
-    setMeta("deferred:opaque:completeSchema", token);
-    setMeta("deferred:opaque:activeSchema", "");
-    setMeta("deferred:opaque:cursor", "");
   };
 
   // The Seen set: which relay-delivered events this device has already
@@ -1036,11 +990,8 @@ export function createStore(
           `select * from "${table}"`,
         );
       }
-      // Everything except the legacy-import marker, which is owned by the
-      // restore flow (see importSnapshot) — not carried from the source device.
       const metaRows = driver.select<{ key: string; value: string }>(
-        `select key, value from "${SYNC_META_TABLE}" where key != ?`,
-        ["legacyImported"],
+        `select key, value from "${SYNC_META_TABLE}"`,
       );
       for (const { key, value } of metaRows) meta[key] = value;
     }
@@ -1102,10 +1053,8 @@ export function createStore(
   };
 
   // Replace all local data with a snapshot. Atomic: wipe, re-write every row
-  // verbatim (preserving each row's `updatedAt` HLC so LWW stays correct),
-  // restore the sync metadata, and re-assert the legacy-import marker so the
-  // one-time importer doesn't resurrect a wiped legacy db on the next boot
-  // (mirrors switchOwner). Identity is handled by the caller.
+  // verbatim (preserving each row's `updatedAt` HLC so LWW stays correct) and
+  // restore the sync metadata. Identity is handled by the caller.
   const importSnapshot = (snapshot: DbSnapshot): void => {
     const { driver } = state;
     if (!driver) return;
@@ -1127,7 +1076,6 @@ export function createStore(
       for (const [key, value] of Object.entries(snapshot.meta)) {
         setMeta(key, value);
       }
-      setLegacyImportVersion(LEGACY_IMPORT_VERSION);
     });
   };
 
@@ -1138,15 +1086,9 @@ export function createStore(
     pushCursor,
     clockHighWaterMark,
     setClockHighWaterMark,
-    legacyImportVersion,
-    setLegacyImportVersion,
     hasSeenEvent,
     markEventSeen,
     pruneSeen,
-    opaqueScanState,
-    startOpaqueScan,
-    advanceOpaqueScan,
-    finishOpaqueScan,
     hasRelayHistory,
     deferRemoteEvent,
     listOpaqueDeferredEvents,
@@ -1169,7 +1111,6 @@ export function createStore(
     insertPendingOutboxEvent,
     writeRow,
     coerceValues,
-    projectRow,
     applyLwwRow,
     exportSnapshot,
     validateSnapshot,

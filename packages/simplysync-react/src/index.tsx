@@ -2,14 +2,11 @@ import {
   createContext,
   createElement,
   useContext,
-  useEffect,
   useMemo,
-  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type {
-  RelayStatus,
   SyncEngine,
   SyncError,
   Query,
@@ -29,8 +26,7 @@ export type {
 } from "@simplysync/engine";
 
 // The React bindings the apps use:
-// SyncProvider, useQuery (reactive), useSyncState, createUseSync/useSync,
-// useSyncError.
+// SyncProvider, useSync, useQuery (reactive), useSyncState, useSyncError.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SyncContext = createContext<SyncEngine<any> | null>(null);
@@ -87,39 +83,6 @@ export function useSyncState(): SyncState {
   );
 }
 
-/**
- * Per-relay health + storage snapshot (used vs quota, from GET /v1/status),
- * refreshed on an interval. Each refresh is one HTTP request per relay, so
- * this is for diagnostics/settings surfaces, not hot paths. Empty until the
- * first probe resolves.
- */
-export function useRelayStatuses(options?: {
-  /** Refresh cadence in ms. Default 30 000. */
-  readonly refreshMs?: number;
-}): readonly RelayStatus[] {
-  const engine = useSync();
-  const refreshMs = options?.refreshMs ?? 30_000;
-  const [statuses, setStatuses] = useState<readonly RelayStatus[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      engine
-        .getRelayStatuses()
-        .then((next) => {
-          if (!cancelled) setStatuses(next);
-        })
-        .catch(() => undefined);
-    };
-    load();
-    const timer = setInterval(load, refreshMs);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [engine, refreshMs]);
-  return statuses;
-}
-
 export function useSyncError(): SyncError | null {
   const engine = useSync();
   return useSyncExternalStore(
@@ -127,30 +90,4 @@ export function useSyncError(): SyncError | null {
     () => engine.getError(),
     () => engine.getError(),
   );
-}
-
-/**
- * `createUseSync(engine)` → a hook returning the mutation API
- * (and owner helpers). Call sites use `const { insert, update, upsert } = useSync()`.
- */
-export function createUseSync<S extends SchemaDefinition>(engine: SyncEngine<S>) {
-  return function useSyncMutations() {
-    return useMemo(
-      () => ({
-        insert: engine.insert.bind(engine),
-        update: engine.update.bind(engine),
-        upsert: engine.upsert.bind(engine),
-        delete: engine.delete.bind(engine),
-        deleteMany: engine.deleteMany.bind(engine),
-        purgeDeleted: engine.purgeDeleted.bind(engine),
-        purgeRows: engine.purgeRows.bind(engine),
-        restoreAppOwner: engine.restoreAppOwner.bind(engine),
-        resetAppOwner: engine.resetAppOwner.bind(engine),
-        exportDatabase: engine.exportDatabase.bind(engine),
-        importDatabase: engine.importDatabase.bind(engine),
-        sync: engine.sync.bind(engine),
-      }),
-      [],
-    );
-  };
 }

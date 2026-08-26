@@ -191,8 +191,8 @@ Modern browsers, Node 20+, and Bun have them; React Native does not by default.
 `getQueryRows(q)` (sync snapshot), `subscribeQuery(q)`.
 
 **Identity** — `appOwner`, `restoreAppOwner(key, {force?})`, `resetAppOwner({force?})`,
-`useOwner({transports})`, `exportDatabase({passphrase?})`,
-`importDatabase(file, {recoveryKey|passphrase})`, `importLegacy(name)`.
+`exportDatabase({passphrase?})`,
+`importDatabase(file, {recoveryKey|passphrase})`.
 
 **Sync** — `setTransports(ts)`, `sync()`, `getSyncState()`,
 `subscribeSyncState(fn)`, `getRelayStatuses()`, `getSyncLog(limit?)`,
@@ -210,7 +210,7 @@ ordering for drag-and-drop), `counterColumns()` + `incrementCounter` /
 `encodeJson` / `decodeJsonOr` (JSON columns), `createPresenceChannel`.
 
 **React** — `SyncProvider`, `useSync<S>()`, `useQuery(q)`, `useSyncState()`,
-`useSyncError()`, `useRelayStatuses({refreshMs?})`, `createUseSync(engine)`.
+`useSyncError()`.
 
 ## Mistakes and their fixes
 

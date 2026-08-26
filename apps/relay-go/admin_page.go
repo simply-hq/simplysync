@@ -2,8 +2,8 @@ package main
 
 // Self-contained operational dashboard (no external assets/CDNs, CSP-clean).
 // It prompts for the admin token, keeps it in sessionStorage, polls <base>/stats
-// (derived from its own path — the base is secret), and renders cards + inline
-// SVG sparklines for the self-hosted relay dashboard.
+// (derived from its own path — the base is secret), and renders the relay's
+// storage/traffic counters. Host capacity (disk/mem/load) is the platform's job.
 const adminPage = `<!doctype html>
 <html lang="en">
 <head>
@@ -25,10 +25,6 @@ const adminPage = `<!doctype html>
   header .meta { color: #8b90a0; font-size: 12px; }
   header .dot { width: 8px; height: 8px; border-radius: 50%; background: #3ad29f; display: inline-block; }
   main { padding: 20px 24px; max-width: 1100px; margin: 0 auto; }
-  .warn {
-    background: #2a1c1c; border: 1px solid #5a2d2d; color: #ffb4b4;
-    border-radius: 10px; padding: 10px 14px; margin-bottom: 16px;
-  }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .card {
     background: #15171e; border: 1px solid #20232c; border-radius: 12px; padding: 14px 16px;
@@ -36,16 +32,12 @@ const adminPage = `<!doctype html>
   .card h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #8b90a0; font-weight: 600; }
   .card .val { font-size: 22px; font-weight: 650; }
   .card .sub { color: #8b90a0; font-size: 12px; margin-top: 2px; }
-  .bar { height: 6px; border-radius: 3px; background: #20232c; margin-top: 8px; overflow: hidden; }
-  .bar > i { display: block; height: 100%; background: #5b8def; }
-  .bar.hot > i { background: #e0653f; }
   section { margin-top: 24px; }
   section h2 { font-size: 13px; color: #8b90a0; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #20232c; }
   th { color: #8b90a0; font-weight: 600; }
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .spark { display: block; width: 100%; height: 40px; margin-top: 8px; }
   #login { max-width: 360px; margin: 80px auto; text-align: center; }
   #login input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #30343f; background: #15171e; color: #e7e9ee; }
   #login button { margin-top: 10px; width: 100%; padding: 10px; border-radius: 8px; border: 0; background: #5b8def; color: #fff; font-weight: 600; cursor: pointer; }
@@ -70,18 +62,7 @@ const adminPage = `<!doctype html>
     <span class="meta" id="updated" style="margin-left:auto"></span>
   </header>
   <main>
-    <div id="warnings"></div>
     <div class="grid" id="cards"></div>
-
-    <section>
-      <h2>Trends (last samples)</h2>
-      <div class="grid">
-        <div class="card"><h3>Stored bytes</h3><svg class="spark" id="sp-stored"></svg></div>
-        <div class="card"><h3>DB on disk</h3><svg class="spark" id="sp-db"></svg></div>
-        <div class="card"><h3>Disk free</h3><svg class="spark" id="sp-disk"></svg></div>
-        <div class="card"><h3>Load (1m)</h3><svg class="spark" id="sp-load"></svg></div>
-      </div>
-    </section>
 
     <section>
       <h2>Endpoints</h2>
@@ -118,26 +99,9 @@ function fmtDur(ms) {
   const s = Math.floor(ms / 1000), d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
   return (d?d+"d ":"") + (h?h+"h ":"") + m + "m";
 }
-function pct(x) { return (x * 100).toFixed(x < 0.1 ? 1 : 0) + "%"; }
-
-function card(title, val, sub, barPct, hot) {
-  const bar = barPct != null
-    ? '<div class="bar' + (hot ? ' hot' : '') + '"><i style="width:' + Math.min(100, barPct*100).toFixed(1) + '%"></i></div>'
-    : '';
+function card(title, val, sub) {
   return '<div class="card"><h3>' + title + '</h3><div class="val">' + val +
-    '</div>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + bar + '</div>';
-}
-
-function sparkline(svg, points, color) {
-  if (!points || points.length < 2) { svg.innerHTML = ''; return; }
-  const w = svg.clientWidth || 220, h = 40, pad = 2;
-  const min = Math.min(...points), max = Math.max(...points), span = max - min || 1;
-  const dx = (w - pad*2) / (points.length - 1);
-  const path = points.map((p, i) =>
-    (i ? 'L' : 'M') + (pad + i*dx).toFixed(1) + ',' +
-    (h - pad - ((p - min) / span) * (h - pad*2)).toFixed(1)).join(' ');
-  svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
-  svg.innerHTML = '<path d="' + path + '" fill="none" stroke="' + color + '" stroke-width="1.5"/>';
+    '</div>' + (sub ? '<div class="sub">' + sub + '</div>' : '') + '</div>';
 }
 
 async function tick() {
@@ -156,21 +120,12 @@ async function tick() {
   $('status').style.background = '#3ad29f';
   $('login').hidden = true; $('app').hidden = false;
 
-  $('host').textContent = s.system.hostname + ' · ' + s.system.cpus + ' CPU';
+  $('host').textContent = s.system.hostname;
   $('uptime').textContent = 'up ' + fmtDur(s.uptimeMs);
   $('updated').textContent = 'updated ' + new Date(s.now).toLocaleTimeString();
 
-  $('warnings').innerHTML = (s.capacity.warnings || [])
-    .map(w => '<div class="warn">⚠ ' + escapeHtml(w) + '</div>').join('');
-
-  const cap = s.capacity, sys = s.system, st = s.storage, tr = s.traffic;
-  const runway = cap.diskRunwayDays == null ? '—'
-    : cap.diskRunwayDays > 3650 ? '10y+' : Math.floor(cap.diskRunwayDays) + ' days';
+  const st = s.storage, tr = s.traffic;
   $('cards').innerHTML = [
-    card('Disk used', pct(sys.disk.usedPct), fmtBytes(sys.disk.used) + ' / ' + fmtBytes(sys.disk.total), sys.disk.usedPct, sys.disk.usedPct > 0.85),
-    card('Disk runway', runway, '+' + fmtBytes(cap.dbGrowthBytesPerDay) + '/day'),
-    card('Memory', pct(cap.memUsedPct), fmtBytes(sys.mem.used) + ' / ' + fmtBytes(sys.mem.total), cap.memUsedPct, cap.memUsedPct > 0.9),
-    card('Load (1m)', sys.load[0].toFixed(2), 'of ' + sys.cpus + ' CPU', sys.load[0]/sys.cpus, sys.load[0] > sys.cpus),
     card('Owners', fmtNum(st.owners), 'avg ' + fmtBytes(st.avgBytesPerOwner) + '/owner'),
     card('Events', fmtNum(st.events), fmtNum(st.blobs) + ' blobs'),
     card('Stored', fmtBytes(st.storedBytes), 'DB file ' + fmtBytes(st.dbBytes)),
@@ -182,12 +137,6 @@ async function tick() {
         mc ? fmtNum(mc.deletedEvents) + ' events · ' + new Date(mc.ranAt).toLocaleTimeString() : 'not run yet');
     })(),
   ].join('');
-
-  const hist = s.history || [];
-  sparkline($('sp-stored'), hist.map(p => p.storedBytes), '#5b8def');
-  sparkline($('sp-db'), hist.map(p => p.dbBytes), '#9b7dff');
-  sparkline($('sp-disk'), hist.map(p => p.diskFreeBytes), '#3ad29f');
-  sparkline($('sp-load'), hist.map(p => p.load1), '#e0a23f');
 
   $('endpoints').querySelector('tbody').innerHTML = Object.entries(tr.byEndpoint)
     .sort((a, b) => b[1] - a[1])

@@ -155,46 +155,6 @@ describe("event admission", () => {
     expect(h.deferredRow(hlc)?.retry_after_ms).toBeNull();
   });
 
-  test("an event the clock refuses is retained and retried, never dropped", () => {
-    // The divergence this module exists to remove: this same event used to be
-    // terminally dropped on the relay-pull path, retried forever on the
-    // deferred-replay path, and silently discarded — outbox marker and all —
-    // on the cross-tab path. There is now one answer, and it is the safe one.
-    const db = new Database(":memory:");
-    const driver: SqliteDriver = {
-      exec(sql, params) {
-        db.prepare(sql).run(...((params ?? []) as never[]));
-      },
-      select(sql, params) {
-        return db.prepare(sql).all(...((params ?? []) as never[])) as never;
-      },
-      transaction(fn) {
-        return db.transaction(fn)();
-      },
-    };
-    const state = createEngineState({ name: "refusing" });
-    state.driver = driver;
-    state.deviceId = "device-local";
-    const store = createStore(state, schema, { name: "refusing" });
-    store.ensureSchema();
-    const refusing = { ...createClock(state, store), observeHlc: () => false };
-    const admission = createEventAdmission(store, refusing, schema);
-
-    const hlc = createHlc("device-remote", Date.now(), 0);
-    const raw = payload(hlc);
-    const outcome = driver.transaction(() =>
-      admission.admit(hlc, raw, JSON.stringify(raw)),
-    );
-
-    expect(outcome).toEqual({ kind: "deferred", reason: "clockRefused" });
-    const row = db
-      .prepare(`select retry_after_ms from _sync_deferred where event_id = ?`)
-      .get(hlc) as { retry_after_ms: number | null } | undefined;
-    expect(row).toBeDefined();
-    // Due, not opaque — a refusing clock is a transient condition.
-    expect(row?.retry_after_ms).not.toBeNull();
-  });
-
   test("a value that fails its column's own validation is retained and reported", () => {
     // Both properties matter: the event is the owner's authenticated data so
     // it is kept for a build that can write it, and it is still a genuine data

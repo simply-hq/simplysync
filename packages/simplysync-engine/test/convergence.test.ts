@@ -112,7 +112,7 @@ describe("convergence (randomized property test)", () => {
       for (let i = 0; i < DEVICE_COUNT; i += 1) {
         const d = makeDevice(mnemonic, relay.fetch, `d${i}`);
         await d.engine.ready;
-        const transports: Transport[] = [{ type: "Http", url: RELAY_URL }];
+        const transports: Transport[] = [{ url: RELAY_URL }];
         d.engine.setTransports(transports);
         await settle(d.engine);
         devices.push(d);

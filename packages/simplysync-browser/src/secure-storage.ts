@@ -11,7 +11,6 @@ export interface EncryptedSecureStorageOptions {
   readonly databaseName?: string;
   readonly keyName?: string;
   readonly store?: BrowserKeyValueStore;
-  readonly crypto?: Crypto;
 }
 
 const encoder = new TextEncoder();
@@ -23,7 +22,7 @@ export function createEncryptedSecureStorage(
   const store =
     options.store ??
     createIndexedDbKeyValueStore(options.databaseName ?? "simplysync-browser");
-  const crypto = options.crypto ?? globalThis.crypto;
+  const crypto = globalThis.crypto;
   const keyName = options.keyName ?? "simplysync-browser-master-key";
   let keyPromise: Promise<CryptoKey> | null = null;
 

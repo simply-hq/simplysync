@@ -8,9 +8,6 @@ import { isRecoveryMnemonic, normalizeMnemonic } from "@simplysync/protocol";
 import { isOrderKey } from "./order.js";
 import { isJsonString } from "./json.js";
 
-declare const brandSymbol: unique symbol;
-export type Brand<B extends string> = { readonly [brandSymbol]: B };
-export type Branded<T, B extends string> = T & Brand<B>;
 
 export interface TypeError {
   readonly type: string;
@@ -259,7 +256,4 @@ export const Mnemonic = makeType<string>({
 
 // ----- Re-export base64url helpers used by call sites --------------------
 
-export {
-  base64UrlEncode as uint8ArrayToBase64Url,
-  base64UrlDecode,
-} from "@simplysync/protocol";
+export { base64UrlDecode } from "@simplysync/protocol";

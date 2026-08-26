@@ -29,7 +29,6 @@ import {
   base64UrlEncode,
   compareHlc,
   deriveIdentity,
-  deriveIdentityFromMnemonic,
   unsafeSealPayloadWithNonce,
   type SyncPayload,
 } from "../src/index.ts";
@@ -58,28 +57,18 @@ const PAYLOAD: SyncPayload<{ done: number; title: string }> = {
   value: { done: 0, title: 'Hello "q" \\ 🌍 中文\n\t end' },
 };
 
-interface FixedInput {
-  readonly input: string;
-  readonly derive: (input: string) => ReturnType<typeof deriveIdentity>;
-}
-
-const FIXED_INPUTS: Record<string, FixedInput> = {
-  sf1: {
-    input: "sf1_AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
-    derive: deriveIdentity,
-  },
-  mnemonic: {
-    input:
-      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
-    derive: deriveIdentityFromMnemonic,
-  },
+// deriveIdentity auto-detects the credential form, so one deriver covers both.
+const FIXED_INPUTS: Record<string, string> = {
+  sf1: "sf1_AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
+  mnemonic:
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
 };
 
 const REPO_ROOT = dirname(dirname(PACKAGE_ROOT));
 
 // Every consumer of the corpus, written from this one generation. Ports read
 // their own copy because their CI clones cannot see this package.
-export const CORPUS_PATHS = [
+const CORPUS_PATHS = [
   join(PACKAGE_ROOT, "test", "vectors.json"),
   join(REPO_ROOT, "apps", "todolist", "swift", "verify", "vectors.json"),
   join(
@@ -139,8 +128,8 @@ async function main(): Promise<void> {
   const nonce = base64UrlDecode(NONCE_B64);
   const identities: Record<string, unknown> = {};
 
-  for (const [name, { input, derive }] of Object.entries(FIXED_INPUTS)) {
-    const identity = await derive(input);
+  for (const [name, input] of Object.entries(FIXED_INPUTS)) {
+    const identity = await deriveIdentity(input);
 
     const envelope = await unsafeSealPayloadWithNonce(
       identity,

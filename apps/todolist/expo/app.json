@@ -43,8 +43,7 @@
           }
         }
       ],
-      "./plugins/with-supported-pod-targets",
-      "expo-font"
+      "./plugins/with-supported-pod-targets"
     ],
     "experiments": {
       "typedRoutes": true,

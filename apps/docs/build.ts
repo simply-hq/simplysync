@@ -344,28 +344,41 @@ function renderLandingDirectory(): string {
   </nav>`;
 }
 
+// The shared <head> block: title/description/canonical + OG/Twitter cards,
+// the theme bootstrap, and the fingerprinted icon + stylesheet.
+function pageHead(options: {
+  title: string;
+  description: string;
+  canonical: string;
+  assetVersion: string;
+  stylesheet?: string;
+}): string {
+  const stylesheet = options.stylesheet ?? `styles-${options.assetVersion}.css`;
+  return `<meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${options.title}</title>
+  <meta name="description" content="${options.description}" />
+  <link rel="canonical" href="${options.canonical}" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="${OG_SITE_NAME}" />
+  <meta property="og:title" content="${options.title}" />
+  <meta property="og:description" content="${options.description}" />
+  <meta property="og:url" content="${options.canonical}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="${options.title}" />
+  <meta name="twitter:description" content="${options.description}" />
+  ${THEME_SCRIPT}
+  <link rel="icon" href="simplysync-mark-${options.assetVersion}.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="${stylesheet}" />`;
+}
+
 function landingHtml(assetVersion: string, quickstart: string): string {
   const pageTitle = `${SITE_TITLE} · App-owned local-first sync`;
   const canonical = canonicalUrl("index.html");
   return `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>${pageTitle}</title>
-  <meta name="description" content="${SITE_DESCRIPTION}" />
-  <link rel="canonical" href="${canonical}" />
-  <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="${OG_SITE_NAME}" />
-  <meta property="og:title" content="${pageTitle}" />
-  <meta property="og:description" content="${SITE_DESCRIPTION}" />
-  <meta property="og:url" content="${canonical}" />
-  <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="${pageTitle}" />
-  <meta name="twitter:description" content="${SITE_DESCRIPTION}" />
-  ${THEME_SCRIPT}
-  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles-${assetVersion}.css" />
+  ${pageHead({ title: pageTitle, description: SITE_DESCRIPTION, canonical, assetVersion })}
 </head>
 <body class="landing-page">
   <a class="skip-link" href="#content">Skip to content</a>
@@ -473,22 +486,7 @@ function showcaseHtml(assetVersion: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>${pageTitle}</title>
-  <meta name="description" content="${description}" />
-  <link rel="canonical" href="${canonical}" />
-  <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="${OG_SITE_NAME}" />
-  <meta property="og:title" content="${pageTitle}" />
-  <meta property="og:description" content="${description}" />
-  <meta property="og:url" content="${canonical}" />
-  <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="${pageTitle}" />
-  <meta name="twitter:description" content="${description}" />
-  ${THEME_SCRIPT}
-  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles-${assetVersion}.css" />
+  ${pageHead({ title: pageTitle, description, canonical, assetVersion })}
 </head>
 <body class="showcase-page">
   <a class="skip-link" href="#content">Skip to content</a>
@@ -584,22 +582,12 @@ function layout(options: {
   return `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>${pageTitle}</title>
-  <meta name="description" content="${SITE_DESCRIPTION}" />
-  <link rel="canonical" href="${canonical}" />
-  <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="${OG_SITE_NAME}" />
-  <meta property="og:title" content="${pageTitle}" />
-  <meta property="og:description" content="${SITE_DESCRIPTION}" />
-  <meta property="og:url" content="${canonical}" />
-  <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="${pageTitle}" />
-  <meta name="twitter:description" content="${SITE_DESCRIPTION}" />
-  ${THEME_SCRIPT}
-  <link rel="icon" href="simplysync-mark-${options.assetVersion}.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles-${options.assetVersion}.css" />
+  ${pageHead({
+    title: pageTitle,
+    description: SITE_DESCRIPTION,
+    canonical,
+    assetVersion: options.assetVersion,
+  })}
 </head>
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
@@ -682,22 +670,13 @@ function demoHtml(assetVersion: string, scriptName: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>${pageTitle}</title>
-  <meta name="description" content="${description}" />
-  <link rel="canonical" href="${canonical}" />
-  <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="${OG_SITE_NAME}" />
-  <meta property="og:title" content="${pageTitle}" />
-  <meta property="og:description" content="${description}" />
-  <meta property="og:url" content="${canonical}" />
-  <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="${pageTitle}" />
-  <meta name="twitter:description" content="${description}" />
-  ${THEME_SCRIPT}
-  <link rel="icon" href="simplysync-mark-${assetVersion}.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="demo-${assetVersion}.css" />
+  ${pageHead({
+    title: pageTitle,
+    description,
+    canonical,
+    assetVersion,
+    stylesheet: `demo-${assetVersion}.css`,
+  })}
 </head>
 <body>
   <div class="pg-topnav">
