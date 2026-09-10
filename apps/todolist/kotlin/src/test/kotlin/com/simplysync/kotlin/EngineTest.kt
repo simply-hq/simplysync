@@ -1,7 +1,9 @@
 package com.simplysync.kotlin
 
 import java.nio.file.Files
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -94,10 +96,12 @@ class EngineTest {
         },
     ) : RelayTransport {
         val pushBatchSizes = mutableListOf<Int>()
+        val pushedEventIds = mutableListOf<String>()
         var pullCalls = 0
 
         override suspend fun push(events: List<SyncEnvelope>): RelayClient.PushResult {
             pushBatchSizes += events.size
+            pushedEventIds += events.map { it.eventId }
             return RelayClient.PushResult(accepted = events.size, duplicate = 0)
         }
 
@@ -1098,5 +1102,270 @@ class EngineTest {
         assertTrue("A converged on B's edit (LWW by HLC)", converged)
 
         a.close(); b.close()
+    }
+
+    // ----- Edge cases shared with the TypeScript engine (edge-cases.test.ts) -----
+
+    private fun noteEnvelope(identity: Identity, rowId: String, body: String, hlc: String): SyncEnvelope =
+        Envelope.encrypt(
+            identity, hlc, "remote-device", "2026-01-01T00:00:00.000Z",
+            SyncPayload(
+                schemaVersion = 1, table = "note", op = "upsert", rowId = rowId, hlc = hlc,
+                value = mapOf(
+                    "id" to JsonValue.Str(rowId),
+                    "body" to JsonValue.Str(body),
+                    "createdAt" to JsonValue.Str("2026-01-01T00:00:00.000Z"),
+                    "updatedAt" to JsonValue.Str(hlc),
+                    "isDeleted" to sqliteFalse,
+                ),
+            ),
+        )
+
+    private fun metaValue(driver: SqliteDriver, key: String): String? =
+        (driver.select("select value from \"${Store.META}\" where key = ?", listOf(SqliteValue.Text(key)))
+            .firstOrNull()?.get("value") as? SqliteValue.Text)?.value
+
+    @Test
+    fun pruneForgetsThePushCursorOfARelayNoLongerConfigured() {
+        // A relay removed from the set cannot acknowledge what is pruned while it
+        // is away. Its push cursor must stop vouching for it, or re-adding it skips
+        // the backfill and the relay silently lacks those events.
+        val driver = JdbcSqliteDriver(":memory:")
+        val store = Store(schema, SyncEngineConfig(name = "prune-forget")).also { it.driver = driver; it.ensureSchema() }
+        for (eid in listOf("e1", "e2", "e3")) {
+            driver.exec(
+                "insert into \"${Store.OUTBOX}\" (event_id, envelope_json, pushed_at) values (?, '{}', ?)",
+                listOf(SqliteValue.Text(eid), SqliteValue.Text("2026-01-01")),
+            )
+        }
+        store.setMeta("push:http://a", "e3")
+        store.setMeta("push:http://b", "e2")
+        store.setMeta("backfill:http://b", "1")
+        store.setMeta("cursor:http://b", "9")
+
+        assertEquals("a alone acknowledged everything", 3, store.pruneOutbox(listOf("http://a")))
+        assertEquals("b's push cursor no longer vouches for it", null, store.getMeta("push:http://b"))
+        assertEquals("b will be re-seeded when re-added", null, store.getMeta("backfill:http://b"))
+        assertEquals("b's pull cursor is untouched", "9", store.getMeta("cursor:http://b"))
+        assertEquals("a configured relay keeps its cursor", "e3", store.getMeta("push:http://a"))
+
+        // Nothing pruned -> nothing forgotten (a single relay toggled off is safe).
+        store.setMeta("push:http://c", "zz")
+        assertEquals(0, store.pruneOutbox(listOf("http://a")))
+        assertEquals("zz", store.getMeta("push:http://c"))
+        driver.close()
+    }
+
+    @Test
+    fun explicitUpdatedAtMustBeNewerThanTheCurrentRow() = runBlocking {
+        // A caller-supplied updatedAt bypasses the clock, so it can sort at or
+        // below the row's current version — peers would keep their copy under LWW
+        // while this device regressed its own. Equal is refused too: the HLC-keyed
+        // outbox would drop the event while its row committed.
+        val driver = JdbcSqliteDriver(":memory:")
+        val engine = createSync(
+            SyncEngineDeps(makeDriver = { driver }, secureStorage = InMemorySecureStorage()),
+        )(schema, SyncEngineConfig(name = "explicit-hlc"))
+        try {
+            engine.ready()
+            val id = (engine.insert("todo", "title" to "current", "done" to false) as MutationResult.Ok).id!!
+            val current = (driver.select("select updatedAt from \"todo\" where id = ?", listOf(SqliteValue.Text(id)))
+                .first()["updatedAt"] as SqliteValue.Text).value
+            val now = System.currentTimeMillis()
+            val older = Hlc.make("import", now - 60_000)
+            assertFalse("an older stamp is refused", engine.upsert("todo", "id" to id, "title" to "stale", "updatedAt" to older).isOk)
+            assertFalse("an equal stamp is refused", engine.upsert("todo", "id" to id, "title" to "same", "updatedAt" to current).isOk)
+            assertFalse(
+                "insert overwrites too, so it gets the same guard",
+                engine.insert("todo", "id" to id, "title" to "stale insert", "updatedAt" to older).isOk,
+            )
+            assertEquals(
+                "the row is untouched", "current",
+                (driver.select("select title from \"todo\" where id = ?", listOf(SqliteValue.Text(id))).first()["title"] as SqliteValue.Text).value,
+            )
+            assertTrue(
+                "a newer stamp is accepted",
+                engine.upsert("todo", "id" to id, "title" to "forward", "updatedAt" to Hlc.make("import", now + 1_000)).isOk,
+            )
+
+            val shared = Hlc.make("import", now - 500)
+            assertTrue(engine.insert("todo", "title" to "first", "done" to false, "updatedAt" to shared).isOk)
+            assertFalse(
+                "an HLC already queued may not be reused for another row",
+                engine.insert("todo", "title" to "second", "done" to false, "updatedAt" to shared).isOk,
+            )
+            val other = Hlc.make("import", now - 400)
+            val dup = engine.batch {
+                insert("todo", "title" to "a", "done" to false, "updatedAt" to other)
+                insert("todo", "title" to "b", "done" to false, "updatedAt" to other)
+            }
+            assertFalse("two ops sharing an HLC fail the batch", dup.isOk)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
+    fun backfillSkipsARowWhoseUpdatedAtIsNotAnHlc() = runBlocking {
+        // The row's HLC becomes the event id, and a relay refuses a whole push
+        // batch over one malformed id. A row written outside the engine must be
+        // skipped by the new-relay backfill, not queued where it stalls every
+        // later write.
+        val fakeRelay = FakeRelay()
+        RelayTransportFactory.create = { _, _, _ -> fakeRelay }
+        val driver = JdbcSqliteDriver(":memory:")
+        val engine = createSync(
+            SyncEngineDeps(makeDriver = { driver }, secureStorage = InMemorySecureStorage()),
+        )(schema, SyncEngineConfig(name = "backfill-guard", syncIntervalMs = 3_600_000))
+        try {
+            engine.ready()
+            assertTrue(engine.insert("todo", "title" to "fine", "done" to false).isOk)
+            driver.exec(
+                "insert into \"todo\" (id, title, done, createdAt, updatedAt, isDeleted) values (?, ?, 0, ?, ?, 0)",
+                listOf(SqliteValue.Text("bad"), SqliteValue.Text("legacy"), SqliteValue.Text("2020-01-01"), SqliteValue.Text("2020-01-01T00:00:00Z")),
+            )
+            engine.setTransports(listOf(Transport("http://relay.test")))
+            awaitSynced(engine)
+            assertEquals("only the canonical row is pushed", 1, fakeRelay.pushedEventIds.size)
+            assertFalse(fakeRelay.pushedEventIds.contains("2020-01-01T00:00:00Z"))
+        } finally {
+            engine.close()
+            RelayTransportFactory.reset()
+        }
+    }
+
+    @Test
+    fun anUnwritableRemoteRowIsRetainedNotDropped() = runBlocking {
+        // Authenticated data this build cannot write is retained for a later
+        // build, exactly as the TypeScript engine does; it used to be dropped.
+        val recoveryKey = IdentityDeriver.createRecoveryKey()
+        val identity = IdentityDeriver.derive(recoveryKey)
+        val hlc = Hlc.make("remote-device", System.currentTimeMillis() - 1_000)
+        // `title` is nonEmptyString on the todo table; an empty one fails projection.
+        val unwritable = Envelope.encrypt(
+            identity, hlc, "remote-device", "2026-01-01T00:00:00.000Z",
+            SyncPayload(
+                1, "todo", "upsert", "bad-title", hlc,
+                mapOf(
+                    "id" to JsonValue.Str("bad-title"), "title" to JsonValue.Str(""), "done" to sqliteFalse,
+                    "createdAt" to JsonValue.Str("2026-01-01T00:00:00.000Z"),
+                    "updatedAt" to JsonValue.Str(hlc), "isDeleted" to sqliteFalse,
+                ),
+            ),
+        )
+        val fakeRelay = FakeRelay { after ->
+            if (after == "") RelayClient.PullResult(listOf(unwritable), "1") else RelayClient.PullResult(emptyList(), "1")
+        }
+        RelayTransportFactory.create = { _, _, _ -> fakeRelay }
+        val driver = JdbcSqliteDriver(":memory:")
+        val name = "retain-unwritable"
+        val engine = createSync(
+            SyncEngineDeps(
+                makeDriver = { driver },
+                secureStorage = InMemorySecureStorage(mapOf("$name:mnemonic" to recoveryKey)),
+            ),
+        )(schema, SyncEngineConfig(name = name, transports = listOf(Transport("http://relay.test")), syncIntervalMs = 3_600_000))
+        try {
+            engine.ready()
+            awaitSynced(engine)
+            assertTrue(
+                "a value the column refuses is not written",
+                driver.select("select 1 from \"todo\" where id = ?", listOf(SqliteValue.Text("bad-title"))).isEmpty(),
+            )
+            assertEquals(
+                "the event stays retained for a build whose schema can write it", 1,
+                driver.select("select 1 from \"${Store.DEFERRED}\" where event_id = ?", listOf(SqliteValue.Text(hlc))).size,
+            )
+            assertNotNull("the failure is surfaced, not silent", engine.lastError.value)
+        } finally {
+            engine.close()
+            RelayTransportFactory.reset()
+        }
+    }
+
+    @Test
+    fun aPullPageFetchedForThePreviousOwnerIsDroppedAfterAnOwnerSwitch() = runBlocking {
+        // restoreAppOwner wipes the database and swaps the identity while a pull is
+        // still awaiting the relay. That page was sealed for the OLD owner; applying
+        // it would leak that owner's rows into the new owner's database and record
+        // a cursor the new owner's first real pull would then skip below.
+        val gate = CompletableDeferred<Unit>()
+        val pullStarted = CompletableDeferred<Unit>()
+        var served: List<SyncEnvelope> = emptyList()
+        var pulls = 0
+        val relay = object : RelayTransport {
+            override suspend fun push(events: List<SyncEnvelope>) = RelayClient.PushResult(events.size, 0)
+            override suspend fun pull(after: String): RelayClient.PullResult {
+                pulls += 1
+                if (pulls > 1) return RelayClient.PullResult(emptyList(), after)
+                pullStarted.complete(Unit)
+                gate.await()
+                return RelayClient.PullResult(served, "7")
+            }
+            override suspend fun status() = RelayClient.StatusResponse()
+            override suspend fun health() = RelayClient.HealthResponse(ok = true)
+        }
+        RelayTransportFactory.create = { _, _, _ -> relay }
+        val driver = JdbcSqliteDriver(":memory:")
+        val engine = createSync(
+            SyncEngineDeps(makeDriver = { driver }, secureStorage = InMemorySecureStorage()),
+        )(schema, SyncEngineConfig(name = "owner-switch", transports = listOf(Transport("http://relay.test")), syncIntervalMs = 3_600_000))
+        try {
+            engine.ready()
+            // Boot's own sync may already be in flight; either way, the first pull
+            // is the one we hold.
+            pullStarted.await()
+            val previous = IdentityDeriver.derive(engine.currentOwner!!.recoveryKey)
+            served = listOf(noteEnvelope(previous, "leak", "previous owner", Hlc.make("peer", System.currentTimeMillis() - 1_000)))
+
+            engine.restoreAppOwner(IdentityDeriver.createRecoveryKey(), force = true)
+            gate.complete(Unit)
+            engine.sync()
+            awaitSynced(engine)
+
+            assertTrue("the previous owner's row is not applied", driver.select("select id from \"note\"").isEmpty())
+            assertTrue("the previous owner's cursor is not recorded", metaValue(driver, "cursor:http://relay.test") != "7")
+        } finally {
+            engine.close()
+            RelayTransportFactory.reset()
+        }
+    }
+
+    @Test
+    fun aFaultOutsideThePerRelayGuardDoesNotWedgeTheSyncLoop() = runBlocking {
+        // A store exception escaping runSync used to complete the loop's job while
+        // `syncJob` still pointed at it: every later sync() joined the dead job at
+        // once and the engine never synced again until restart.
+        val inner = JdbcSqliteDriver(":memory:")
+        var explode = false
+        val driver = object : SqliteDriver {
+            override fun exec(sql: String, params: List<SqliteValue>) = inner.exec(sql, params)
+            override fun select(sql: String, params: List<SqliteValue>): List<Map<String, SqliteValue>> {
+                if (explode && sql.contains(Store.DEFERRED)) throw SqliteException("disk on fire")
+                return inner.select(sql, params)
+            }
+            override fun <T> transaction(body: () -> T): T = inner.transaction(body)
+            override fun close() = inner.close()
+        }
+        val fakeRelay = FakeRelay()
+        RelayTransportFactory.create = { _, _, _ -> fakeRelay }
+        val engine = createSync(
+            SyncEngineDeps(makeDriver = { driver }, secureStorage = InMemorySecureStorage()),
+        )(schema, SyncEngineConfig(name = "fault", transports = listOf(Transport("http://relay.test")), syncIntervalMs = 3_600_000))
+        try {
+            engine.ready()
+            awaitSynced(engine)
+            val before = fakeRelay.pullCalls
+            explode = true
+            engine.sync()
+            assertTrue("the fault is reported", engine.syncState.value is SyncState.NotSynced)
+            explode = false
+            engine.sync()
+            assertTrue("the loop recovers and talks to the relay again", fakeRelay.pullCalls > before)
+            assertTrue(engine.syncState.value is SyncState.Synced)
+        } finally {
+            engine.close()
+            RelayTransportFactory.reset()
+        }
     }
 }

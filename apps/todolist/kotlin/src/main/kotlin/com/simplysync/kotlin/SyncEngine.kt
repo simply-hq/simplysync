@@ -528,6 +528,19 @@ class SyncEngine(
             if (!observeHlc(providedUpdatedAt)) {
                 return null to "updatedAt must be a valid, non-future SimplySync HLC."
             }
+            // A caller-supplied stamp bypasses the clock, so it can sort at or
+            // below the row's current version: peers would keep their copy under
+            // last-writer-wins while this device overwrote its own, and the next
+            // ordinary edit would replicate the regressed values. Equal is refused
+            // too — the outbox is keyed by HLC, so the event would be dropped while
+            // its row committed. Checked whatever the mode: insert overwrites too.
+            val currentHlc = (store.readRow(table, id)?.get("updatedAt") as? SqliteValue.Text)?.value
+            if (currentHlc != null && Hlc.compare(currentHlc, providedUpdatedAt) >= 0) {
+                return null to "$table.updatedAt: must be newer than the row's current version."
+            }
+            if (store.hasQueuedEvent(providedUpdatedAt)) {
+                return null to "$table.updatedAt: collides with an event already queued for sync."
+            }
             providedUpdatedAt
         } else {
             nextHlc()
@@ -652,6 +665,12 @@ class SyncEngine(
                 if (p == null) return@withLock BatchResult.Failure(error ?: "Batch failed.")
                 prepared.add(p)
             }
+            // Engine-minted HLCs are unique by construction; caller-supplied ones
+            // are not, and two ops sharing one would leave a single outbox event
+            // for two row writes.
+            if (prepared.map { it.hlc }.toSet().size != prepared.size) {
+                return@withLock BatchResult.Failure("updatedAt: two ops in one batch share an HLC.")
+            }
             try {
                 val outbox = prepared.map {
                     prepareOutbox(it.table, it.id, it.hlc, it.merged)
@@ -757,12 +776,26 @@ class SyncEngine(
     }
 
     private suspend fun runSyncLoop() {
-        while (true) {
-            val shouldRun = lock.withLock {
-                if (syncRequested) { syncRequested = false; true } else { syncJob = null; false }
+        try {
+            while (true) {
+                val shouldRun = lock.withLock {
+                    if (syncRequested) { syncRequested = false; true } else { syncJob = null; false }
+                }
+                if (!shouldRun) return
+                try {
+                    runSync()
+                } catch (e: Exception) {
+                    // Per-relay failures are classified inside runSync; this is a
+                    // fault outside them (a store call hitting a full disk, say).
+                    // Report it and keep draining — an escaped exception used to
+                    // leave a completed job in `syncJob`, and every later sync()
+                    // joined it instantly and never synced again.
+                    setError(describe(e))
+                    setSyncState(SyncState.NotSynced(describe(e), terminal = false, status = null))
+                }
             }
-            if (!shouldRun) return
-            runSync()
+        } finally {
+            lock.withLock { syncJob = null }
         }
     }
 
@@ -874,6 +907,11 @@ class SyncEngine(
         RelayTransportFactory.create(base, identity.ownerId, identity.relayAuth).push(envelopes)
         val pushedAt = isoNow()
         lock.withLock {
+            // The owner changed while this request was in flight (restore/reset
+            // wiped the outbox). Recording delivery now would write the OLD
+            // owner's push cursor into the NEW owner's metadata, which skips its
+            // first backfill.
+            if (this.identity?.ownerId != identity.ownerId) return@withLock
             for ((eid, _) in pending) {
                 store.driver?.exec(
                     // `pushed_at` marks "reached at least one relay" — keep the earliest via coalesce.
@@ -902,7 +940,12 @@ class SyncEngine(
         for (table in schema.tableNames) {
             for (dbRow in store.driver?.select("select * from \"$table\"") ?: emptyList()) {
                 val rowId = (dbRow["id"] as? SqliteValue.Text)?.value ?: continue
-                val hlc = (dbRow["updatedAt"] as? SqliteValue.Text)?.value?.takeIf { it.isNotEmpty() } ?: continue
+                // The row's HLC becomes the event id, and a relay refuses a whole
+                // push batch over one malformed id. A row that reached the table
+                // without a canonical stamp (raw SQL, a legacy import) can only be
+                // skipped here; queueing it would stall every later write behind it.
+                val hlc = (dbRow["updatedAt"] as? SqliteValue.Text)?.value
+                    ?.takeIf { Hlc.parse(it) != null } ?: continue
                 enqueue(table, rowId, hlc, dbRow.mapValues { it.value.toJson() })
             }
         }
@@ -936,6 +979,13 @@ class SyncEngine(
             throw e
         }
         return lock.withLock {
+            // The suspension above is a window in which restoreAppOwner/resetAppOwner
+            // can swap the owner and wipe the database. This page was fetched for
+            // the previous owner: applying it would leak that owner's rows into
+            // the new owner's database, and recording its cursor would make the
+            // new owner's first pull skip everything below it. Drop the page; the
+            // pass the switch queued re-pulls under the new owner.
+            if (this.identity?.ownerId != identity.ownerId) return@withLock PullPage(emptySet(), 0)
             val changed = HashSet<String>()
             for (envelope in result.events) {
                 val seen = store.driver?.select(
@@ -997,7 +1047,18 @@ class SyncEngine(
                         ),
                     )
                 } else if (schema.has(payload.table)) {
-                    if (applyRemoteRow(payload)) changed += payload.table
+                    when (applyRemoteRow(payload)) {
+                        ApplyOutcome.APPLIED -> changed += payload.table
+                        ApplyOutcome.UNCHANGED -> Unit
+                        ApplyOutcome.FAILED -> {
+                            // Authenticated data this build cannot write (a column
+                            // it lacks, a value its type refuses). Retained opaquely
+                            // for the upgrade that can, as the TypeScript engine
+                            // does — dropping it would be silent data loss.
+                            store.deferRemoteEvent(envelope.eventId, Envelope.encodePayload(payload))
+                            setError("could not apply event ${envelope.eventId}; retained for a later build")
+                        }
+                    }
                 } else {
                     store.deferRemoteEvent(
                         envelope.eventId,
@@ -1065,8 +1126,13 @@ class SyncEngine(
                 )
                 continue
             }
-            if (applyRemoteRow(payload)) changed += payload.table
-            store.dropDeferredEvent(eventId)
+            when (applyRemoteRow(payload)) {
+                ApplyOutcome.APPLIED -> { changed += payload.table; store.dropDeferredEvent(eventId) }
+                ApplyOutcome.UNCHANGED -> store.dropDeferredEvent(eventId)
+                // Still unwritable against this schema: keep it opaque (no retry
+                // time) so only the once-per-schema sweep reconsiders it.
+                ApplyOutcome.FAILED -> store.deferRemoteEvent(eventId, payloadJson)
+            }
         }
         return changed
     }
@@ -1114,20 +1180,33 @@ class SyncEngine(
         store.dueDeferredEvents(System.currentTimeMillis(), deferredReplayLimit),
     )
 
+    /**
+     * What became of one decrypted row. UNCHANGED means last-writer-wins kept the
+     * local copy; FAILED means this build could not write it, which callers retain
+     * rather than discard.
+     */
+    private enum class ApplyOutcome { APPLIED, UNCHANGED, FAILED }
+
     /** Apply one decrypted row, last-writer-wins by `updatedAt`. Called under lock. */
-    private fun applyRemoteRow(payload: SyncPayload): Boolean {
-        if (payload.rowId.isEmpty()) return false
+    private fun applyRemoteRow(payload: SyncPayload): ApplyOutcome {
+        if (payload.rowId.isEmpty()) return ApplyOutcome.FAILED
         val existing = store.readRow(payload.table, payload.rowId)
         val existingUpdated = (existing?.get("updatedAt") as? SqliteValue.Text)?.value
-        if (existing != null && existingUpdated != null && Hlc.compare(existingUpdated, payload.hlc) >= 0) return false
+        if (existing != null && existingUpdated != null && Hlc.compare(existingUpdated, payload.hlc) >= 0) {
+            return ApplyOutcome.UNCHANGED
+        }
         val row = LinkedHashMap(payload.value)
         row["id"] = JsonValue.Str(payload.rowId)
         // The top-level HLC is canonical on the wire; the nested row can carry
         // a stale value from a partial update (or omit it entirely).
         row["updatedAt"] = JsonValue.Str(payload.hlc)
         val (projected, error) = store.projectRemoteRow(payload.table, row)
-        if (error != null) return false
-        return runCatching { store.writeRow(payload.table, projected) }.isSuccess
+        if (error != null) return ApplyOutcome.FAILED
+        return if (runCatching { store.writeRow(payload.table, projected) }.isSuccess) {
+            ApplyOutcome.APPLIED
+        } else {
+            ApplyOutcome.FAILED
+        }
     }
 
     private fun pruneSeen() {

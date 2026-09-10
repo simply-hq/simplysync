@@ -1,5 +1,6 @@
 import {
   base64UrlEncode,
+  compareHlc,
   createMnemonic,
   decryptStringWithKey,
   decryptStringWithPassphrase,
@@ -151,6 +152,30 @@ export function createMutations(
         return {
           ok: false,
           message: "updatedAt must be a valid, non-future SimplySync HLC.",
+        };
+      }
+      // A caller-supplied stamp bypasses the clock, so it can sort at or below
+      // the row's current version. Peers would keep their copy under
+      // last-writer-wins while this device overwrote its own — and the next
+      // ordinary edit here would re-stamp the regressed values and replicate
+      // them. Equal is refused too: the outbox is keyed by HLC, so the event
+      // would be dropped while its row committed. Read the version regardless
+      // of mode — insert also overwrites an existing row.
+      const current =
+        driver.select<{ updatedAt: string | null }>(
+          `select "updatedAt" from "${table}" where id = ?`,
+          [id],
+        )[0]?.updatedAt ?? null;
+      if (current !== null && compareHlc(current, providedUpdatedAt) >= 0) {
+        return {
+          ok: false,
+          message: `${table}.updatedAt: must be newer than the row's current version.`,
+        };
+      }
+      if (store.hasQueuedEvent(providedUpdatedAt)) {
+        return {
+          ok: false,
+          message: `${table}.updatedAt: collides with an event already queued for sync.`,
         };
       }
       hlc = providedUpdatedAt;
@@ -323,6 +348,16 @@ export function createMutations(
     }
     const local = options?.local === true;
     const payloads = prepared.map(buildOutboxPayload);
+    // Engine-minted HLCs are unique by construction; caller-supplied ones are
+    // not, and two ops sharing one would leave a single outbox event for two
+    // row writes. Refuse before anything is written, like every other batch
+    // validation failure.
+    if (new Set(prepared.map((r) => r.hlc)).size !== prepared.length) {
+      return {
+        ok: false,
+        error: { message: "updatedAt: two ops in one batch share an HLC." },
+      };
+    }
     // Fail the whole batch before any write if any replicated event is too
     // large (matches batch's prepare-then-fail-atomically design).
     if (!local) {

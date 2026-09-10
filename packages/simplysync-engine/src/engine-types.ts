@@ -177,7 +177,14 @@ export interface DbSnapshot {
    */
   readonly mnemonic?: string;
   readonly tables: Record<string, Record<string, unknown>[]>;
-  /** Selected `_sync_meta` keys: `hlc:time`, `hlc:counter`, `cursor:*`. */
+  /**
+   * `_sync_meta` entries that describe the owner's data rather than this
+   * device's delivery state: the HLC high-water mark (`hlc:*`) and per-relay
+   * pull cursors (`cursor:*`). Per-relay push cursors and backfill markers are
+   * excluded on both export and import, so a device restoring a snapshot
+   * re-seeds every relay from the rows it holds (the relay dedupes by event
+   * id) instead of trusting that the exporter's outbox had drained.
+   */
   readonly meta: Record<string, string>;
 }
 

@@ -111,6 +111,16 @@ export function createRelaySync(
     return err;
   };
 
+  // A 200 whose body is not a pull page. Classified as the relay's fault rather
+  // than falling through to "unreachable", which a UI reads as being offline.
+  const malformedResponse = (op: string): Error => {
+    const err = new Error(`${op} returned a malformed response`) as Error & {
+      kind?: SyncFailureKind;
+    };
+    err.kind = "serverError";
+    return err;
+  };
+
   // Terminal kinds need user/operator action (re-auth, free quota, fix request),
   // so the poller backs off rather than hammering. rateLimited also backs off
   // but is not "terminal" (it self-heals).
@@ -128,6 +138,9 @@ export function createRelaySync(
   ): { kind: SyncFailureKind; status?: number; message: string } => {
     const status = (caught as { status?: number } | undefined)?.status;
     const message = caught instanceof Error ? caught.message : String(caught);
+    const preclassified = (caught as { kind?: SyncFailureKind } | undefined)
+      ?.kind;
+    if (preclassified) return { kind: preclassified, message };
     if (typeof status === "number") {
       let kind: SyncFailureKind = "unknown";
       if (status === 401 || status === 403) kind = "authRejected";
@@ -143,9 +156,16 @@ export function createRelaySync(
     return { kind: offline ? "offline" : "unreachable", message };
   };
 
+  // The base URL is also the per-relay `_sync_meta` key, so two spellings of
+  // one relay would be two relays: a trailing slash split the cursor and made
+  // every request hit `//v1/...`, which the reference relays do not route. The
+  // native ports already strip it; this keeps the three engines on one key.
   const relayBaseUrls = (): string[] =>
     state.transports.map((t) =>
-      t.url.replace(/^wss:\/\//u, "https://").replace(/^ws:\/\//u, "http://"),
+      t.url
+        .replace(/^wss:\/\//u, "https://")
+        .replace(/^ws:\/\//u, "http://")
+        .replace(/\/+$/u, ""),
     );
 
   // Encrypt every outbox row still holding the durable, plaintext-pending
@@ -196,6 +216,10 @@ export function createRelaySync(
       }),
     });
     if (!response.ok) throw httpError("push", response.status);
+    // The owner changed while this request was in flight (restore/reset wiped
+    // the outbox). Recording delivery now would write the OLD owner's push
+    // cursor into the NEW owner's metadata, which skips its first backfill.
+    if (state.identity !== identity) return 0;
     store.markBatchDelivered(
       events.map((e) => e.eventId),
       baseUrl,
@@ -389,10 +413,15 @@ export function createRelaySync(
     }
     if (!response.ok) throw httpError("pull", response.status);
     const body = (await response.json()) as {
-      events: SyncEnvelope[];
-      nextCursor: string;
+      events?: unknown;
+      nextCursor?: unknown;
     };
-    result.pulled = body.events.length;
+    if (!Array.isArray(body.events) || typeof body.nextCursor !== "string") {
+      throw malformedResponse("pull");
+    }
+    const events = body.events as SyncEnvelope[];
+    const nextCursor = body.nextCursor;
+    result.pulled = events.length;
 
     // Async phase: decrypt every not-yet-seen envelope into memory. No writes
     // happen here. decryptEnvelope is async and driver.transaction below runs
@@ -403,7 +432,7 @@ export function createRelaySync(
       payloadJson: string;
       rawPayload: unknown;
     }> = [];
-    for (const envelope of body.events) {
+    for (const envelope of events) {
       if (store.hasSeenEvent(envelope.eventId)) continue;
       let rawPayload: unknown;
       try {
@@ -427,6 +456,14 @@ export function createRelaySync(
         rawPayload,
       });
     }
+
+    // Every await above is a window in which restoreAppOwner / resetAppOwner /
+    // importDatabase can swap the owner and wipe the database. This page was
+    // fetched and decrypted for the previous owner: applying it now would leak
+    // that owner's rows into the new owner's database, and advancing the
+    // cursor would make the new owner's first pull skip everything below it.
+    // Drop the page; the pass the switch queued re-pulls under the new owner.
+    if (state.identity !== identity) return result;
 
     // Sync phase: apply every decrypted row and record it as seen inside ONE
     // transaction, so a big page commits once instead of ~2-3x per event.
@@ -465,8 +502,8 @@ export function createRelaySync(
     // the same page next time instead of silently skipping it.
     // An idle poll commonly returns the cursor we already have. Avoid turning
     // that no-op into a database write (and, in browsers, a whole-db snapshot).
-    if (body.nextCursor !== after) {
-      store.setPullCursor(baseUrl, body.nextCursor);
+    if (nextCursor !== after) {
+      store.setPullCursor(baseUrl, nextCursor);
     }
     return result;
   };
@@ -666,6 +703,20 @@ export function createRelaySync(
           startPolling();
         }
       }
+    } catch (caught) {
+      // Per-relay failures are handled above; this is a fault outside them (a
+      // deferred replay or prune hitting a full disk, say). Observers were told
+      // a sync began, so tell them it ended — otherwise the spinner stays on
+      // until the next poll happens to succeed.
+      if (bases.length > 0) {
+        state.setSyncState({
+          type: "SyncStateIsNotSynced",
+          error: caught instanceof Error ? caught.message : String(caught),
+          kind: "unknown",
+          terminal: false,
+        });
+      }
+      throw caught;
     } finally {
       state.syncing = false;
     }

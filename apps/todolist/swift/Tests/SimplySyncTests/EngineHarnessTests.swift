@@ -471,4 +471,136 @@ final class EngineHarnessTests: XCTestCase {
 
         for channel in [a, b, a2, b2, a3, b3, typing, thinking, peer] { channel.stop() }
     }
+
+    // MARK: - Edge cases shared with the TypeScript engine (edge-cases.test.ts)
+
+    // A relay removed from the set cannot acknowledge what is pruned while it is
+    // away. Its push cursor must stop vouching for it, or re-adding it skips the
+    // backfill and the relay silently lacks those events.
+    func testPruneForgetsThePushCursorOfARelayNoLongerConfigured() throws {
+        let (store, driver) = try makeStore("prune-forget")
+        for eid in ["e1", "e2", "e3"] {
+            try driver.exec(
+                "insert into \"\(Store.outboxTable)\" (event_id, envelope_json, pushed_at) values (?, '{}', ?)",
+                [.text(eid), .text("2026-01-01")])
+        }
+        store.setMeta("push:http://a", "e3")
+        store.setMeta("push:http://b", "e2")
+        store.setMeta("backfill:http://b", "1")
+        store.setMeta("cursor:http://b", "9")
+
+        XCTAssertEqual(store.pruneOutbox(["http://a"]), 3, "a alone acknowledged everything")
+        XCTAssertNil(store.getMeta("push:http://b"), "b's push cursor no longer vouches for it")
+        XCTAssertNil(store.getMeta("backfill:http://b"), "b will be re-seeded when re-added")
+        XCTAssertEqual(store.getMeta("cursor:http://b"), "9", "b's pull cursor is untouched")
+        XCTAssertEqual(store.getMeta("push:http://a"), "e3", "a configured relay keeps its cursor")
+
+        // Nothing pruned -> nothing forgotten (a single relay toggled off is safe).
+        store.setMeta("push:http://c", "zz")
+        XCTAssertEqual(store.pruneOutbox(["http://a"]), 0)
+        XCTAssertEqual(store.getMeta("push:http://c"), "zz")
+    }
+
+    // A caller-supplied updatedAt bypasses the clock, so it can sort at or below
+    // the row's current version — peers would keep their copy under LWW while
+    // this device regressed its own. Equal is refused too: the HLC-keyed outbox
+    // would drop the event while its row committed.
+    func testExplicitUpdatedAtMustBeNewerThanTheCurrentRow() async throws {
+        let driver = try SQLite3Driver(path: ":memory:")
+        let deps = SyncEngineDeps(makeDriver: { _ in driver }, secureStorage: InMemorySecureStorage())
+        let engine = createSync(deps)(todoOnly, SyncEngineConfig(name: "explicit-hlc"))
+        await engine.ready
+        guard case .ok(let id) = engine.insert("todo", ["title": "current"]) else {
+            return XCTFail("insert")
+        }
+        guard case .text(let current)? = try driver.select(
+            "select updatedAt from \"todo\" where id = ?", [.text(id)]).first?["updatedAt"] else {
+            return XCTFail("row readable")
+        }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let older = HLC.make(deviceId: "import", millis: now - 60_000)
+        XCTAssertFalse(
+            engine.upsert("todo", ["id": .string(id), "title": "stale", "updatedAt": .string(older)]).isOk,
+            "an older stamp is refused")
+        XCTAssertFalse(
+            engine.upsert("todo", ["id": .string(id), "title": "same", "updatedAt": .string(current)]).isOk,
+            "an equal stamp is refused")
+        XCTAssertFalse(
+            engine.insert("todo", ["id": .string(id), "title": "stale insert", "updatedAt": .string(older)]).isOk,
+            "insert overwrites too, so it gets the same guard")
+        if case .text(let title)? = try driver.select(
+            "select title from \"todo\" where id = ?", [.text(id)]).first?["title"] {
+            XCTAssertEqual(title, "current", "the row is untouched")
+        }
+        XCTAssertTrue(
+            engine.upsert("todo", ["id": .string(id), "title": "forward",
+                                   "updatedAt": .string(HLC.make(deviceId: "import", millis: now + 1_000))]).isOk,
+            "a newer stamp is accepted")
+
+        let shared = HLC.make(deviceId: "import", millis: now - 500)
+        XCTAssertTrue(engine.insert("todo", ["title": "first", "updatedAt": .string(shared)]).isOk)
+        XCTAssertFalse(
+            engine.insert("todo", ["title": "second", "updatedAt": .string(shared)]).isOk,
+            "an HLC already queued may not be reused for another row")
+        let other = HLC.make(deviceId: "import", millis: now - 400)
+        let dup = engine.batch { b in
+            b.insert("todo", ["title": "a", "updatedAt": .string(other)])
+            b.insert("todo", ["title": "b", "updatedAt": .string(other)])
+        }
+        XCTAssertFalse(dup.isOk, "two ops sharing an HLC fail the batch")
+    }
+
+    // The row's HLC becomes the event id, and a relay refuses a whole push batch
+    // over one malformed id. A row written outside the engine must be skipped
+    // by the new-relay backfill, not queued where it stalls every later write.
+    func testBackfillSkipsARowWhoseUpdatedAtIsNotAnHlc() async throws {
+        let driver = try SQLite3Driver(path: ":memory:")
+        let deps = SyncEngineDeps(makeDriver: { _ in driver }, secureStorage: InMemorySecureStorage())
+        let engine = createSync(deps)(todoOnly, SyncEngineConfig(name: "backfill-guard", syncIntervalMs: 3_600_000))
+        await engine.ready
+        XCTAssertTrue(engine.insert("todo", ["title": "fine"]).isOk)
+        try driver.exec(
+            "insert into \"todo\" (id, title, createdAt, updatedAt, isDeleted) values (?, ?, ?, ?, 0)",
+            [.text("bad"), .text("legacy"), .text("2020-01-01"), .text("2020-01-01T00:00:00Z")])
+
+        // An unreachable relay: the backfill runs before the push that fails.
+        engine.setTransports([Transport(url: "http://127.0.0.1:9")])
+        await engine.sync()
+
+        let queued = try driver.select(
+            "select event_id from \"\(Store.outboxTable)\" order by event_id").compactMap {
+            if case .text(let e)? = $0["event_id"] { return e } else { return nil }
+        }
+        XCTAssertEqual(queued.count, 1, "only the canonical row is queued")
+        XCTAssertFalse(queued.contains("2020-01-01T00:00:00Z"), "the malformed stamp never reaches the outbox")
+        engine.setTransports([])
+    }
+
+    // Authenticated data this build cannot write is retained for a later build,
+    // exactly as the TypeScript engine does; it used to be dropped on the floor.
+    func testAnUnwritableRemoteRowIsRetainedNotDropped() async throws {
+        let driver = try SQLite3Driver(path: ":memory:")
+        let config = SyncEngineConfig(name: "retain-unwritable")
+        let staged = Store(schema: todoOnly, config: config)
+        staged.driver = driver
+        try staged.ensureSchema()
+        let hlc = HLC.make(deviceId: "remote", millis: Int64(Date().timeIntervalSince1970 * 1000) - 1_000)
+        let unwritable = SyncPayload(
+            schemaVersion: 1, table: "todo", op: "upsert", rowId: "bad-title", hlc: hlc,
+            value: ["title": .string(""), "createdAt": .string("2026-01-01T00:00:00.000Z"),
+                    "updatedAt": .string(hlc), "isDeleted": .int(0)])
+        staged.deferRemoteEvent(eventId: hlc, payloadJson: Envelope.encodePayload(unwritable))
+
+        let deps = SyncEngineDeps(makeDriver: { _ in driver }, secureStorage: InMemorySecureStorage())
+        let engine = createSync(deps)(todoOnly, config)
+        await engine.ready
+
+        XCTAssertTrue(
+            try driver.select("select 1 from \"todo\" where id = ?", [.text("bad-title")]).isEmpty,
+            "a value the column refuses is not written")
+        XCTAssertEqual(
+            try driver.select(
+                "select 1 from \"\(Store.deferredTable)\" where event_id = ?", [.text(hlc)]).count, 1,
+            "the event stays retained for a build whose schema can write it")
+    }
 }

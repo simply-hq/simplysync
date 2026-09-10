@@ -267,6 +267,15 @@ export function createStore(
       }));
   };
 
+  // Whether an event id already sits in the outbox, whatever its state. The
+  // write path asks this only for caller-supplied HLCs: an engine-minted one
+  // is unique by construction, a supplied one is not.
+  const hasQueuedEvent = (eventId: string): boolean =>
+    (state.driver?.select(
+      `select 1 from "${SYNC_OUTBOX_TABLE}" where event_id = ?`,
+      [eventId],
+    ).length ?? 0) > 0;
+
   const pendingOutboxCount = (): number => {
     const { driver } = state;
     if (!driver) return 0;
@@ -309,6 +318,16 @@ export function createStore(
     pushCursorKey(base),
     backfillMarkerKey(base),
   ];
+
+  // What a snapshot may carry between devices. The pull cursor and clock mark
+  // describe the owner's data and must travel. `push:`/`backfill:` describe
+  // what THIS device's outbox has delivered — and the outbox itself is not in
+  // the snapshot. Carrying them made the importing device believe every relay
+  // already held the exporter's rows, so any edit still pending in the
+  // exporter's outbox could never replicate from the new device.
+  const isPortableMetaKey = (key: string): boolean =>
+    !key.startsWith(pushCursorKey("")) &&
+    !key.startsWith(backfillMarkerKey(""));
 
   const pullCursor = (base: string): string | null => getMeta(pullCursorKey(base));
   const setPullCursor = (base: string, cursor: string): void =>
@@ -750,6 +769,30 @@ export function createStore(
           `delete from "${SYNC_OUTBOX_RELAY_TABLE}" where event_id not in (` +
             `select event_id from "${SYNC_OUTBOX_TABLE}")`,
         );
+        // A relay this device pushed to before but is not configured right now
+        // could not have acknowledged what was just forgotten. Its push cursor
+        // would otherwise vouch for it on re-add ("already seeded, skip the
+        // backfill") and the relay would silently lack every event pruned
+        // while it was away. Drop that vouching so re-adding it re-seeds; its
+        // pull cursor stays, the relay's own log did not move.
+        const pushPrefix = pushCursorKey("");
+        const remembered = driver
+          .select<{ key: string }>(
+            `select key from "${SYNC_META_TABLE}" where key glob ?`,
+            [`${pushPrefix}*`],
+          )
+          .map((row) => row.key.slice(pushPrefix.length));
+        for (const base of remembered) {
+          if (bases.includes(base)) continue;
+          driver.exec(
+            `delete from "${SYNC_META_TABLE}" where key in (?, ?)`,
+            [pushCursorKey(base), backfillMarkerKey(base)],
+          );
+          driver.exec(
+            `delete from "${SYNC_OUTBOX_RELAY_TABLE}" where relay = ?`,
+            [base],
+          );
+        }
       });
     }
     return count;
@@ -785,10 +828,14 @@ export function createStore(
           `select * from "${table}"`,
         );
         for (const row of rows) {
+          // The row's HLC becomes the event id, and a relay refuses a whole
+          // push batch over one malformed id. A row that reached the table
+          // without a canonical stamp (raw SQL, a legacy import) can only be
+          // skipped here; queueing it would stall every later write behind it.
           if (
             typeof row.id !== "string" ||
             typeof row.updatedAt !== "string" ||
-            row.updatedAt.length === 0
+            parseHlc(row.updatedAt) === null
           ) {
             continue;
           }
@@ -993,7 +1040,10 @@ export function createStore(
       const metaRows = driver.select<{ key: string; value: string }>(
         `select key, value from "${SYNC_META_TABLE}"`,
       );
-      for (const { key, value } of metaRows) meta[key] = value;
+      for (const { key, value } of metaRows) {
+        if (!isPortableMetaKey(key)) continue;
+        meta[key] = value;
+      }
     }
     return {
       format: "simplysync-db-snapshot",
@@ -1074,6 +1124,8 @@ export function createStore(
         }
       }
       for (const [key, value] of Object.entries(snapshot.meta)) {
+        // Snapshots written before this filter existed carry these keys too.
+        if (!isPortableMetaKey(key)) continue;
         setMeta(key, value);
       }
     });
@@ -1117,6 +1169,7 @@ export function createStore(
     importSnapshot,
     appendSyncLog,
     recentSyncLog,
+    hasQueuedEvent,
     pendingOutboxCount,
   };
 }

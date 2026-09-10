@@ -103,9 +103,11 @@ The plaintext eventually sealed inside the envelope is a `SyncPayload`:
 encrypted and pushed is in [Sync & the relay](./sync.md).
 
 > **Imported-HLC boundary.** A caller-supplied `updatedAt` also becomes the
-> outbox primary key. It must be unique per emitted event. Reusing the same HLC
-> for different writes can make the later `INSERT OR IGNORE` discard its
-> replication intent even though the row commits; engine-minted HLCs are unique.
+> outbox primary key, so the engine refuses it unless it is newer than the row's
+> current version and not already queued (also within one `batch`). An older
+> stamp would regress a row every peer keeps under last-writer-wins; an equal or
+> reused one would commit a row whose replication event the outbox dropped.
+> Engine-minted HLCs are unique, so ordinary writes never hit this check.
 
 **Deletes are soft.** A delete sets the `isDeleted` system column and emits a
 normal envelope; queries filter `where isDeleted = 0`. You never hard-delete a

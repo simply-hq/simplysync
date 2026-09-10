@@ -428,6 +428,20 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             guard clock.observe(provided) else {
                 return (nil, "updatedAt must be a valid, non-future SimplySync HLC.")
             }
+            // A caller-supplied stamp bypasses the clock, so it can sort at or
+            // below the row's current version: peers would keep their copy under
+            // last-writer-wins while this device overwrote its own, and the next
+            // ordinary edit would replicate the regressed values. Equal is refused
+            // too — the outbox is keyed by HLC, so the event would be dropped while
+            // its row committed. Checked whatever the mode: insert overwrites too.
+            let current = store.readRow(table, id: id)
+            if case .text(let currentHlc)? = current?["updatedAt"],
+               HLC.compare(currentHlc, provided) >= 0 {
+                return (nil, "\(table).updatedAt: must be newer than the row's current version.")
+            }
+            if store.hasQueuedEvent(provided) {
+                return (nil, "\(table).updatedAt: collides with an event already queued for sync.")
+            }
             hlc = provided
         } else {
             hlc = clock.nextHlc()
@@ -578,6 +592,12 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                     expectedUpdatedAt: spec.expectedUpdatedAt)
                 guard let p else { return .failure(message: error ?? "Batch failed.") }
                 prepared.append(p)
+            }
+            // Engine-minted HLCs are unique by construction; caller-supplied ones
+            // are not, and two ops sharing one would leave a single outbox event
+            // for two row writes.
+            if Set(prepared.map { $0.hlc }).count != prepared.count {
+                return .failure(message: "updatedAt: two ops in one batch share an HLC.")
             }
             do {
                 if cancelWhenTaskCancelled, Task.isCancelled {
@@ -850,6 +870,11 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
         _ = try await relay.push(envelopes)
         let pushedAt = Self.isoNow()
         lock.withLock {
+            // The owner changed while this request was in flight (restore/reset
+            // wiped the outbox). Recording delivery now would write the OLD
+            // owner's push cursor into the NEW owner's metadata, which skips
+            // its first backfill.
+            guard self.identity?.ownerId == identity.ownerId else { return }
             for item in pending {
                 // `pushed_at` marks "reached at least one relay" — keep the earliest via coalesce.
                 try? store.driver?.exec(
@@ -876,8 +901,14 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             for table in schema.tableNames {
                 let rows = (try? store.driver?.select("select * from \"\(table)\"")) ?? []
                 for dbRow in rows {
+                    // The row's HLC becomes the event id, and a relay refuses a
+                    // whole push batch over one malformed id. A row that reached
+                    // the table without a canonical stamp (raw SQL, a legacy
+                    // import) can only be skipped here; queueing it would stall
+                    // every later write behind it.
                     guard case .text(let rowId)? = dbRow["id"],
-                          case .text(let hlc)? = dbRow["updatedAt"], !hlc.isEmpty else { continue }
+                          case .text(let hlc)? = dbRow["updatedAt"],
+                          HLC.parse(hlc) != nil else { continue }
                     let value = Self.rowToJson(dbRow)
                     enqueue(table: table, rowId: rowId, hlc: hlc, value: value)
                 }
@@ -915,6 +946,15 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             throw error
         }
         return lock.withLock {
+            // The await above is a window in which restoreAppOwner/resetAppOwner
+            // can swap the owner and wipe the database. This page was fetched for
+            // the previous owner: applying it would leak that owner's rows into
+            // the new owner's database, and recording its cursor would make the
+            // new owner's first pull skip everything below it. Drop the page; the
+            // pass the switch queued re-pulls under the new owner.
+            guard self.identity?.ownerId == identity.ownerId else {
+                return PullPage(changed: [], pulled: 0)
+            }
             var changed = Set<String>()
             for envelope in result.events {
                 let seen = (try? store.driver?.select(
@@ -970,7 +1010,19 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                             futureRetryAfter(
                                 eventId: envelope.eventId, payloadHlc: payload.hlc)))
                 } else if schema.has(payload.table) {
-                    if applyRemoteRow(payload) { changed.insert(payload.table) }
+                    switch applyRemoteRow(payload) {
+                    case .applied: changed.insert(payload.table)
+                    case .unchanged: break
+                    case .failed:
+                        // Authenticated data this build cannot write (a column
+                        // it lacks, a value its type refuses). Retained opaquely
+                        // for the upgrade that can, as the TypeScript engine
+                        // does — dropping it would be silent data loss.
+                        store.deferRemoteEvent(
+                            eventId: envelope.eventId,
+                            payloadJson: Envelope.encodePayload(payload))
+                        setError("could not apply event \(envelope.eventId); retained for a later build")
+                    }
                 } else {
                     store.deferRemoteEvent(
                         eventId: envelope.eventId,
@@ -1038,8 +1090,18 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                             eventId: item.eventId, payloadHlc: payload.hlc)))
                 continue
             }
-            if applyRemoteRow(payload) { changed.insert(payload.table) }
-            store.dropDeferredEvent(item.eventId)
+            switch applyRemoteRow(payload) {
+            case .applied:
+                changed.insert(payload.table)
+                store.dropDeferredEvent(item.eventId)
+            case .unchanged:
+                store.dropDeferredEvent(item.eventId)
+            case .failed:
+                // Still unwritable against this schema: keep it opaque (no retry
+                // time) so only the once-per-schema sweep reconsiders it.
+                store.deferRemoteEvent(
+                    eventId: item.eventId, payloadJson: item.payloadJson)
+            }
         }
         return changed
     }
@@ -1095,13 +1157,18 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             nowMs: Self.nowMillis(), limit: deferredReplayLimit))
     }
 
+    /// What became of one decrypted row. `unchanged` means last-writer-wins
+    /// kept the local copy; `failed` means this build could not write it, which
+    /// callers retain rather than discard.
+    private enum ApplyOutcome { case applied, unchanged, failed }
+
     /// Apply one decrypted row, last-writer-wins by `updatedAt`. Called under lock.
-    private func applyRemoteRow(_ payload: SyncPayload) -> Bool {
-        guard !payload.rowId.isEmpty else { return false }
+    private func applyRemoteRow(_ payload: SyncPayload) -> ApplyOutcome {
+        guard !payload.rowId.isEmpty else { return .failed }
         if let existing = store.readRow(payload.table, id: payload.rowId),
            case .text(let updatedAt)? = existing["updatedAt"],
            HLC.compare(updatedAt, payload.hlc) >= 0 {
-            return false
+            return .unchanged
         }
         var row = payload.value
         row["id"] = .string(payload.rowId)
@@ -1109,12 +1176,12 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
         // a stale value from a partial update (or omit it entirely).
         row["updatedAt"] = .string(payload.hlc)
         let projected = store.projectRemoteRow(payload.table, row)
-        guard projected.error == nil else { return false }
+        guard projected.error == nil else { return .failed }
         do {
             try store.writeRow(payload.table, projected.row)
-            return true
+            return .applied
         } catch {
-            return false
+            return .failed
         }
     }
 

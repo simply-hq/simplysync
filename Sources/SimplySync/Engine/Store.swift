@@ -162,8 +162,33 @@ final class Store {
         }
         if count > 0 {
             try? driver.exec("delete from \"\(Self.outboxTable)\" where event_id <= ?", [.text(bound)])
+            // A relay this device pushed to before but is not configured right
+            // now could not have received what was just forgotten. Its push
+            // cursor would otherwise vouch for it on re-add ("already seeded,
+            // skip the backfill") and the relay would silently lack every event
+            // pruned while it was away. Drop that vouching so re-adding it
+            // re-seeds; its pull cursor stays — the relay's own log did not move.
+            let remembered = (try? driver.select(
+                "select key from \"\(Self.metaTable)\" where key glob 'push:*'")) ?? []
+            for row in remembered {
+                guard case .text(let key)? = row["key"] else { continue }
+                let base = String(key.dropFirst("push:".count))
+                if relayBases.contains(base) { continue }
+                deleteMeta("push:\(base)")
+                deleteMeta("backfill:\(base)")
+            }
         }
         return count
+    }
+
+    /// Whether an event id already sits in the outbox. The write path asks this
+    /// only for caller-supplied HLCs; engine-minted ones are unique by
+    /// construction.
+    func hasQueuedEvent(_ eventId: String) -> Bool {
+        guard let rows = try? driver?.select(
+            "select 1 from \"\(Self.outboxTable)\" where event_id = ?", [.text(eventId)])
+        else { return false }
+        return !rows.isEmpty
     }
 
     /// Reclaim local storage by hard-deleting soft-deleted rows (tombstones) older than
