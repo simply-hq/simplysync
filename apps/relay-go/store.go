@@ -79,6 +79,12 @@ func (s *store) migrate() error {
 	if err != nil {
 		return err
 	}
+	// closed_at marks an owner retired via `POST /v1/owner/close` (leaked
+	// recovery phrase). The row is kept on purpose: owners are created on first
+	// push, so deleting it would let anyone holding the old token recreate it.
+	if _, err := s.db.Exec(`alter table owners add column closed_at text`); err != nil {
+		// column already present — ignore.
+	}
 	// Backfill stream_id on databases created before compaction existed.
 	if _, err := s.db.Exec(`alter table events add column stream_id text`); err != nil {
 		// column already present — ignore.
@@ -125,6 +131,9 @@ const (
 	authInvalidToken
 	authAtCapacity
 	authCreateLimited
+	// Valid token, but the owner was closed. Only reported after the token
+	// checks out, so a closed account is indistinguishable to anyone else.
+	authOwnerClosed
 )
 
 type authResult struct {
@@ -140,7 +149,7 @@ type authResult struct {
 func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool, createLimitKey string) authResult {
 	hash := sha256B64([]byte(relayAuth))
 
-	storedHash, found, err := s.getOwner(ownerID)
+	storedHash, closed, found, err := s.getOwner(ownerID)
 	if err != nil {
 		return authResult{denial: authInternalError}
 	}
@@ -151,7 +160,7 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool,
 		}
 		s.writeMu.Lock()
 		// Re-check inside the lock to avoid a creation race.
-		storedHash, found, err = s.getOwner(ownerID)
+		storedHash, closed, found, err = s.getOwner(ownerID)
 		if err != nil {
 			s.writeMu.Unlock()
 			return authResult{denial: authInternalError}
@@ -212,20 +221,62 @@ func (s *store) ensureOwnerAuth(ownerID, relayAuth string, createIfMissing bool,
 	if subtle.ConstantTimeCompare([]byte(storedHash), []byte(hash)) != 1 {
 		return authResult{denial: authInvalidToken}
 	}
+	if closed {
+		return authResult{denial: authOwnerClosed}
+	}
 	return authResult{ok: true}
 }
 
-func (s *store) getOwner(ownerID string) (hash string, found bool, err error) {
+func (s *store) getOwner(ownerID string) (hash string, closed bool, found bool, err error) {
+	var closedAt sql.NullString
 	row := s.db.QueryRow(
-		`select relay_auth_hash from owners where owner_id = ?`, ownerID)
-	err = row.Scan(&hash)
+		`select relay_auth_hash, closed_at from owners where owner_id = ?`, ownerID)
+	err = row.Scan(&hash, &closedAt)
 	if err == sql.ErrNoRows {
-		return "", false, nil
+		return "", false, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", false, false, err
 	}
-	return hash, true, nil
+	return hash, closedAt.Valid, true, nil
+}
+
+// closeOwner retires an owner for good: every event and blob is deleted and
+// the row is marked closed, so later pushes and pulls get 410 instead of
+// recreating it. Callers have already checked the token. Idempotent.
+func (s *store) closeOwner(ownerID string) (deletedEvents int64, deletedBlobs int64, err error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`delete from events where owner_id = ?`, ownerID)
+	if err != nil {
+		return 0, 0, err
+	}
+	deletedEvents, _ = res.RowsAffected()
+	res, err = tx.Exec(`delete from blobs where owner_id = ?`, ownerID)
+	if err != nil {
+		return 0, 0, err
+	}
+	deletedBlobs, _ = res.RowsAffected()
+	if _, err := tx.Exec(
+		`update owners set stored_bytes = 0, closed_at = coalesce(closed_at, ?) where owner_id = ?`,
+		nowISO(), ownerID,
+	); err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	if deletedEvents > 0 || deletedBlobs > 0 {
+		_, _ = s.db.Exec(`pragma wal_checkpoint(TRUNCATE)`)
+	}
+	return deletedEvents, deletedBlobs, nil
 }
 
 func (s *store) ownerStoredBytes(ownerID string) (int64, error) {

@@ -237,6 +237,31 @@ Body: { "ownerId": string, "streamIds": string[] }
   `purgeRows()`, batching ids and retrying every relay that hasn't acked, so a
   relay that was down still gets the purge on a later sync.
 
+### `POST /v1/owner/close` — retire a leaked recovery phrase
+
+```
+Authorization: Bearer <relayAuth>
+Body: { "ownerId": string }
+→ 200 { "closed": true, "deletedEvents": number, "deletedBlobs": number }
+```
+
+- Deletes every event and blob the relay holds for the owner and marks the
+  owner closed. From then on every request with the valid token gets `410`,
+  push included, so the old token can never recreate the owner. A wrong token
+  still gets `401`, so a closed owner looks like a live one to anyone else.
+- Idempotent: closing a closed owner returns `200` with zero counts. Unknown
+  owner → `404`, and close never creates one.
+- It cannot un-leak anything. Whoever holds the phrase may already have pulled
+  and decrypted the log. Close is the last step of a re-key: create a new
+  phrase, re-encrypt local data under it, push to the new owner, then close
+  the old one. Each device keeps the full dataset locally, so closing first is
+  also safe when speed matters more.
+- Anyone holding the token can call it, the attacker included. That costs the
+  user a re-key, never data.
+- The engine treats a `410` as a terminal `badRequest` failure carrying
+  `status: 410`; it does not re-upload the way it does after a wiped relay.
+  Apps should prompt for the new phrase.
+
 ### `PUT` / `GET` / `HEAD /v1/blobs/:hash` — blob chunks
 
 ```
@@ -491,6 +516,8 @@ what the design guarantees; availability is what self-hosting is for.
 - No transport compression or batching backpressure beyond the push/pull caps.
 - Blob chunks are never auto-deleted: reclaiming bytes from a soft-deleted
   manifest needs an offline relay GC pass. Out of scope for v1.
-- Relay auth is a bearer capability; rotating the write key is not implemented.
+- Relay auth is a bearer capability; rotating the write key in place is not
+  implemented. A leaked phrase is handled by moving to a new phrase and closing
+  the old owner (`POST /v1/owner/close`).
 - Legacy import is row-level only — historical ciphertext from other systems
   isn't importable (different envelope format); rows are re-emitted as envelopes.

@@ -145,6 +145,7 @@ bun run dev          # wrangler dev — local D1 + R2 emulation
 | `POST` | `/v1/events` | Push encrypted events. |
 | `GET` | `/v1/events?ownerId&after&limit` | Pull events (keyset cursor). |
 | `POST` | `/v1/streams/compact` | Drop every event of the named purged streams. |
+| `POST` | `/v1/owner/close` | Delete all of an owner's data and retire the id (`410` after). |
 | `GET` | `/v1/status?ownerId` | Server version + this owner's account stats. |
 | `GET` | `/v1/usage?ownerId` | Owner's stored byte count. |
 | `PUT` | `/v1/blobs/:hash?ownerId` | Store an encrypted, content-addressed chunk. |

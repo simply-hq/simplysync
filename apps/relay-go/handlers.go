@@ -62,6 +62,8 @@ func routeHandler(cfg Config, st *store) http.Handler {
 			handlePush(cfg, st, w, r)
 		case r.Method == http.MethodPost && path == "/v1/streams/compact":
 			handleCompactStreams(cfg, st, w, r)
+		case r.Method == http.MethodPost && path == "/v1/owner/close":
+			handleCloseOwner(st, w, r)
 		case r.Method == http.MethodGet && path == "/v1/events":
 			handlePull(cfg, st, w, r)
 		case r.Method == http.MethodGet && path == "/v1/usage":
@@ -106,6 +108,8 @@ func authDeniedStatus(denial authDenial) (int, string) {
 		return http.StatusServiceUnavailable, "Relay is at capacity"
 	case authCreateLimited:
 		return http.StatusTooManyRequests, "Rate limited"
+	case authOwnerClosed:
+		return http.StatusGone, "Owner closed"
 	default:
 		return http.StatusInternalServerError, "Internal error"
 	}
@@ -265,6 +269,44 @@ func handleCompactStreams(cfg Config, st *store, w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"deletedEvents":  deleted,
 		"reclaimedBytes": reclaimed,
+	})
+}
+
+// handleCloseOwner is the response to a leaked recovery phrase: the holder
+// deletes everything the relay stores for the owner and retires the id, after
+// moving their data to a new phrase. Anyone with the token can call it,
+// including whoever leaked it — that costs a re-key, never data, because every
+// device keeps the full dataset locally. Idempotent: closing again returns 200.
+func handleCloseOwner(st *store, w http.ResponseWriter, r *http.Request) {
+	relayAuth := bearerToken(r)
+	if relayAuth == "" {
+		writeJSON(w, http.StatusUnauthorized, errBody("Missing bearer token"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	var body struct {
+		OwnerID string `json:"ownerId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.OwnerID == "" {
+		writeJSON(w, http.StatusBadRequest, errBody("Invalid close body"))
+		return
+	}
+
+	auth := st.ensureOwnerAuth(body.OwnerID, relayAuth, false, "")
+	if !auth.ok && auth.denial != authOwnerClosed {
+		writeAuthDenied(w, auth)
+		return
+	}
+
+	deletedEvents, deletedBlobs, err := st.closeOwner(body.OwnerID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errBody("Failed to close owner"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"closed":        true,
+		"deletedEvents": deletedEvents,
+		"deletedBlobs":  deletedBlobs,
 	})
 }
 

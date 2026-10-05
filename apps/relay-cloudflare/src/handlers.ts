@@ -11,6 +11,7 @@
 
 import {
   blobExists,
+  closeOwner,
   compactStreams,
   ensureOwnerAuth,
   type OwnerAuth,
@@ -78,6 +79,9 @@ export async function handleRequest(
     if (request.method === "POST" && url.pathname === "/v1/streams/compact") {
       return await handleCompactStreams(request, env, cfg);
     }
+    if (request.method === "POST" && url.pathname === "/v1/owner/close") {
+      return await handleCloseOwner(request, env, cfg);
+    }
     if (request.method === "GET" && url.pathname === "/v1/events") {
       return await handlePull(request, env, cfg, url);
     }
@@ -123,6 +127,8 @@ function authDenied(denial: AuthDenial): Response {
       return json({ error: "Relay is at capacity" }, 503);
     case "create-rate-limited":
       return json({ error: "Rate limited" }, 429);
+    case "owner-closed":
+      return json({ error: "Owner closed" }, 410);
   }
 }
 
@@ -257,6 +263,35 @@ async function handleCompactStreams(
   return json(
     await compactStreams(env, body.ownerId, body.streamIds as string[]),
   );
+}
+
+// The response to a leaked recovery phrase: the holder deletes everything the
+// relay stores for the owner and retires the id, after moving their data to a
+// new phrase. Anyone with the token can call it, including whoever leaked it —
+// that costs a re-key, never data, because every device keeps the full dataset
+// locally. Idempotent: closing again returns 200. Deliberately not gated on
+// relayDisabled — deleting data must work on a read-only relay too.
+async function handleCloseOwner(
+  request: Request,
+  env: Env,
+  cfg: Config,
+): Promise<Response> {
+  const relayAuth = getBearerToken(request);
+  if (!relayAuth) return json({ error: "Missing bearer token" }, 401);
+
+  const parsed = await readJsonCapped(request, 1024);
+  if (parsed === "too-large") return json({ error: "Payload too large" }, 413);
+  const body = parsed as { ownerId?: unknown } | null;
+  if (!body || typeof body.ownerId !== "string" || !body.ownerId) {
+    return json({ error: "Invalid close body" }, 400);
+  }
+
+  const auth = await ensureOwnerAuth(env, cfg, body.ownerId, relayAuth, {
+    createIfMissing: false,
+  });
+  if (!auth.ok && auth.denial !== "owner-closed") return authDenied(auth.denial);
+
+  return json({ closed: true, ...(await closeOwner(env, body.ownerId)) });
 }
 
 // -----------------------------------------------------------------------------
