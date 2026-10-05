@@ -61,6 +61,8 @@ export function createRelaySync(
   const DEFERRED_REPLAY_LIMIT = 256;
   // Single-owner mutable state (never touched outside this module).
   let syncTimer: number | null = null;
+  // Set by close(): no further passes or poll ticks. One-way.
+  let closed = false;
   let pollIntervalMs = DEFAULT_POLL_MS;
   // Coalesce sync requests that arrive while a pass is already in flight. In
   // particular, setTransports() can replace the startup/default relay after
@@ -141,6 +143,11 @@ export function createRelaySync(
     const preclassified = (caught as { kind?: SyncFailureKind } | undefined)
       ?.kind;
     if (preclassified) return { kind: preclassified, message };
+    // A runtime that ignores the abort reason rejects with a bare AbortError.
+    // Only the request deadline aborts relay calls, so that is a timeout.
+    if ((caught as { name?: string } | undefined)?.name === "AbortError") {
+      return { kind: "timeout", message };
+    }
     if (typeof status === "number") {
       let kind: SyncFailureKind = "unknown";
       if (status === 401 || status === 403) kind = "authRejected";
@@ -743,7 +750,7 @@ export function createRelaySync(
           firstError = caught;
         }
       }
-    } while (syncQueued && state.identity);
+    } while (syncQueued && state.identity && !closed);
 
     activeSync = null;
     if (failed) throw firstError;
@@ -753,7 +760,7 @@ export function createRelaySync(
     // An identity-less engine cannot seal or authenticate; this also keeps a
     // queued pass from running after identity changes while the preceding
     // pass was in flight.
-    if (!state.identity) return Promise.resolve();
+    if (closed || !state.identity) return Promise.resolve();
 
     // A pass is already in flight (commonly the background poller). Queue a
     // follow-up so THIS caller's writes are pushed, then resolve only once the
@@ -867,7 +874,7 @@ export function createRelaySync(
   // changes while transports are configured. Also synced opportunistically after
   // local writes and on web focus/online.
   const startPolling = () => {
-    if (!autoSyncEnabled) return;
+    if (!autoSyncEnabled || closed) return;
     if (syncTimer !== null || state.transports.length === 0) return;
     syncTimer = setInterval(() => {
       void sync().catch(() => undefined);
@@ -910,6 +917,11 @@ export function createRelaySync(
     startPolling,
     stopPolling,
     setTransports,
+    /** Stop the poller and refuse further passes. An in-flight pass finishes. */
+    close: () => {
+      closed = true;
+      stopPolling();
+    },
     relayBaseUrls,
     getRelayStatuses,
     replayDeferredAtBoot,

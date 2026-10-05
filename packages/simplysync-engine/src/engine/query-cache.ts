@@ -1,5 +1,5 @@
 import type { Query, SchemaDefinition } from "../engine-types.js";
-import type { EngineState } from "./state.js";
+import { notifyAll, type EngineState } from "./state.js";
 
 interface QueryEntry {
   sql: string;
@@ -166,7 +166,7 @@ export function createQueryCache(state: EngineState, schema: SchemaDefinition) {
       // unchanged — this is the stability contract documented at :14-19.
       if (rowsEqual(entry.rows, next)) continue;
       entry.rows = next;
-      entry.listeners.forEach((l) => l());
+      notifyAll(entry.listeners);
     }
   };
 

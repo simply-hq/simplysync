@@ -374,10 +374,20 @@ reported through sync state/status rather than thrown. For multi-relay delivery,
 relay—not that every configured relay acknowledged it—so inspect
 `getSyncState()` and `getRelayStatuses()` before a script declares success.
 
-**Stopping the engine.** The sync poller is the engine's only long-lived timer, so
-a short-lived process (a CLI, a script, a test) must clear it or the process never
-exits. `engine.setTransports([])` stops it. Long-running apps never need this. See `apps/todolist/cli/src` for a
-CLI that does it.
+**Stopping the engine.** A short-lived process (a CLI, a script, a test) calls
+`engine.close()` when it is done. That stops the sync poller, removes the web
+focus/online listeners, and turns later `sync()` calls into no-ops, so the
+process can exit. Local reads and writes keep working. Long-running apps never
+need this. See `apps/todolist/cli/src` for a CLI that does it.
+
+**Request deadline.** Every relay request has a deadline, 60 seconds by default
+(`requestTimeoutMs`). A request past it fails that pass with kind `"timeout"`
+and the next sync retries. Without it, one stalled connection would leave the
+engine "syncing" forever.
+
+**Subscriber errors.** A listener passed to `subscribeSyncState`,
+`subscribeError`, or `subscribeQuery` that throws is logged with
+`console.error`. It does not fail the write or sync pass that triggered it.
 
 The engine also syncs opportunistically after local writes and on web
 focus/online. Watch progress with `useSyncState()`:
@@ -501,6 +511,7 @@ rows re-emit as sync events, so they propagate to the relay.
 | `engine.resetAppOwner` | `({ force? }) => Promise<void>` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
 | `engine.setTransports` | `(transports) => void` | Set relays; triggers sync + polling. `[]` stops the poller. |
 | `engine.sync` | `() => Promise<void>` | Push outbox, pull + apply; resolves after a pass covering your writes. |
+| `engine.close` | `() => void` | Stop the poller, listeners, and further syncs. Idempotent; local writes still work. |
 | `engine.getSyncState` / `subscribeSyncState` | — | Backing store for `useSyncState`. |
 | `engine.getRelayStatuses` | `() => Promise<RelayStatus[]>` | Per-relay health + storage usage (live `GET /v1/status` probe per relay). |
 | `engine.getSyncLog` | `(limit?) => SyncLogEntry[]` | Most-recent-first on-device sync diagnostics log. |
@@ -526,7 +537,7 @@ rows re-emit as sync events, so they propagate to the relay.
 | `MutationResult` | `{ ok: true, value: { id } } \| { ok: false, error: { message } }` |
 | `AppOwner` | `{ id, recoveryKey, mnemonic?, writeKey }` |
 | `Transport` | `{ url }` |
-| `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, autoSync?, indexes? }` |
+| `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, autoSync?, indexes?, requestTimeoutMs? }` |
 | `SyncState` | `Initial \| IsSyncing \| IsSynced{lastSyncedAt} \| IsNotSynced{error?,status?,terminal?}` |
 | `Query<R>` | `{ sql, parameters, Row }` (the `Row` field is a phantom type carrier) |
 
