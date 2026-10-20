@@ -115,12 +115,17 @@ class EngineTest {
         override suspend fun health() = RelayClient.HealthResponse(ok = true)
     }
 
-    private suspend fun awaitSynced(engine: SyncEngine) {
-        repeat(2_000) {
+    // A wall-clock deadline, not an iteration count. `2_000 x delay(1)` meant
+    // "about two seconds" only on an idle machine; a cold JVM booting the engine
+    // on a shared CI runner overran it and failed a test whose behaviour was
+    // fine. The deadline only bounds a hang — a healthy engine returns in ms.
+    private suspend fun awaitSynced(engine: SyncEngine, timeoutMs: Long = 15_000) {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
             if (engine.syncState.value is SyncState.Synced) return
-            delay(1)
+            delay(5)
         }
-        throw AssertionError("engine did not reach Synced")
+        throw AssertionError("engine did not reach Synced within ${timeoutMs}ms")
     }
 
     @Test
