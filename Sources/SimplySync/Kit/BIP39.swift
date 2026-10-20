@@ -1,8 +1,9 @@
 import Foundation
 
-/// Minimal BIP39 (English) decoder: normalize, validate, and recover entropy —
-/// the inputs the protocol's SLIP-21 identity derivation needs. Mirrors
-/// @scure/bip39's `mnemonicToEntropy` / `validateMnemonic`.
+/// Minimal BIP39 (English) codec: normalize, validate, recover entropy, and
+/// generate — the inputs the protocol's SLIP-21 identity derivation needs.
+/// Mirrors @scure/bip39's `mnemonicToEntropy` / `validateMnemonic` /
+/// `generateMnemonic`.
 public enum BIP39 {
     private static let indexByWord: [String: Int] = {
         var map = [String: Int](minimumCapacity: 2048)
@@ -63,6 +64,43 @@ public enum BIP39 {
             if bits[entropyBits + i] != expectedBit { throw Error.checksum }
         }
         return entropy
+    }
+
+    /// Generates a fresh phrase: 128 bits → 12 words by default, matching the
+    /// TS `createMnemonic` and the Kotlin `Bip39.generate`. Longer phrases stay
+    /// valid on the way back in (`entropy(from:)` accepts 12/15/18/21/24), so
+    /// existing 24-word owners are untouched — this bounds only new phrases.
+    public static func createMnemonic(strengthBits: Int = 128) -> String {
+        fromEntropy(Crypto.randomBytes(strengthBits / 8))
+    }
+
+    /// Standard BIP39 entropy → mnemonic: entropy bits followed by the first
+    /// `entropyBits / 32` bits of SHA-256(entropy), read as 11-bit word indices.
+    /// The exact inverse of `entropy(from:)` above.
+    public static func fromEntropy(_ entropy: Data) -> String {
+        let entropyBits = entropy.count * 8
+        let checksumBits = entropyBits / 32
+        let hash = Crypto.sha256(entropy)
+
+        var bits = [UInt8]()
+        bits.reserveCapacity(entropyBits + checksumBits)
+        for byte in entropy {
+            for shift in stride(from: 7, through: 0, by: -1) {
+                bits.append((byte >> UInt8(shift)) & 1)
+            }
+        }
+        for i in 0..<checksumBits {
+            bits.append((hash[i / 8] >> (7 - (i % 8))) & 1)
+        }
+
+        var words = [String]()
+        words.reserveCapacity(bits.count / 11)
+        for start in stride(from: 0, to: bits.count, by: 11) {
+            var index = 0
+            for offset in 0..<11 { index = (index << 1) | Int(bits[start + offset]) }
+            words.append(BIP39Wordlist.words[index])
+        }
+        return words.joined(separator: " ")
     }
 
     private static func pack(_ bits: ArraySlice<UInt8>) -> Data {

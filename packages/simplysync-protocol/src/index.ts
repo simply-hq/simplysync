@@ -50,7 +50,13 @@ const ENCRYPTION_KEY_PATH = ["SimplySync", "OwnerEncryptionKey"] as const;
 const WRITE_KEY_PATH = ["SimplySync", "OwnerWriteKey"] as const;
 const BACKUP_KEY_PATH = ["SimplySync", "BackupKey"] as const;
 const WRITE_KEY_BYTES = 16;
-const MNEMONIC_STRENGTH_BITS = 256;
+// 128 bits -> 12 words. Entropy is the only thing standing between a dumped
+// relay and the plaintext (derivation is deliberately unstretched), and 128 bits
+// is far past any feasible search — so the remaining variable is transcription
+// error, which 12 words halves. Every port validates 12/15/18/21/24, and
+// existing 24-word phrases keep deriving unchanged: this bounds only what NEW
+// phrases look like.
+const MNEMONIC_STRENGTH_BITS = 128;
 
 const BLOB_ID_BYTES = 16;
 /** Default plaintext bytes per blob chunk (256 KiB). */
@@ -60,18 +66,39 @@ function normalizeRecoveryKey(recoveryKey: string): string {
   return recoveryKey.trim();
 }
 
+/**
+ * Generates a native `sf1_` recovery key: 32 random bytes, one whitespace-free
+ * token. This is the **machine** credential — test fixtures, CLI flags, env
+ * vars, CI secrets — where a phrase full of spaces needs quoting and wraps in
+ * logs. Apps should mint {@link createMnemonic} instead, because a human has to
+ * write that one down.
+ *
+ * Deliberately not deprecated: `deriveIdentity` must accept `sf1_` keys forever
+ * (existing holders would otherwise be locked out of their own data), so the
+ * generator costs nothing to keep and the shell-safe form is worth having.
+ */
 export async function createRecoveryKey(): Promise<string> {
   return `${RECOVERY_KEY_PREFIX}${base64UrlEncode(await randomBytes(32))}`;
 }
 
 /**
- * Generates a fresh 24-word BIP39 mnemonic (English wordlist). Use this instead
- * of {@link createRecoveryKey} when you want users to own a standard, portable
- * recovery phrase.
+ * Generates a fresh 12-word BIP39 mnemonic (English wordlist) — the credential
+ * apps should mint for users, and the only one worth showing a human.
  */
 export function createMnemonic(): string {
   return generateMnemonic(wordlist, MNEMONIC_STRENGTH_BITS);
 }
+
+/**
+ * The canonical test credentials, one per format. Every port's conformance
+ * corpus is generated from these, so a fixture that needs a fixed identity
+ * should import them rather than invent another literal. Never use them for
+ * real data: they are public, checked in, and identical everywhere.
+ */
+export const TEST_RECOVERY_KEY =
+  "sf1_AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o";
+export const TEST_MNEMONIC =
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
 
 /** Trims, lowercases, and collapses internal whitespace in a mnemonic. */
 export function normalizeMnemonic(mnemonic: string): string {

@@ -22,7 +22,7 @@ public enum BatchResult: Equatable {
 }
 
 /// The current owner — the Swift port of `AppOwner`. `recoveryKey` is the secret
-/// to back up (an `sf1_` key or a 24-word phrase); `mnemonic` is non-nil only
+/// to back up (a BIP39 phrase, or a legacy `sf1_` key); `mnemonic` is non-nil only
 /// when the owner was derived from a phrase. `writeKey` is the relay bearer token.
 public struct AppOwner: Equatable {
     public let id: String

@@ -121,8 +121,9 @@ when payload meaning changes incompatibly. Older clients durably retain a newer
 payload without partially applying it, then replay it after an upgraded app
 declares support.
 
-On first run the engine mints a new owner (a fresh `sf1_` recovery key, stored via
-`secureStorage`). On later runs it loads the existing one.
+On first run the engine mints a new owner (a fresh 12-word recovery phrase,
+stored via `secureStorage`). On later runs it loads the existing one — including
+a legacy `sf1_` key, which still derives.
 
 ## 3. Writing data
 
@@ -223,9 +224,9 @@ A user's whole account derives from one secret. The engine manages it through
 ```kotlin
 val owner = engine.appOwner()    // suspend → AppOwner? (or engine.currentOwner)
 owner?.id          // public owner id used for relay routing
-owner?.recoveryKey // the secret to back up — an sf1_ key or a 24-word phrase
+owner?.recoveryKey // the secret to back up — a recovery phrase, or a legacy sf1_ key
 owner?.writeKey    // bearer token presented to the relay (a capability)
-owner?.mnemonic    // the 24-word phrase, if the owner was derived from one
+owner?.mnemonic    // the phrase, if the owner was derived from one
 ```
 
 Surface `owner.recoveryKey` during onboarding so the user can save it — it's the

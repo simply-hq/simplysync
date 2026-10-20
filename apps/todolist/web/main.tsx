@@ -518,7 +518,7 @@ function TopBar({
             <p className="pg-hint">This replaces both local demo devices.</p>
             <textarea
               aria-label="Recovery key or phrase"
-              placeholder="paste an sf1_ key or legacy recovery phrase"
+              placeholder="paste your recovery phrase"
               value={credential}
               onChange={(event) => setCredential(event.target.value)}
               rows={3}
@@ -588,7 +588,7 @@ function RecoverySetup({
         <summary>Already have a recovery key?</summary>
         <textarea
           aria-label="Existing recovery key or phrase"
-          placeholder="paste an sf1_ key or 24-word recovery phrase"
+          placeholder="paste your recovery phrase"
           value={credential}
           onChange={(event) => setCredential(event.target.value)}
           rows={3}

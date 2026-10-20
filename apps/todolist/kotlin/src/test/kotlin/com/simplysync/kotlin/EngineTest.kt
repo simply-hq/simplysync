@@ -130,7 +130,12 @@ class EngineTest {
 
         val owner = engine.appOwner()
         assertNotNull("owner derived on boot", owner)
-        assertTrue("default owner is an sf1_ key", owner!!.recoveryKey.startsWith("sf1_"))
+        assertEquals(
+            "default owner is a 12-word recovery phrase",
+            12,
+            owner!!.recoveryKey.split(" ").size,
+        )
+        assertEquals("and the phrase is exposed as the mnemonic", owner.recoveryKey, owner.mnemonic)
 
         val q = todoQuery(engine)
         val first = engine.insert("todo", "title" to "Buy milk", "done" to false)

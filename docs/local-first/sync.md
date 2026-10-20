@@ -80,11 +80,18 @@ mnemonic ↔ entropy conversion.
 
 ### Secret → identity
 
-A recovery credential has two supported forms:
+A recovery credential has two supported forms, and which one you get depends on
+who is meant to read it:
 
-- **Native `sf1_` key:** `sf1_` + base64url(32 random bytes).
-- **BIP39 mnemonic:** normally 24 words / 32 bytes of entropy via
-  `@scure/bip39`; valid 12-word phrases are also accepted.
+- **BIP39 mnemonic — the human format.** What every engine mints for a new
+  owner: 12 words / 128 bits of entropy (`createMnemonic`). Phrases of
+  12/15/18/21/24 words all derive, so owners created before the 12-word default
+  are unaffected.
+- **Native `sf1_` key — the machine format.** `sf1_` + base64url(32 random
+  bytes) (`createRecoveryKey`): one whitespace-free token, for test fixtures,
+  CLI flags, env vars, and CI secrets, where a phrase full of spaces needs
+  quoting. Not deprecated, and never removed — existing holders would be locked
+  out of their own data.
 
 The two forms use different frozen derivation schemes. They are interchangeable
 as accepted API inputs, but an `sf1_` key and a mnemonic made from the same raw

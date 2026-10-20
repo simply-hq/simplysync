@@ -38,7 +38,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Adopt a pasted `sf1_` key or 24-word phrase: validate, persist it as the
+    /// Adopt a pasted recovery phrase (or legacy `sf1_` key): validate, persist it as the
     /// engine's owner secret, then boot the engine on it.
     func configure(with recoveryKey: String) {
         do {
@@ -54,7 +54,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Mint a brand-new identity (the engine generates a fresh `sf1_` key on boot).
+    /// Mint a brand-new identity (the engine generates a fresh recovery phrase on boot).
     func generateNewIdentity() {
         secureStorage.removeItem(mnemonicKey)
         defaults.set(true, forKey: hasIdentityKey)

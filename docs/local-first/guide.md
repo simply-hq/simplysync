@@ -310,7 +310,7 @@ A user's whole account derives from one secret. The engine manages it through
 ```ts
 const owner = await engine.appOwner; // AppOwner | null
 owner.id;       // public owner id used for relay routing
-owner.recoveryKey; // native sf1_ key or 24-word BIP39 phrase — show for backup
+owner.recoveryKey; // the secret to back up — a BIP39 phrase, or a legacy sf1_ key
 owner.mnemonic; // the phrase when phrase-backed; undefined for an sf1_ owner
 owner.writeKey; // bearer token presented to the relay (a capability)
 ```
