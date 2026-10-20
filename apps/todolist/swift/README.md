@@ -172,6 +172,6 @@ node verify/gen-xcodeproj.mjs
   into `Decodable` rows, not a Kysely builder.
 - Last-writer-wins per row (HLC); delete is a soft delete (`isDeleted`).
 - **Not ported:** binary blobs, the encrypted DB export/import (snapshot) format,
-  legacy import, and the fluent index builder.
+  and the fluent index builder.
 - Column names in row `value`s should be lowercase-ASCII so canonical-JSON key
   ordering matches JS code-unit order (see `CanonicalJSON.swift`).

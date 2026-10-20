@@ -12,6 +12,7 @@
   "dependencies": {
     "@simplysync/todolist-web": "workspace:*",
     "marked": "16.4.2",
+    "shiki": "4.5.0",
     "sql.js": "1.14.1"
   },
   "devDependencies": {

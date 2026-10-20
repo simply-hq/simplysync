@@ -13,6 +13,8 @@ way the React version works. It lives in
 > [Native clients](./native.md).
 > Pure JVM (no Android framework deps), so it unit-tests without an emulator.
 
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+
 ## Mental model
 
 - **The local SQLite database is the source of truth.** Reads come from it; writes
@@ -25,14 +27,11 @@ way the React version works. It lives in
 - **Queries are reactive.** `liveQuery` returns a `StateFlow` that re-emits when
   the rows it depends on change — from a local write *or* an incoming sync.
 
-```
- engine.insert(...) ──▶ local SQLite row  ──▶ liveQuery StateFlow re-emits (instant)
-                   └──▶ encrypted envelope ──▶ outbox ──▶ relay (background)
+![A local write makes the liveQuery StateFlow re-emit instantly, then syncs in the background; remote changes are pulled, decrypted, applied and re-emit again](./images/write-flow-kotlin.svg)
 
- relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ liveQuery StateFlow re-emits
-```
+## Setup
 
-## Clone the source module
+### Clone the source module
 
 Use the `kotlin` selective clone preset, then include its directory as a local
 Gradle project:
@@ -64,7 +63,7 @@ includes the standalone test command.
 Treat the protocol core as **pinned** — update it wholesale, don't fork it, or
 clients stop being able to sync with each other.
 
-## 1. Define a schema
+### Define a schema
 
 A schema is `{ table -> { column -> Column } }`. Column types come from the
 engine's typed DSL and double as runtime validators.
@@ -93,7 +92,7 @@ table automatically: `createdAt`, `updatedAt` (ISO/HLC strings), and `isDeleted`
 `.simpleName`, `.mnemonic`, and `.id("Table")`. Wrap any with `Column.nullable(...)`
 to allow `null`, or `Column.maxLength(n, ...)` to bound a string.
 
-## 2. Create the engine
+### Create the engine
 
 `createSync(deps)` takes the platform plumbing once, then returns a factory you
 call with your schema and config — exactly like the TS `createSync(deps)(schema,
@@ -101,14 +100,14 @@ config)`.
 
 ```kotlin
 val deps = SyncEngineDeps(
-    makeDriver = { name -> JdbcSqliteDriver(dbPath(name)) }, // platform SQLite (§8)
-    secureStorage = AndroidSecureStorage(context),           // OS secret store (§8)
+    makeDriver = { name -> JdbcSqliteDriver(dbPath(name)) }, // platform SQLite (see Platform drivers)
+    secureStorage = AndroidSecureStorage(context),           // OS secret store (see Platform drivers)
     reloadApp = { /* re-evaluate app state after restore/reset */ },
 )
 
 val engine = createSync(deps)(appSchema, SyncEngineConfig(
     name = "my-app",
-    transports = emptyList(), // local-only until you add a relay in §7
+    transports = emptyList(), // local-only until you add a relay
     syncIntervalMs = 3000,                                    // poll cadence
     schemaVersion = 1,                                        // optional; default 1
 ))
@@ -125,7 +124,31 @@ On first run the engine mints a new owner (a fresh 12-word recovery phrase,
 stored via `secureStorage`). On later runs it loads the existing one — including
 a legacy `sf1_` key, which still derives.
 
-## 3. Writing data
+### Platform drivers
+
+The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+
+**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
+
+```kotlin
+interface SqliteDriver {
+    fun exec(sql: String, params: List<SqliteValue> = emptyList())
+    fun select(sql: String, params: List<SqliteValue> = emptyList()): List<Map<String, SqliteValue>>
+    fun <T> transaction(body: () -> T): T
+}
+```
+
+`JdbcSqliteDriver(path)` (libsqlite3-jdbc) is the default for JVM/desktop and the
+tests (`":memory:"` for in-memory). On Android, inject a thin
+`android.database.sqlite`-backed implementation instead.
+
+**`SecureStorage`** — stores the recovery secret in the OS secret store
+(`getItem` / `setItem` / `removeItem`). `InMemorySecureStorage` is for tests; on
+Android, back it with the Keystore / `EncryptedSharedPreferences`.
+
+## State management
+
+### Writing data
 
 Mutations are synchronous against local SQLite and return a `MutationResult`. Each
 also enqueues an encrypted envelope for sync. Pass columns as `vararg Pair`s —
@@ -160,7 +183,7 @@ engine.update("entry", "id" to id, "isDeleted" to sqliteTrue)
 Values are validated against the schema, so an invalid write returns
 `MutationResult.Failure(message)` rather than corrupting the row.
 
-## 4. Querying data
+### Querying data
 
 Build a query once with `createQuery` from SQL plus a mapper that turns each `Row`
 into a typed value. Double-quote table names so the reactive cache knows which
@@ -187,7 +210,7 @@ val cached = engine.getQueryRows(entriesQuery) // cached snapshot
 `Row` has typed accessors: `string` / `stringOrNull` / `int` / `long` / `double` /
 `boolean` / `has`.
 
-## 5. Reactive queries with Compose
+### Reactive queries with Compose
 
 `engine.liveQuery(query)` returns a `StateFlow<List<Row>>` — the Kotlin analog of
 React's `useQuery`. It re-emits whenever a local write or an incoming sync changes
@@ -213,10 +236,12 @@ fun Ledger(engine: SyncEngine) {
 
 - **`engine.liveQuery(q)`** → `StateFlow<List<Row>>`; collect it. Re-emits on a
   local write *or* an incoming sync. (The flow for a query is shared.)
-- **`engine.syncState`** — a `StateFlow<SyncState>` (§7).
+- **`engine.syncState`** — a `StateFlow<SyncState>` ([Syncing with a relay](#syncing-with-a-relay)).
 - **`engine.subscribeQuery(q) { … }`** — the low-level listener `liveQuery` wraps.
 
-## 6. Identity & recovery
+## Identity management
+
+### The owner & recovery key
 
 A user's whole account derives from one secret. The engine manages it through
 `secureStorage` and exposes the owner:
@@ -232,7 +257,15 @@ owner?.mnemonic    // the phrase, if the owner was derived from one
 Surface `owner.recoveryKey` during onboarding so the user can save it — it's the
 **only** thing that can decrypt their data.
 
-**Restore on a new device** — boot with the saved secret and sync from scratch:
+> **Interop and upgrades.** New Kotlin mnemonic identities use the same
+> `"SimplySync"` SLIP-21 profile as TS/Swift. Existing Evolu-derived Android
+> databases remain on their legacy profile; the engine detects and records that
+> choice instead of silently changing owners. Full detail is in the
+> [interop boundary](./native.md#identity-derivation-the-interop-boundary).
+
+### Restore on a new device
+
+Boot with the saved secret and sync from scratch:
 
 ```kotlin
 engine.restoreAppOwner(recoveryKey)               // refuses to wipe unless the relay confirms data
@@ -252,7 +285,9 @@ engine.restoreAppOwner(
 )
 ```
 
-**Reset** mints a brand-new owner and wipes local data. It is the most
+### Reset to a new owner
+
+Reset mints a brand-new owner and wipes local data. It is the most
 destructive call in the engine — the new owner has never synced anywhere, so no
 relay can give the old data back. It refuses unless a relay is confirmed to hold
 a copy, throwing `IllegalStateException` with the condition that failed
@@ -274,13 +309,9 @@ that platform.
 
 Both call your `reloadApp` afterward so the UI re-evaluates against the new owner.
 
-> **Interop and upgrades.** New Kotlin mnemonic identities use the same
-> `"SimplySync"` SLIP-21 profile as TS/Swift. Existing Evolu-derived Android
-> databases remain on their legacy profile; the engine detects and records that
-> choice instead of silently changing owners. Full detail is in the
-> [interop boundary](./native.md#identity-derivation-the-interop-boundary).
+## Syncing with a relay
 
-## 7. Connecting a relay & sync state
+### Connecting a relay & sync state
 
 A relay is **optional** — without one the app is purely local-first. Configure one
 (or several) via `transports`, at creation or at runtime:
@@ -322,34 +353,23 @@ for (s in engine.getRelayStatuses()) {  // suspend
 Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
 every platform.
 
-## 8. Platform drivers
+## API reference
 
-The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+### Lifecycle
 
-**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
-
-```kotlin
-interface SqliteDriver {
-    fun exec(sql: String, params: List<SqliteValue> = emptyList())
-    fun select(sql: String, params: List<SqliteValue> = emptyList()): List<Map<String, SqliteValue>>
-    fun <T> transaction(body: () -> T): T
-}
-```
-
-`JdbcSqliteDriver(path)` (libsqlite3-jdbc) is the default for JVM/desktop and the
-tests (`":memory:"` for in-memory). On Android, inject a thin
-`android.database.sqlite`-backed implementation instead.
-
-**`SecureStorage`** — stores the recovery secret in the OS secret store
-(`getItem` / `setItem` / `removeItem`). `InMemorySecureStorage` is for tests; on
-Android, back it with the Keystore / `EncryptedSharedPreferences`.
-
-## Engine API reference
+Build the engine, wait for it to open, and shut it down.
 
 | Member | Signature | Notes |
 | --- | --- | --- |
 | `createSync` | `(SyncEngineDeps) -> (Schema, SyncEngineConfig) -> SyncEngine` | Wire deps once, then build. |
 | `engine.ready` | `suspend () -> Unit` | Resolves when DB open + owner loaded. |
+
+### State
+
+Writes land in the local database and sync on their own; queries read it.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.insert` | `(String, vararg Pair<String, Any?>) -> MutationResult` | Generates id + system columns. |
 | `engine.update` | `(String, vararg Pair<String, Any?>) -> MutationResult` | Requires `id`; updates passed fields. |
 | `engine.upsert` | `(String, vararg Pair<String, Any?>) -> MutationResult` | Insert or update by id. |
@@ -357,9 +377,23 @@ Android, back it with the Keystore / `EncryptedSharedPreferences`.
 | `engine.loadQuery` | `(Query<T>) -> List<T>` | One-shot read. |
 | `engine.getQueryRows` | `(Query<T>) -> List<T>` | Cached snapshot. |
 | `engine.liveQuery` | `(Query<T>) -> StateFlow<List<T>>` | Reactive result (`useQuery` analog). |
+
+### Identity
+
+The owner, its recovery key, and moving it between devices.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.appOwner` | `suspend () -> AppOwner?` | `{ id, recoveryKey, writeKey, mnemonic? }`. |
 | `engine.restoreAppOwner` | `suspend (String, force: Boolean)` or `(String, MnemonicIdentityProfile, force: Boolean)` | Restore from a key/phrase; mnemonic restore can auto-detect or explicitly select a profile. |
 | `engine.resetAppOwner` | `suspend (force: Boolean)` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
+
+### Sync
+
+Relays, sync status, and diagnostics.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.setTransports` | `(List<Transport>)` | Set relays; triggers sync + polling. |
 | `engine.sync` | `suspend ()` | Push outbox, pull + apply. |
 | `engine.syncState` | `StateFlow<SyncState>` | Reactive status. |
@@ -371,10 +405,10 @@ Android, back it with the Keystore / `EncryptedSharedPreferences`.
   `(Row) -> T` mapper instead of a typed query builder.
 - **`StateFlow`, not hooks.** Compose collects `liveQuery(...).collectAsState()`
   and `syncState.collectAsState()` instead of `useQuery` / `useSyncState`.
-- **Not ported:** binary blobs, legacy import, and the fluent index builder. The
+- **Not ported:** binary blobs and the fluent index builder. The
   encrypted DB snapshot format *is* ported separately as `SnapshotCrypto`.
 - **A legacy mnemonic profile.** New phrases interoperate with TS/Swift; Kotlin
-  additionally retains Evolu-derived owners for safe Android upgrades (§6).
+  additionally retains Evolu-derived owners for safe Android upgrades ([Identity management](#identity-management)).
 
 ## Common pitfalls
 

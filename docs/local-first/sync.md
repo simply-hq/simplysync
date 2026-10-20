@@ -526,5 +526,3 @@ what the design guarantees; availability is what self-hosting is for.
 - Relay auth is a bearer capability; rotating the write key in place is not
   implemented. A leaked phrase is handled by moving to a new phrase and closing
   the old owner (`POST /v1/owner/close`).
-- Legacy import is row-level only — historical ciphertext from other systems
-  isn't importable (different envelope format); rows are re-emitted as envelopes.

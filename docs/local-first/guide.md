@@ -10,6 +10,8 @@ on-device store, clock, and read/write paths) and
 **[Sync & the relay](./sync.md)** (the encrypted envelope, the wire protocol, the
 relay).
 
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+
 ## Mental model
 
 - **The local SQLite database is the source of truth.** Reads come from it;
@@ -24,14 +26,11 @@ relay).
 - **Queries are reactive.** A `useQuery` re-renders when the rows it depends on
   change — whether the change came from a local write or an incoming sync.
 
-```
- engine.insert(...) ──▶ row + pending intent ──▶ useQuery re-renders (instant)
-                   └──▶ async AES-GCM seal ──▶ encrypted outbox ──▶ relay
+![A local write re-renders useQuery instantly, then syncs in the background; remote changes are pulled, decrypted, applied and re-render again](./images/write-flow-react.svg)
 
- relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ useQuery re-renders
-```
+## Setup
 
-## Clone the client source
+### Clone the client source
 
 SimplySync is clone-only. Start with the platform you need; the command includes
 its transitive source dependencies and omits the other client implementations:
@@ -82,7 +81,7 @@ Native they do not exist by default. Install the peer dependencies listed by
 `@simplysync/react-native/install` *before* the engine; see the
 [package guide](../../packages/simplysync-react-native).
 
-## 1. Define a schema
+### Define a schema
 
 A schema is a plain `{ table: { column: Type } }` object. Column types come from
 the engine's small typed-schema DSL and double as runtime validators.
@@ -117,7 +116,7 @@ TABLE` — the engine derives it from the schema.
 `maxLength(n)(...)` to bound a string. Each type validates on write and rejects
 bad values with a typed error.
 
-## 2. Create the engine
+### Create the engine
 
 `createSync(deps)` takes the platform plumbing once, then returns a factory you
 call with your schema and config.
@@ -126,12 +125,12 @@ call with your schema and config.
 import { createSync } from "@simplysync/engine";
 
 const engine = createSync({
-  createSqliteDriver, // (name) => SqliteDriver — platform SQLite (see §8)
-  secureStorage,      // stores the recovery key/phrase in the OS secret store (§8)
+  createSqliteDriver, // (name) => SqliteDriver — platform SQLite (see Platform drivers)
+  secureStorage,      // stores the recovery key/phrase in the OS secret store (see Platform drivers)
   reloadApp,          // optional: re-evaluate app state after restore/reset
 })(schema, {
   name: "my-app",
-  transports: [], // local-only until you add a relay in §7
+  transports: [], // local-only until you add a relay
   syncIntervalMs: 5000, // poll cadence; default 5000
   schemaVersion: 1,     // optional; defaults to 1
 });
@@ -148,7 +147,50 @@ On first run the engine mints a new owner (a fresh BIP39 recovery phrase, stored
 `secureStorage`). On later runs it loads the existing one. Pass
 `externalAppOwner` to supply an owner you derived yourself instead.
 
-## 3. Writing data
+### Platform drivers
+
+The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+
+**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
+
+```ts
+interface SqliteDriver {
+  exec(sql: string, params?: readonly unknown[]): void;
+  select<R>(sql: string, params?: readonly unknown[]): R[];
+  transaction<T>(fn: () => T): T;
+}
+```
+
+- **Web:** `sql.js` (WASM) is what the browser [Demo](../../apps/docs)
+  uses — see its
+  [bootstrap wiring](../../apps/todolist/web/main.tsx).
+- **React Native:** use `createExpoSyncDeps()` from
+  [`@simplysync/react-native`](../../packages/simplysync-react-native). It
+  supplies Expo SQLite, SecureStore, native PBKDF2, optional SQLCipher key
+  management, and foreground sync. The canonical
+  [Expo todo UI](../../apps/todolist/expo) is the complete wiring.
+- **Node / Raycast / CLI:** use `createNodeSyncDeps()` from
+  [`@simplysync/node`](../../packages/simplysync-node). It uses the built-in
+  `node:sqlite` module, manages named connections, and accepts a host-encrypted
+  secret store such as Raycast `LocalStorage`.
+
+**`SecureStorage`** — stores the recovery key or phrase in the OS secret store:
+
+```ts
+interface SecureStorage {
+  getItem(key: string): Promise<string | null> | string | null;
+  setItem(key: string, value: string): Promise<void> | void;
+  removeItem(key: string): Promise<void> | void;
+}
+```
+
+- **React Native:** `createExpoSyncDeps()` uses `expo-secure-store`.
+- **Web:** a password-derived key or a platform credential store. Avoid
+  `localStorage` for anything beyond a demo.
+
+## State management
+
+### Writing data
 
 Mutations are synchronous against local SQLite and return a `MutationResult`.
 Each one also enqueues an encrypted envelope for sync — you don't manage that.
@@ -179,7 +221,7 @@ engine.delete("entry", id);            // soft delete, idempotent
 engine.deleteMany("entry", [a, b, c]); // one atomic batch
 ```
 
-Deleted rows stay in the table, so queries must filter them out — see §4.
+Deleted rows stay in the table, so queries must filter them out — see [Querying data](#querying-data).
 
 **Write many rows atomically** with `batch`: one transaction, one query refresh,
 one sync. Every op is validated first, so one bad op aborts the whole batch.
@@ -203,7 +245,7 @@ after transports are detached: without a durable cross-device deletion
 watermark, hard-deleting the tombstone could let a long-offline device
 resurrect the row.
 
-## 4. Querying data
+### Querying data
 
 Build a query once with `createQuery` using the full [Kysely](https://kysely.dev)
 builder — joins, filters, ordering, aggregates. The compiled SQL is reused, and
@@ -234,7 +276,7 @@ const entriesQuery: Query<EntryRow> = engine.createQuery((db) =>
 );
 ```
 
-Read it imperatively, or (preferably) reactively in React (§5):
+Read it imperatively, or (preferably) reactively in React ([React bindings](#react-bindings)):
 
 ```ts
 const rows = await engine.loadQuery(entriesQuery); // one-shot read
@@ -253,7 +295,7 @@ engine.createQuery(
 );
 ```
 
-## 5. React bindings
+### React bindings
 
 `@simplysync/react` wires the engine into components. Wrap your tree in a
 `SyncProvider`, then read the engine with `useSync` and rows with the reactive
@@ -298,11 +340,13 @@ function Ledger() {
 
 - **`useQuery(query)`** — subscribes to the query and returns the current rows.
   Re-renders when matching rows change, from a local write *or* an incoming sync.
-- **`useSyncState()`** — the current `SyncState` (see §7).
+- **`useSyncState()`** — the current `SyncState` (see [Syncing with a relay](#syncing-with-a-relay)).
 - **`useSyncError()`** — the last `SyncError | null`, for surfacing failures.
 - **`useSync<S>()`** — the engine instance, for mutations and `engine.sync()`.
 
-## 6. Identity & recovery
+## Identity management
+
+### The owner & recovery key
 
 A user's whole account derives from one secret. The engine manages it through
 `secureStorage` and exposes the owner:
@@ -320,7 +364,9 @@ Surface `owner.recoveryKey` during onboarding so the user can save it. It is the
 unrecoverable by design. Never store it in app state or plain SQLite; the engine
 keeps it in the platform secret store.
 
-**Restore on a new device** — boot with the saved key or phrase and sync from scratch:
+### Restore on a new device
+
+Boot with the saved key or phrase and sync from scratch:
 
 ```ts
 await engine.restoreAppOwner(recoveryKey);
@@ -330,7 +376,9 @@ await engine.restoreAppOwner(recoveryKey);
 await engine.restoreAppOwner(recoveryKey, { force: true });
 ```
 
-**Reset** mints a brand-new owner and wipes local data. It is the most
+### Reset to a new owner
+
+Reset mints a brand-new owner and wipes local data. It is the most
 destructive call in the engine — the new owner has never synced anywhere, so
 there is no relay to pull the old data back from. It therefore refuses by
 default unless a relay is verified to hold a copy, and the error says which
@@ -350,7 +398,29 @@ try {
 Both `restoreAppOwner` and `resetAppOwner` call your `reloadApp` afterward so the
 UI re-evaluates against the new owner.
 
-## 7. Connecting a relay & sync state
+### Back up to a file
+
+`exportDatabase()` builds the file a user carries to a new main device without
+relying on a relay: every app table plus the recovery key and sync cursors,
+encrypted. File I/O (download, share sheet) stays with you.
+
+```ts
+const backup = await engine.exportDatabase(); // keyed by the recovery key
+const sealed = await engine.exportDatabase({ passphrase }); // a separate secret
+
+await engine.importDatabase(backup, { recoveryKey }); // or { passphrase }
+```
+
+By default the file is encrypted with a key derived from the owner's recovery
+key, so restoring needs nothing new. `{ passphrase }` protects it with a separate
+secret instead — one that survives losing the recovery key. `importDatabase`
+adopts the backup's identity and **replaces** all local data; the file itself
+proves ownership, so no relay is consulted. Outbox state and blob bytes are not
+included, so pause writes and sync for a self-consistent export.
+
+## Syncing with a relay
+
+### Connecting a relay & sync state
 
 A relay is **optional** — without one, the app is purely local-first and every
 edit stays on-device. Configure one (or several) via `transports`, either at
@@ -440,60 +510,24 @@ until it clears, other devices are not receiving your edits.
 Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
 every platform.
 
-## 8. Platform drivers
+## API reference
 
-The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+### Lifecycle
 
-**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
-
-```ts
-interface SqliteDriver {
-  exec(sql: string, params?: readonly unknown[]): void;
-  select<R>(sql: string, params?: readonly unknown[]): R[];
-  transaction<T>(fn: () => T): T;
-}
-```
-
-- **Web:** `sql.js` (WASM) is what the browser [Demo](../../apps/docs)
-  uses — see its
-  [bootstrap wiring](../../apps/todolist/web/main.tsx).
-- **React Native:** use `createExpoSyncDeps()` from
-  [`@simplysync/react-native`](../../packages/simplysync-react-native). It
-  supplies Expo SQLite, SecureStore, native PBKDF2, optional SQLCipher key
-  management, and foreground sync. The canonical
-  [Expo todo UI](../../apps/todolist/expo) is the complete wiring.
-- **Node / Raycast / CLI:** use `createNodeSyncDeps()` from
-  [`@simplysync/node`](../../packages/simplysync-node). It uses the built-in
-  `node:sqlite` module, manages named connections, and accepts a host-encrypted
-  secret store such as Raycast `LocalStorage`.
-
-**`SecureStorage`** — stores the recovery key or phrase in the OS secret store:
-
-```ts
-interface SecureStorage {
-  getItem(key: string): Promise<string | null> | string | null;
-  setItem(key: string, value: string): Promise<void> | void;
-  removeItem(key: string): Promise<void> | void;
-}
-```
-
-- **React Native:** `createExpoSyncDeps()` uses `expo-secure-store`.
-- **Web:** a password-derived key or a platform credential store. Avoid
-  `localStorage` for anything beyond a demo.
-
-## 9. Importing legacy data
-
-Migrating from a previous SQLite database with the same per-table layout is a
-plain batch: read the legacy rows with your own driver and write them with
-`engine.batch(...)` (guard with a one-time marker in your own storage). The
-rows re-emit as sync events, so they propagate to the relay.
-
-## Engine API reference
+Build the engine, wait for it to open, and shut it down.
 
 | Member | Signature | Notes |
 | --- | --- | --- |
 | `createSync` | `(deps) => (schema, config) => SyncEngine` | Wire platform deps once, then build engines. |
 | `engine.ready` | `Promise<void>` | Resolves when the DB is open and owner loaded. |
+| `engine.close` | `() => void` | Stop the poller, listeners, and further syncs. Idempotent; local writes still work. |
+
+### State
+
+Writes land in the local database and sync on their own; queries read it.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.insert` | `(table, values, opts?) => MutationResult` | Generates id + system columns. |
 | `engine.update` | `(table, values & { id }, opts?) => MutationResult` | Updates passed fields only. |
 | `engine.upsert` | `(table, values & { id }, opts?) => MutationResult` | Insert or update by id. |
@@ -506,21 +540,34 @@ rows re-emit as sync events, so they propagate to the relay.
 | `engine.loadQuery` | `(query) => Promise<readonly R[]>` | One-shot async read. |
 | `engine.getQueryRows` | `(query) => readonly R[]` | Cached snapshot (sync). |
 | `engine.subscribeQuery` | `(query) => (listener) => unsubscribe` | Low-level reactive primitive (`useQuery` wraps it). |
+
+### Identity
+
+The owner, its recovery key, and moving it between devices.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.appOwner` | `Promise<AppOwner \| null>` | `{ id, recoveryKey, mnemonic?, writeKey }`. |
 | `engine.restoreAppOwner` | `(recoveryKey, { force? }) => Promise<void>` | Restore from an `sf1_` key or BIP39 phrase. |
 | `engine.resetAppOwner` | `({ force? }) => Promise<void>` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
+| `engine.exportDatabase` | `({ passphrase? }?) => Promise<EncryptedEnvelopeV1>` | Encrypted application-state snapshot: app rows + metadata, not outbox state or blob chunk bytes. Pause writes/sync for a self-consistent export. |
+| `engine.importDatabase` | `(file, { recoveryKey \| passphrase }) => Promise<void>` | Restore a backup: adopts its identity and REPLACES local data. |
+
+### Sync
+
+Relays, sync status, and diagnostics.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.setTransports` | `(transports) => void` | Set relays; triggers sync + polling. `[]` stops the poller. |
 | `engine.sync` | `() => Promise<void>` | Push outbox, pull + apply; resolves after a pass covering your writes. |
-| `engine.close` | `() => void` | Stop the poller, listeners, and further syncs. Idempotent; local writes still work. |
 | `engine.getSyncState` / `subscribeSyncState` | — | Backing store for `useSyncState`. |
 | `engine.getRelayStatuses` | `() => Promise<RelayStatus[]>` | Per-relay health + storage usage (live `GET /v1/status` probe per relay). |
 | `engine.getSyncLog` | `(limit?) => SyncLogEntry[]` | Most-recent-first on-device sync diagnostics log. |
 | `engine.getPendingOutboxCount` | `() => number` | Events not yet accepted by **any** relay. Zero does not prove every configured relay acknowledged the retained outbox. |
 | `engine.getError` / `subscribeError` | — | Backing store for `useSyncError`. |
-| `engine.exportDatabase` | `({ passphrase? }?) => Promise<EncryptedEnvelopeV1>` | Encrypted application-state snapshot: app rows + metadata, not outbox state or blob chunk bytes. Pause writes/sync for a self-consistent export. |
-| `engine.importDatabase` | `(file, { recoveryKey \| passphrase }) => Promise<void>` | Restore a backup: adopts its identity and REPLACES local data. |
 
-### React bindings
+### React exports
 
 | Export | Signature | Notes |
 | --- | --- | --- |

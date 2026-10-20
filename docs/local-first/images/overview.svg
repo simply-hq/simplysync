@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 192" width="820" height="192" role="img" aria-label="Two devices syncing through a relay" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif">
+  <title>Two devices syncing through a relay</title>
+  <desc>Each device keeps a local SQLite database as the source of truth and works offline. Devices push encrypted events to an optional relay and pull them back. The relay stores ciphertext only and can neither read nor forge it.</desc>
+  <style>
+.d-frame{fill:#f0f2f1;stroke:#d8dde1}.d-node{fill:#f7f8f6;stroke:#aeb8c2}
+.d-key{fill:#e5ebfb;stroke:#2354c6}.d-title,.d-label{fill:#182231}
+.d-muted{fill:#667385}.d-edge{stroke:#667385;fill:none}.d-head{fill:#667385}
+.d-edge.enc{stroke:#2354c6}.d-head.enc{fill:#2354c6}.d-edge-label{fill:#465363}
+.d-edge-label.enc{fill:#1745ad}
+@media (prefers-color-scheme:dark){.d-frame{fill:#171f2a;stroke:#2d3948}
+.d-node{fill:#111720;stroke:#566477}.d-key{fill:#1d2b50;stroke:#89a9ff}
+.d-title,.d-label{fill:#f1f3f6}.d-muted{fill:#929dab}.d-edge{stroke:#929dab}
+.d-head{fill:#929dab}.d-edge.enc{stroke:#89a9ff}.d-head.enc{fill:#89a9ff}
+.d-edge-label{fill:#c1c8d1}.d-edge-label.enc{fill:#a9bdff}}
+</style>
+  <rect class="d-frame" x="12" y="12" width="214" height="168" rx="14" stroke-width="1.25"/>
+  <text class="d-title" x="28" y="38" font-size="14" font-weight="650" text-anchor="start">Your app</text>
+  <text class="d-muted" x="210" y="38" font-size="11.5" font-weight="400" text-anchor="end">device A</text>
+  <rect class="d-key" x="32" y="52" width="174" height="60" rx="10" stroke-width="1.25"/>
+  <text class="d-label" x="119.0" y="80.0" font-size="13" font-weight="500" text-anchor="middle">Local SQLite</text>
+  <text class="d-muted" x="119.0" y="96.0" font-size="11.5" font-weight="400" text-anchor="middle">source of truth</text>
+  <text class="d-muted" x="119" y="146" font-size="11.5" font-weight="400" text-anchor="middle">instant · works offline</text>
+  <rect class="d-frame" x="594" y="12" width="214" height="168" rx="14" stroke-width="1.25"/>
+  <text class="d-title" x="610" y="38" font-size="14" font-weight="650" text-anchor="start">Your app</text>
+  <text class="d-muted" x="792" y="38" font-size="11.5" font-weight="400" text-anchor="end">device B</text>
+  <rect class="d-key" x="614" y="52" width="174" height="60" rx="10" stroke-width="1.25"/>
+  <text class="d-label" x="701.0" y="80.0" font-size="13" font-weight="500" text-anchor="middle">Local SQLite</text>
+  <text class="d-muted" x="701.0" y="96.0" font-size="11.5" font-weight="400" text-anchor="middle">source of truth</text>
+  <text class="d-muted" x="701" y="146" font-size="11.5" font-weight="400" text-anchor="middle">instant · works offline</text>
+  <rect class="d-frame" x="306" y="12" width="208" height="168" rx="14" stroke-width="1.25" stroke-dasharray="6 5"/>
+  <text class="d-title" x="322" y="38" font-size="14" font-weight="650" text-anchor="start">Relay</text>
+  <text class="d-muted" x="498" y="38" font-size="11.5" font-weight="400" text-anchor="end">optional</text>
+  <rect class="d-node" x="326" y="52" width="168" height="60" rx="10" stroke-width="1.25"/>
+  <text class="d-label" x="410.0" y="80.0" font-size="13" font-weight="500" text-anchor="middle">Opaque event store</text>
+  <text class="d-muted" x="410.0" y="96.0" font-size="11.5" font-weight="400" text-anchor="middle">ciphertext only</text>
+  <text class="d-muted" x="410" y="146" font-size="11.5" font-weight="400" text-anchor="middle">can&#x27;t read · can&#x27;t forge</text>
+  <polyline class="d-edge enc" points="232,72 295,72" stroke-width="1.5" stroke-linejoin="round"/>
+  <polygon class="d-head enc" points="302,72 293,76.5 293,67.5"/>
+  <text class="d-edge-label enc" x="266" y="64" font-size="11.5" font-weight="500" text-anchor="middle">push</text>
+  <polyline class="d-edge enc" points="302,96 239,96" stroke-width="1.5" stroke-linejoin="round"/>
+  <polygon class="d-head enc" points="232,96 241,91.5 241,100.5"/>
+  <text class="d-edge-label enc" x="266" y="113" font-size="11.5" font-weight="500" text-anchor="middle">pull</text>
+  <polyline class="d-edge enc" points="588,72 525,72" stroke-width="1.5" stroke-linejoin="round"/>
+  <polygon class="d-head enc" points="518,72 527,67.5 527,76.5"/>
+  <text class="d-edge-label enc" x="553" y="64" font-size="11.5" font-weight="500" text-anchor="middle">push</text>
+  <polyline class="d-edge enc" points="518,96 581,96" stroke-width="1.5" stroke-linejoin="round"/>
+  <polygon class="d-head enc" points="588,96 579,100.5 579,91.5"/>
+  <text class="d-edge-label enc" x="553" y="113" font-size="11.5" font-weight="500" text-anchor="middle">pull</text>
+</svg>

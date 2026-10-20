@@ -14,6 +14,8 @@ client compiles the same root `Sources/SimplySync/` tree.
 > [Native clients](./native.md). Pure Foundation + CryptoKit + `SQLite3` — no
 > third-party dependencies.
 
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+
 ## Mental model
 
 - **The local SQLite database is the source of truth.** Reads come from it; writes
@@ -26,14 +28,11 @@ client compiles the same root `Sources/SimplySync/` tree.
 - **Queries are reactive.** A `LiveQuery` republishes its rows when the data it
   depends on changes — from a local write *or* an incoming sync.
 
-```
- engine.insert(...) ──▶ local SQLite row  ──▶ LiveQuery.rows updates (instant)
-                   └──▶ encrypted envelope ──▶ outbox ──▶ relay (background)
+![A local write updates LiveQuery.rows instantly, then syncs in the background; remote changes are pulled, decrypted, applied and update it again](./images/write-flow-swift.svg)
 
- relay ──▶ pull + decrypt ──▶ apply (last-writer-wins) ──▶ LiveQuery.rows updates
-```
+## Setup
 
-## Clone the engine source
+### Clone the engine source
 
 Use the `swift` selective clone preset:
 
@@ -53,7 +52,7 @@ iOS/macOS SDK), so there are no external dependencies and it also runs on
 macOS. The [Swift source README](../../apps/todolist/swift/README.md#clone-and-use-the-source)
 shows the manifest declaration.
 
-## 1. Define a schema
+### Define a schema
 
 A schema is `{ table: { column: Column } }`. Column types come from the engine's
 typed DSL and double as runtime validators.
@@ -83,7 +82,7 @@ table automatically: `createdAt`, `updatedAt` (ISO/HLC strings), and `isDeleted`
 `.maxLength(n, ...)` to bound a string. Each validates on write and rejects bad
 values with a typed message.
 
-## 2. Create the engine
+### Create the engine
 
 `createSync(deps)` takes the platform plumbing once, then returns a factory you
 call with your schema and config — exactly like the TS `createSync(deps)(schema,
@@ -91,13 +90,13 @@ config)`.
 
 ```swift
 let deps = SyncEngineDeps(
-    makeDriver: { name in try SQLite3Driver(path: dbPath(name)) }, // platform SQLite (§8)
-    secureStorage: KeychainStorage(),                              // OS secret store (§8)
+    makeDriver: { name in try SQLite3Driver(path: dbPath(name)) }, // platform SQLite (see Platform drivers)
+    secureStorage: KeychainStorage(),                              // OS secret store (see Platform drivers)
     reloadApp: { /* re-evaluate app state after restore/reset */ })
 
 let engine = createSync(deps)(appSchema, SyncEngineConfig(
     name: "my-app",
-    transports: [], // local-only until you add a relay in §7
+    transports: [], // local-only until you add a relay
     syncIntervalMs: 3000,                                   // poll cadence
     schemaVersion: 1))                                      // optional; default 1
 
@@ -112,7 +111,38 @@ declares support.
 On first run the engine mints a new owner (a fresh `sf1_` recovery key, stored via
 `secureStorage`). On later runs it loads the existing one.
 
-## 3. Writing data
+### Platform drivers
+
+The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+
+**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
+
+```swift
+protocol SqliteDriver: AnyObject {
+    func exec(_ sql: String, _ params: [SQLiteValue]) throws
+    func select(_ sql: String, _ params: [SQLiteValue]) throws -> [SQLiteRow]
+    func transaction<T>(_ body: () throws -> T) throws -> T
+}
+```
+
+`SQLite3Driver(path:)` is the bundled libsqlite3 implementation (`":memory:"` for
+tests). 
+
+**`SecureStorage`** — stores the recovery secret in the OS secret store:
+
+```swift
+protocol SecureStorage: AnyObject {
+    func getItem(_ key: String) -> String?
+    func setItem(_ key: String, _ value: String)
+    func removeItem(_ key: String)
+}
+```
+
+`KeychainStorage()` is the default; `InMemorySecureStorage()` is for tests.
+
+## State management
+
+### Writing data
 
 Mutations are synchronous against local SQLite and return a `MutationResult`. Each
 also enqueues an encrypted envelope for sync — you don't manage that. Column values
@@ -147,7 +177,7 @@ _ = engine.update("entry", ["id": .string(id), "isDeleted": sqliteTrue])
 Values are validated against the schema, so an invalid write returns
 `.failure(message:)` rather than corrupting the row.
 
-## 4. Querying data
+### Querying data
 
 Build a query once with `createQuery` from SQL plus the row type to decode into
 (any `Decodable` struct). Double-quote table names so the reactive cache knows
@@ -174,7 +204,7 @@ let rows = engine.loadQuery(entriesQuery)     // one-shot read → [EntryRow]
 let cached = engine.getQueryRows(entriesQuery) // cached snapshot
 ```
 
-## 5. Reactive queries in SwiftUI
+### Reactive queries in SwiftUI
 
 `engine.liveQuery(query)` returns a `LiveQuery` — the Swift analog of React's
 `useQuery`. It's an `ObservableObject` whose `rows` republishes on the main thread
@@ -207,10 +237,12 @@ struct Ledger: View {
 
 - **`engine.liveQuery(q)`** → a `LiveQuery<Row>`; read `.rows`. Updates on a local
   write *or* an incoming sync.
-- **`engine.syncState`** — the current `SyncState` (§7), published for SwiftUI.
+- **`engine.syncState`** — the current `SyncState` ([Syncing with a relay](#syncing-with-a-relay)), published for SwiftUI.
 - **`engine.subscribeQuery(q) { … }`** — the low-level listener `liveQuery` wraps.
 
-## 6. Identity & recovery
+## Identity management
+
+### The owner & recovery key
 
 A user's whole account derives from one secret. The engine manages it through
 `secureStorage` and exposes the owner:
@@ -227,7 +259,9 @@ Surface `owner.recoveryKey` during onboarding so the user can save it. It is the
 **only** thing that can decrypt their data — lose it and the data is unrecoverable
 by design. The engine keeps it in the Keychain, never in plain SQLite.
 
-**Restore on a new device** — boot with the saved secret and sync from scratch:
+### Restore on a new device
+
+Boot with the saved secret and sync from scratch:
 
 ```swift
 try await engine.restoreAppOwner(recoveryKey)
@@ -236,7 +270,9 @@ try await engine.restoreAppOwner(recoveryKey)
 try await engine.restoreAppOwner(recoveryKey, force: true) // intentional switch
 ```
 
-**Reset** mints a brand-new owner and wipes local data. It is the most
+### Reset to a new owner
+
+Reset mints a brand-new owner and wipes local data. It is the most
 destructive call in the engine — the new owner has never synced anywhere, so no
 relay can give the old data back. It refuses unless a relay is confirmed to hold
 a copy, throwing `EngineError.resetUnsafe` with the condition that failed
@@ -258,7 +294,9 @@ that platform.
 
 Both call your `reloadApp` afterward so the UI re-evaluates against the new owner.
 
-## 7. Connecting a relay & sync state
+## Syncing with a relay
+
+### Connecting a relay & sync state
 
 A relay is **optional** — without one the app is purely local-first. Configure one
 (or several) via `transports`, at creation or at runtime:
@@ -318,41 +356,23 @@ Add a relay URL to the same list to keep Android and web clients in sync. The
 you must deploy before shipping, and how a second device gets the recovery
 phrase without typing it.
 
-## 8. Platform drivers
+## API reference
 
-The engine is platform-agnostic: you inject a SQLite driver and a secret store.
+### Lifecycle
 
-**`SqliteDriver`** — a thin synchronous wrapper over the platform's SQLite:
-
-```swift
-protocol SqliteDriver: AnyObject {
-    func exec(_ sql: String, _ params: [SQLiteValue]) throws
-    func select(_ sql: String, _ params: [SQLiteValue]) throws -> [SQLiteRow]
-    func transaction<T>(_ body: () throws -> T) throws -> T
-}
-```
-
-`SQLite3Driver(path:)` is the bundled libsqlite3 implementation (`":memory:"` for
-tests). 
-
-**`SecureStorage`** — stores the recovery secret in the OS secret store:
-
-```swift
-protocol SecureStorage: AnyObject {
-    func getItem(_ key: String) -> String?
-    func setItem(_ key: String, _ value: String)
-    func removeItem(_ key: String)
-}
-```
-
-`KeychainStorage()` is the default; `InMemorySecureStorage()` is for tests.
-
-## Engine API reference
+Build the engine, wait for it to open, and shut it down.
 
 | Member | Signature | Notes |
 | --- | --- | --- |
 | `createSync` | `(SyncEngineDeps) -> (Schema, SyncEngineConfig) -> SyncEngine` | Wire deps once, then build. |
 | `engine.ready` | `await engine.ready` | Resolves when DB open + owner loaded. |
+
+### State
+
+Writes land in the local database and sync on their own; queries read it.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.insert` | `(String, [String: SyncValue]) -> MutationResult` | Generates id + system columns. |
 | `engine.update` | `(String, [String: SyncValue]) -> MutationResult` | Requires `id`; updates passed fields. |
 | `engine.upsert` | `(String, [String: SyncValue]) -> MutationResult` | Insert or update by id. |
@@ -361,9 +381,23 @@ protocol SecureStorage: AnyObject {
 | `engine.getQueryRows` | `(Query<Row>) -> [Row]` | Cached snapshot. |
 | `engine.liveQuery` | `(Query<Row>) -> LiveQuery<Row>` | Reactive result (`useQuery` analog). |
 | `engine.subscribeQuery` | `(Query<Row>, () -> Void) -> () -> Void` | Low-level reactive primitive. |
+
+### Identity
+
+The owner, its recovery key, and moving it between devices.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.appOwner` | `await -> AppOwner?` | `{ id, recoveryKey, writeKey, mnemonic? }`. |
 | `engine.restoreAppOwner` | `(String, force: Bool) async throws` | Restore from a key/phrase. |
 | `engine.resetAppOwner` | `(force: Bool) async throws` | New owner, wipes local data. Refuses unless a relay is confirmed to hold a copy. |
+
+### Sync
+
+Relays, sync status, and diagnostics.
+
+| Member | Signature | Notes |
+| --- | --- | --- |
 | `engine.setTransports` | `([Transport]) -> Void` | Set relays; triggers sync + polling. |
 | `engine.sync` | `() async` | Push outbox, pull + apply. |
 | `engine.syncState` / `getSyncState()` | `SyncState` | Reactive + synchronous status. |
@@ -376,8 +410,8 @@ protocol SecureStorage: AnyObject {
   refresh-on-change) works the same way.
 - **`LiveQuery` / `ObservableObject`, not hooks.** SwiftUI observes `LiveQuery.rows`
   and `engine.syncState` instead of `useQuery` / `useSyncState`.
-- **Not ported:** encrypted DB export/import (snapshot), legacy import, binary
-  blobs, and the fluent index builder. The protocol, schema, mutations, queries,
+- **Not ported:** encrypted DB export/import (snapshot), binary blobs, and the
+  fluent index builder. The protocol, schema, mutations, queries,
   identity, relay sync, and LWW are all here.
 - **Identity interoperates by `sf1_` key and phrase** — Swift uses the same
   SLIP-21 labels as the TS protocol (`"SimplySync"`); see the

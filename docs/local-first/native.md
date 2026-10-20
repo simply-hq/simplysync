@@ -120,8 +120,8 @@ key into a second simulator, the TodoList web client, or the Expo app to watch
 them converge. Full run/verify steps are in the
 [Swift README](../../apps/todolist/swift/README.md).
 
-**Not ported (by design):** binary blobs, the encrypted DB export/import (snapshot)
-format, and legacy import. Conflict resolution is row-level last-writer-wins by
+**Not ported (by design):** binary blobs and the encrypted DB export/import
+(snapshot) format. Conflict resolution is row-level last-writer-wins by
 HLC; delete is a soft delete (`isDeleted`).
 
 ## The Kotlin / JVM port
