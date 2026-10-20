@@ -209,8 +209,9 @@ limitations, and source files to audit.
 3. [Architecture and local data flow](docs/local-first/architecture.md)
 4. [Sync protocol and relay behavior](docs/local-first/sync.md)
 5. [Native Swift and Kotlin clients](docs/local-first/native.md)
-6. [Self-hosting a relay](docs/local-first/self-hosting.md)
-7. [SimplySync for coding agents](docs/local-first/agents.md)
+6. [iCloud sync for Apple apps](docs/local-first/icloud.md)
+7. [Self-hosting a relay](docs/local-first/self-hosting.md)
+8. [SimplySync for coding agents](docs/local-first/agents.md)
 
 Run `bun run docs:dev` to view the documentation site and browser demo locally.
 

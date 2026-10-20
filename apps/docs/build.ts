@@ -88,6 +88,7 @@ const pages: readonly Page[] = [
   { src: "architecture.md", out: "architecture.html", nav: "How it works" },
   { src: "sync.md", out: "sync.html", nav: "Sync & relay" },
   { src: "native.md", out: "native.html", nav: "Native clients" },
+  { src: "icloud.md", out: "icloud.html", nav: "iCloud sync" },
   { src: "self-hosting.md", out: "self-hosting.html", nav: "Self-hosting" },
   { src: "agents.md", out: "agents.html", nav: "For agents" },
 ];
@@ -104,7 +105,7 @@ const allPages: readonly Page[] = [...pages, ...variantPages];
 
 const NAV_GROUPS = [
   { label: "Start", pages: ["docs.html", "guide.html", "architecture.html"] },
-  { label: "Operate", pages: ["sync.html", "native.html", "self-hosting.html"] },
+  { label: "Operate", pages: ["sync.html", "native.html", "icloud.html", "self-hosting.html"] },
   { label: "Reference", pages: ["agents.html"] },
 ] as const;
 
@@ -624,6 +625,7 @@ const LLMS_ORDER: readonly string[] = [
   "architecture.md",
   "sync.md",
   "native.md",
+  "icloud.md",
   "self-hosting.md",
   "guide.swift.md",
   "guide.kotlin.md",

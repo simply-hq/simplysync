@@ -100,8 +100,9 @@ ciphertext-only relay.
 2. **[How it works](./architecture.md)** — the on-device model: local SQLite, the clock, the write & read paths.
 3. **[Sync & the relay](./sync.md)** — the sync loop, the encrypted envelope, the relay wire protocol & threat model.
 4. **[Native clients](./native.md)** — the Swift & Kotlin ports: what's shared, the API surface, and the identity interop boundary.
-5. **[For agents](./agents.md)** — the dense contract for coding agents: invariants first, then a complete app and the whole API surface.
-6. **[Demo](./demo.html)** — a two-device sync demo in your browser.
+5. **[iCloud sync](./icloud.md)** — Apple apps can park the same encrypted log in the user's iCloud instead of a relay.
+6. **[For agents](./agents.md)** — the dense contract for coding agents: invariants first, then a complete app and the whole API surface.
+7. **[Demo](./demo.html)** — a two-device sync demo in your browser.
 
 Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat model](../../SECURITY.md)**.
 
@@ -124,6 +125,9 @@ devices; it is a dumb, opaque event store that only receives ciphertext:
 | Relay | Stack |
 | --- | --- |
 | `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
+
+**Apple apps can skip the relay.** The Swift engine can park the same
+ciphertext in the user's own iCloud instead — see [iCloud sync](./icloud.md).
 
 **Canonical example:** [`apps/todolist`](../../apps/todolist) groups its CLI,
 browser, React Native, Swift, and Kotlin clients around one schema, owner, and

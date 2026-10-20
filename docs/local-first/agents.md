@@ -232,6 +232,7 @@ ordering for drag-and-drop), `counterColumns()` + `incrementCounter` /
 - **[How it works](./architecture.md)** — on-device store, clock, read/write paths.
 - **[Sync & the relay](./sync.md)** — envelope, wire protocol, relay behavior.
 - **[Native clients](./native.md)** — Swift and Kotlin ports.
+- **[iCloud sync](./icloud.md)** — Swift apps parking the log in the user's iCloud instead of a relay.
 - **[Self-hosting](./self-hosting.md)** — running a relay.
 - **[Security model](../../SECURITY.md)** — guarantees, limits, files to audit.
 - Working code: [`apps/todolist`](../../apps/todolist) groups the canonical

@@ -303,6 +303,21 @@ for s in await engine.getRelayStatuses() {
 Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
 every platform.
 
+### Syncing through iCloud instead
+
+On Apple platforms the log can live in the user's iCloud, with no relay to run.
+Tell the engine how to build that transport, then list it like a relay:
+
+```swift
+engine.transportFactory = CloudKitTransport.factory(containerIdentifier: "iCloud.com.example.app")
+engine.setTransports([Transport(url: CloudKitTransport.base)])
+```
+
+Add a relay URL to the same list to keep Android and web clients in sync. The
+[iCloud sync](./icloud.md) page covers the entitlement, the Production schema
+you must deploy before shipping, and how a second device gets the recovery
+phrase without typing it.
+
 ## 8. Platform drivers
 
 The engine is platform-agnostic: you inject a SQLite driver and a secret store.

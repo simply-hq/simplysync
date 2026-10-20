@@ -116,6 +116,12 @@ ciphertext-only by construction: it can count, bill, and order events but never
 read one.
 _Avoid_: server, backend, sync service, host, broker
 
+**Transport**:
+Anywhere an owner's envelope log is parked and read back in order: a relay, or
+the user's iCloud private database on Apple platforms. The engine pushes to and
+pulls from every configured transport, each with its own cursor.
+_Avoid_: backend, provider, storage adapter
+
 **Ciphertext-Only**:
 The relay's defining constraint: every field it stores is either opaque bytes
 or routing metadata that reveals nothing about contents. Any new field must

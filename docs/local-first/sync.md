@@ -7,6 +7,11 @@ what comes back — plus the relay's wire protocol, storage, and threat model.
 Everything here is built on one guarantee: **the relay only ever sees ciphertext.**
 All encryption and decryption happen in the engine, on the device.
 
+A relay is one **transport**: somewhere the log is parked and read back in
+order. Swift apps on Apple platforms can use the user's iCloud as a transport
+instead of, or alongside, a relay, with the same envelopes, cursors, and
+threat model. See [iCloud sync](./icloud.md).
+
 ## The sync loop
 
 `engine.sync()` (and the background poller) first repairs local state, then runs

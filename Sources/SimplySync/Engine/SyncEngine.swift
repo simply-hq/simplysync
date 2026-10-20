@@ -62,7 +62,8 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
     /// TS/Kotlin engines). `SyncState` collapses multi-relay results ("synced" as
     /// long as ANY relay works — the data is safe somewhere); this map keeps the
     /// per-relay truth so `getRelayStatuses` can show which relay is failing
-    /// behind a green state.
+    /// behind a green state. App recovery/write gates must not turn a failed
+    /// redundant replica into a permanent write lock after one replica drains.
     private struct RelayHealth {
         var lastSyncedAt: String?
         var lastFailure: RelayStatus.Failure?
@@ -73,6 +74,20 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
     /// every contact, while a re-seed deliberately spans passes: the wipe is
     /// detected during pull, the rebuilt outbox drains on the following pass.
     private var reseedingRelays: Set<String> = []
+    /// Supplies the transport behind a configured `Transport(url:)` base when
+    /// that base is not an HTTP relay — `CloudKitTransport.factory(...)` for
+    /// iCloud, or an in-memory log in tests. Return `nil` for any base you don't
+    /// claim and the engine uses the HTTP `RelayClient`, so iCloud and relays
+    /// can be configured side by side. Set it before `setTransports`; it is
+    /// read without the lock.
+    public var transportFactory: ((_ base: String, _ identity: Identity) -> (any SyncTransport)?)?
+
+    private func transport(for base: String, identity: Identity) -> (any SyncTransport)? {
+        if let custom = transportFactory?(base, identity) { return custom }
+        guard let url = URL(string: base) else { return nil }
+        return RelayClient(baseURL: url, ownerId: identity.ownerId,
+                           relayAuth: identity.relayAuth, session: deps.urlSession)
+    }
 
     private var pollTask: Task<Void, Never>?
     private let defaultPollMs: Int
@@ -182,9 +197,7 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             let bases = lock.withLock { transports.map { Self.normalizeBase($0.url) } }
             var hasBackup = false
             for base in bases {
-                guard let url = URL(string: base) else { continue }
-                let relay = RelayClient(baseURL: url, ownerId: restored.ownerId,
-                                        relayAuth: restored.relayAuth, session: deps.urlSession)
+                guard let relay = transport(for: base, identity: restored) else { continue }
                 if let result = try? await relay.pull(after: ""), !result.events.isEmpty {
                     hasBackup = true
                     break
@@ -823,6 +836,9 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
     /// carry a status; anything else (URLError etc.) is network-level, which we
     /// read as unreachable.
     private func classifyFailure(_ error: Error) -> (kind: String, status: Int?, message: String) {
+        if let failure = error as? SyncTransportFailure {
+            return (failure.kind, nil, failure.message)
+        }
         if let e = error as? RelayClient.RelayError, case .http(let status, _) = e {
             let kind: String
             switch status {
@@ -864,9 +880,7 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             guard let data = item.json.data(using: .utf8) else { return nil }
             return try? JSONDecoder().decode(SyncEnvelope.self, from: data)
         }
-        guard let url = URL(string: base) else { return 0 }
-        let relay = RelayClient(baseURL: url, ownerId: identity.ownerId,
-                                relayAuth: identity.relayAuth, session: deps.urlSession)
+        guard let relay = transport(for: base, identity: identity) else { return 0 }
         _ = try await relay.push(envelopes)
         let pushedAt = Self.isoNow()
         lock.withLock {
@@ -920,11 +934,9 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
     private func pullAndApply(base: String, identity: Identity) async throws -> PullPage {
         let cursorKey = "cursor:\(base)"
         let after = lock.withLock { store.getMeta(cursorKey) ?? "" }
-        guard let url = URL(string: base) else {
+        guard let relay = transport(for: base, identity: identity) else {
             return PullPage(changed: [], pulled: 0)
         }
-        let relay = RelayClient(baseURL: url, ownerId: identity.ownerId,
-                                relayAuth: identity.relayAuth, session: deps.urlSession)
         // An owner the relay has never seen is "nothing to pull yet", not a
         // failure: both reference relays create the owner on PUSH only, so pull
         // 404s until this account's first event lands. Treating it as an error
@@ -1225,7 +1237,14 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                                  lastSyncedAt: health?.lastSyncedAt,
                                  lastFailure: health?.lastFailure)
         status.reseeding = lock.withLock { reseedingRelays.contains(base) }
-        guard let identity, let url = URL(string: base) else { return status }
+        guard let identity else { return status }
+        // A transport the app supplied (iCloud, …) has no `/v1/status` to probe:
+        // its reachability is simply how the last sync pass went.
+        if transportFactory?(base, identity) != nil {
+            status.reachable = health?.lastSyncedAt != nil && health?.lastFailure == nil
+            return status
+        }
+        guard let url = URL(string: base) else { return status }
         let relay = RelayClient(baseURL: url, ownerId: identity.ownerId,
                                 relayAuth: identity.relayAuth, session: deps.urlSession)
         do {

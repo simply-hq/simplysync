@@ -61,9 +61,10 @@ and sync loop.
 
 `Sources/SimplySync/Kit/` is a clean-room Swift port of `@simplysync/protocol` built on **Foundation
 + CryptoKit only** — no UIKit, no third-party packages — so it also compiles and
-runs on macOS and is unit-testable without a simulator. The repository-root
-SwiftPM product and the `SimplySyncDemo` SwiftUI app compile that same standard
-package source tree.
+runs on macOS and is unit-testable without a simulator. The one exception is the
+optional `CloudKitTransport`, which imports Apple's CloudKit and compiles only
+where that framework exists. The repository-root SwiftPM product and the
+`SimplySyncDemo` SwiftUI app compile that same standard package source tree.
 
 Use the `swift` selective clone, add its repository root as a local package in
 Xcode, and select the `SimplySync` product. The
@@ -82,7 +83,8 @@ has the complete dependency and engine setup.
 | `Identity.swift` | `IdentityDeriver` — `sf1_` (HKDF) and BIP39 (SLIP-21) derivation. |
 | `Envelope.swift` | `SyncEnvelope` ⇄ `SyncPayload` (encrypt / decrypt). |
 | `HLC.swift` | The Hybrid Logical Clock string + a monotonic `HLCClock`. |
-| `RelayClient.swift` | `push` / `pull` against `/v1/events` over `URLSession` (async/await). |
+| `RelayClient.swift` | `push` / `pull` against `/v1/events` over `URLSession` (async/await); the `SyncTransport` protocol. |
+| `CloudKitTransport.swift` | The log in the user's iCloud instead of a relay; Apple platforms only. See [iCloud sync](./icloud.md). |
 
 ```swift
 // Derive once from a recovery key or a 24-word phrase (auto-detected).

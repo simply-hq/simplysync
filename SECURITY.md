@@ -186,3 +186,5 @@ the files above are the most useful.
 - Running your own relay:
   [`docs/local-first/self-hosting.md`](docs/local-first/self-hosting.md)
 - User-facing guide: [`docs/local-first/guide.md`](docs/local-first/guide.md)
+- iCloud as the transport, and what Apple can see:
+  [`docs/local-first/icloud.md`](docs/local-first/icloud.md)

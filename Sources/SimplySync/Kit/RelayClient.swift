@@ -1,5 +1,36 @@
 import Foundation
 
+/// Anything that can park an owner's encrypted event log and hand it back in
+/// order: the simplysync relay today, a platform store (CloudKit, Drive, …) in
+/// an app port. The engine only ever moves opaque `SyncEnvelope`s through it.
+///
+/// `id` names this transport's cursor keys in the engine's metadata
+/// (`push:<id>`, `cursor:<id>`). For a relay it is the base URL string, so
+/// databases written before this seam existed keep every cursor they had.
+public protocol SyncTransport {
+    var id: String { get }
+    /// Upload events. Idempotent: a transport dedupes by event id and reports
+    /// the already-known ones as `duplicate`.
+    func push(_ events: [SyncEnvelope]) async throws -> RelayClient.PushResult
+    /// Download events after `cursor` (`""` = from the beginning). A page with
+    /// no events, or whose `nextCursor` equals `cursor`, means "drained".
+    func pull(after cursor: String) async throws -> RelayClient.PullResult
+}
+
+/// A failure from a transport that has no HTTP status to classify (iCloud, …),
+/// already mapped onto the engine's failure kinds: "authRejected",
+/// "quotaExceeded", "rateLimited", "serverError", "badRequest", or
+/// "unreachable". The first three plus "badRequest" back the poller off,
+/// exactly as the matching HTTP statuses do for a relay.
+public struct SyncTransportFailure: Error, Equatable {
+    public let kind: String
+    public let message: String
+    public init(kind: String, message: String) {
+        self.kind = kind
+        self.message = message
+    }
+}
+
 /// Talks to the simplysync relay's `/v1/events` endpoints. The relay only ever
 /// sees opaque ciphertext — this client uploads/downloads `SyncEnvelope`s and
 /// authenticates with the owner's `relayAuth` as a bearer token.
@@ -27,10 +58,18 @@ public struct RelayClient {
     public struct PushResult {
         public let accepted: Int
         public let duplicate: Int
+        public init(accepted: Int, duplicate: Int) {
+            self.accepted = accepted
+            self.duplicate = duplicate
+        }
     }
     public struct PullResult {
         public let events: [SyncEnvelope]
         public let nextCursor: String
+        public init(events: [SyncEnvelope], nextCursor: String) {
+            self.events = events
+            self.nextCursor = nextCursor
+        }
     }
 
     /// GET /v1/status response — per-owner health + quota + head cursor. The
@@ -141,4 +180,8 @@ public struct RelayClient {
                                   body: String(data: data, encoding: .utf8) ?? "")
         }
     }
+}
+
+extension RelayClient: SyncTransport {
+    public var id: String { baseURL.absoluteString }
 }
