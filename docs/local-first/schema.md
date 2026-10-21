@@ -57,8 +57,8 @@ keeps the `dueDate` it already had.
 
 ### Caveat: relay compaction
 
-Both reference relays compact their logs on a schedule (the Cloudflare relay
-every six hours), keeping only each row's **newest** event. If that newest event
+Both reference relays compact their logs on a schedule (every six hours by
+default), keeping only each row's **newest** event. If that newest event
 came from an app version that predates a column, any device that pulls the row
 afterwards — a fresh install, a restore, a device that was offline — gets it
 without that column's value. Devices that already had the value keep it, and

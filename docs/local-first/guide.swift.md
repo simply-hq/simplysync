@@ -341,8 +341,8 @@ for s in await engine.getRelayStatuses() {
 }
 ```
 
-Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
-every platform.
+Use the same HTTPS relay URL on every platform, whether the relay runs on
+Cloudflare or on your own server ([Self-hosting](./self-hosting.md)).
 
 ### Syncing through iCloud instead
 

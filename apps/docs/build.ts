@@ -464,7 +464,7 @@ const LANDING_DIRECTORY = [
     entries: [
       { out: "guide.html", title: "Client API", summary: "Define schemas, mutations, queries, and React bindings." },
       { out: "native.html", title: "Native clients", summary: "Own the Swift and Kotlin source surfaces." },
-      { out: "self-hosting.html", title: "Self-hosting", summary: "Deploy the Cloudflare relay in your account." },
+      { out: "self-hosting.html", title: "Self-hosting", summary: "Run the relay on Cloudflare or on your own server." },
       { out: "agents.html", title: "For agents", summary: "Load the full invariant and implementation contract." },
     ],
   },
@@ -822,7 +822,8 @@ function llmsIndex(): string {
 > App-owned, end-to-end-encrypted, local-first sync: apps write to a local
 > SQLite database first and sync opportunistically through a relay that only
 > ever sees ciphertext. The TypeScript, Kotlin, and Swift clients share one
-> wire contract with the source-owned Cloudflare relay.
+> wire contract with both source-owned relays: Go + SQLite, or Cloudflare
+> Workers.
 
 For single-user apps across a person's own devices — notes, journals, personal
 finance, health trackers, local AI chat. Not for live multi-user collaboration,

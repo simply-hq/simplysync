@@ -102,7 +102,7 @@ export const engine = createSync({
   secureStorage: createEncryptedSecureStorage({ databaseName: "my-app" }),
 })(schema, {
   name: "my-app",
-  transports: [], // local-only; add the deployed Cloudflare relay URL when needed
+  transports: [], // local-only; add your relay's HTTPS URL when needed
 });
 
 await engine.ready;
