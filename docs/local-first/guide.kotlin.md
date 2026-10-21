@@ -120,6 +120,9 @@ when payload meaning changes incompatibly. Older clients durably retain a newer
 payload without partially applying it, then replay it after an upgraded app
 declares support.
 
+What's safe to change after release — adding columns, renaming, removing,
+changing a type — is covered in [Schema evolution](./schema.md).
+
 On first run the engine mints a new owner (a fresh 12-word recovery phrase,
 stored via `secureStorage`). On later runs it loads the existing one — including
 a legacy `sf1_` key, which still derives.
