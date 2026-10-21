@@ -327,9 +327,29 @@ checks only whether `nextCursor` differs from the previous string; it does not
 prove numeric forward progress. A custom relay that regresses or oscillates its
 cursor can cause replay or an indefinitely draining sync call.
 
+## Go relay
+
+The canonical implementation lives in `apps/relay-go`: one static binary over
+SQLite that runs anywhere you can run a process — see
+[On your own server](./self-hosting.md#on-your-own-server). It serves the same
+endpoints with the same request and response shapes as the Cloudflare relay, and
+the [conformance suite](../../apps/relay-conformance) runs one contract against
+both.
+
+Owners, event envelopes, and blob chunks all live in one SQLite database in WAL
+mode; as on Cloudflare, table names, row values, and file contents stay inside
+ciphertext. Its size limits (`MAX_OWNER_BYTES`, `MAX_EVENT_BYTES`,
+`MAX_BLOB_BYTES`, and the push/pull batch caps) share the Cloudflare relay's
+names and defaults, set as environment variables. `MAX_TOTAL_BYTES` adds a
+ceiling across all owners, so a few full owners can't fill the disk. Compaction
+follows the same rule as below — every six hours by default
+(`COMPACTION_INTERVAL_MS`), or on demand from the ops dashboard. The deploy kit
+backs the database up continuously with Litestream to any S3-compatible bucket.
+Full configuration lives in the [`relay-go` README](../../apps/relay-go/README.md).
+
 ## Cloudflare relay
 
-The public relay deployment lives in `apps/relay-cloudflare`. Your app only
+The serverless implementation lives in `apps/relay-cloudflare`. Your app only
 needs the HTTPS Worker URL printed by the [self-hosting setup](./self-hosting.md).
 The same URL works in browsers, simulators, emulators, and physical devices.
 
@@ -362,7 +382,9 @@ you can also raise `MAX_OWNER_BYTES` in your deployment.
 
 For each `(owner_id, stream_id)`, compaction keeps the event with the maximum
 `event_id` and removes older versions. This is safe because `eventId === hlc`,
-so the survivor is the same row state a fresh client would choose by LWW.
+so the survivor is the same row state a fresh client would choose by LWW —
+within one app version. Across versions, a newer column can be missing from the
+survivor; see [Schema evolution](./schema.md#caveat-relay-compaction).
 Cloudflare runs the pass from a Cron-triggered Worker and updates the owner's
 stored-byte count afterward.
 

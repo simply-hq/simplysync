@@ -115,7 +115,7 @@ Above `Kit/`, `Sources/SimplySync/Engine/` ports `@simplysync/engine`: a typed s
 store, typed mutations, and reactive `LiveQuery` results — so the example above is
 the *low-level* path, and most app code uses the engine instead (see the
 [Client API → Swift](./guide.swift.md) guide). Run the demo from Xcode against
-your deployed Cloudflare relay, then **⋯ → Show recovery key** and paste the same
+your relay, then **⋯ → Show recovery key** and paste the same
 key into a second simulator, the TodoList web client, or the Expo app to watch
 them converge. Full run/verify steps are in the
 [Swift README](../../apps/todolist/swift/README.md).

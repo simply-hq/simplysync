@@ -62,10 +62,10 @@ the recovery key and choose **I saved this key**.
 If you only want the canonical React Native example, skip the scaffold command
 and use `apps/todolist/expo` in the launch command.
 
-When you are ready for device-to-device sync, [deploy the Cloudflare
-relay](https://simplysync.org/self-hosting). Paste the verified URL it
-prints into the app's **Relay URL** setting on each device, then restore the
-same recovery key on the second device. Changes will sync through the
+When you are ready for device-to-device sync, [deploy a
+relay](https://simplysync.org/self-hosting) — on Cloudflare or on your own
+server. Paste its HTTPS URL into the app's **Relay URL** setting on each device,
+then restore the same recovery key on the second device. Changes will sync through the
 ciphertext-only relay.
 <!-- quickstart:react-native:end -->
 
@@ -73,8 +73,11 @@ ciphertext-only relay.
 
 - **Local-first & fast** — writes hit local SQLite; the network is never on the critical path.
 - **End-to-end encrypted** — AES-256-GCM on-device; the relay only ever holds ciphertext + routing metadata.
-- **No lock-in** — deploy the Cloudflare Workers + D1/R2 relay in your own
-  account and keep the source.
+- **No lock-in** — the relay is a small, open HTTP contract with two
+  implementations in this repo: one Go binary on SQLite for any server or Docker
+  host, and a Cloudflare Workers version. Devices keep the whole database, so
+  switching relays means adding a URL, not exporting data — see
+  [Self-hosting](./self-hosting.md).
 - **No accounts to phish** — identity derives from one secret (a recovery key or a BIP39 phrase).
 - **A real database** — typed schema, [Kysely](https://kysely.dev) queries (joins, filters, ordering), and a reactive `useQuery` for React.
 - **Scales past memory** — keyset-paginated, resumable sync; images sync as tiny manifests with lazily fetched encrypted chunks.
@@ -84,7 +87,7 @@ ciphertext-only relay.
 - **Conflicts resolve row-level last-writer-wins** (by an HLC), not field-level.
 - **Capability auth, not identity** — anyone with the relay-auth token can sync that owner; no login, no key rotation.
 - **Availability, not confidentiality** — a bad relay can stall or reorder sync, never read or forge data ([threat model](./sync.md#threat-model)).
-- **Per-owner storage quota** (default 1 GiB) — at the cap the relay returns `413`; reclaim space with compaction or raise it on your own relay ([managing storage](./sync.md#relay-configuration)).
+- **Per-owner storage quota** (default 1 GiB) — at the cap the relay returns `413`; reclaim space with compaction or raise it on your own relay ([managing storage](./sync.md#limits)).
 - **Lose the secret, lose the data** — the recovery phrase is the only key.
 
 ## Read next
@@ -112,12 +115,14 @@ Also: **[self-hosting a relay](./self-hosting.md)** · **[security & threat mode
 | `@simplysync/protocol` | The crypto/wire primitives the engine builds on: identity, key derivation, AES-GCM envelopes, HLC, blobs. |
 
 **The relay — optional.** Without one, the app is purely local-first and every
-edit stays on-device. Add the source-owned Cloudflare relay to sync across
-devices; it is a dumb, opaque event store that only receives ciphertext:
+edit stays on-device. Add a relay to sync across devices. Both in this repo
+speak the same wire contract, and each is a dumb, opaque event store that only
+receives ciphertext:
 
 | Relay | Stack |
 | --- | --- |
-| `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless. |
+| `apps/relay-go` | Go + SQLite — one static binary for any server or Docker host. |
+| `apps/relay-cloudflare` | Cloudflare Workers + D1 + R2 — serverless, nothing to operate. |
 
 **Apple apps can skip the relay.** The Swift engine can park the same
 ciphertext in the user's own iCloud instead — see [iCloud sync](./icloud.md).
@@ -143,7 +148,8 @@ We built our own because we wanted a few specific things:
   copied into your app and owned, so you can audit every line. (Evolu is a fuller,
   more featureful platform with a larger surface.)
 - **A deliberately dumb relay over plain HTTP** (keyset-paginated pull + cursor),
-  deployed in your Cloudflare account with Workers + D1/R2. (Evolu syncs over
+  that you run yourself — a Go binary on any server, or Workers + D1/R2 in your
+  Cloudflare account. (Evolu syncs over
   WebSocket; also self-hostable, just more to reimplement.)
 - **First-class encrypted binary blobs** — lazy, content-addressed, chunked — for
   image-heavy apps.

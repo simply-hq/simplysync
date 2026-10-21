@@ -510,8 +510,8 @@ while the app still showed "synced". Surface it with
 `SyncStateIsSyncing.progress.pendingPush` as a "re-uploading N changes" banner —
 until it clears, other devices are not receiving your edits.
 
-Use the HTTPS URL printed by the [Cloudflare relay setup](./self-hosting.md) on
-every platform.
+Use the same HTTPS relay URL on every platform, whether the relay runs on
+Cloudflare or on your own server ([Self-hosting](./self-hosting.md)).
 
 ## API reference
 

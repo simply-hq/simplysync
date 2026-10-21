@@ -88,10 +88,10 @@ the recovery key and choose **I saved this key**.
 If you only want the canonical React Native example, skip the scaffold command
 and use `apps/todolist/expo` in the launch command.
 
-When you are ready for device-to-device sync, [deploy the Cloudflare
-relay](https://simplysync.org/self-hosting). Paste the verified URL it
-prints into the app's **Relay URL** setting on each device, then restore the
-same recovery key on the second device. Changes will sync through the
+When you are ready for device-to-device sync, [deploy a
+relay](https://simplysync.org/self-hosting) — on Cloudflare or on your own
+server. Paste its HTTPS URL into the app's **Relay URL** setting on each device,
+then restore the same recovery key on the second device. Changes will sync through the
 ciphertext-only relay.
 <!-- quickstart:react-native:end -->
 
@@ -109,8 +109,9 @@ bun run docs:dev
 ```
 
 Open <http://localhost:4200> and choose **Demo**. Both browser devices work
-locally without a relay. Paste the URL from the [Cloudflare self-hosting
-guide](docs/local-first/self-hosting.md) when you want to test encrypted sync.
+locally without a relay. Paste a relay URL from the [self-hosting
+guide](docs/local-first/self-hosting.md) — Cloudflare or your own server — when
+you want to test encrypted sync.
 
 ## Choose your next step
 
@@ -191,8 +192,8 @@ encryption key, or recovery phrase.
   required to sync them.
 - The relay stores a SHA-256 hash of its authentication token, not the token
   itself.
-- The Cloudflare relay implements the same ciphertext-only wire contract used
-  by every client.
+- The Go and Cloudflare relays implement the same ciphertext-only wire contract
+  used by every client, and one conformance suite runs against both.
 
 A relay can delay or delete encrypted updates, and it can see routing metadata.
 It cannot read valid payloads or silently alter them without clients rejecting
