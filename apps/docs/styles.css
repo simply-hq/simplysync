@@ -14,6 +14,10 @@ TYPE: Native system UI by explicit product requirement; system mono only for cod
 * { box-sizing: border-box; }
 
 html {
+  /* Keep the classic-scrollbar gutter reserved when html.nav-open hides
+     overflow; otherwise the page widens, reflows, and jumps behind the drawer.
+     No effect where scrollbars overlay content (phones, macOS by default). */
+  scrollbar-gutter: stable;
   scroll-behavior: smooth;
   scroll-padding-top: calc(var(--topbar-h) + var(--space-md));
   -webkit-text-size-adjust: 100%;
@@ -33,7 +37,14 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-body.nav-open { overflow: hidden; }
+/* Lock page scroll behind the phone drawer on the ROOT, not the body. A body
+   with non-visible overflow only hands it to the viewport when the root's own
+   overflow is `visible` — and the rule above clips the root. So the body became
+   a scroll container, the sticky topbar re-anchored to a body that never
+   scrolls, and opening the drawer mid-page left a strip of page text where the
+   bar (and its close button) should be. Root overflow always applies to the
+   viewport, so the topbar's scroller never changes. */
+html.nav-open { overflow: hidden; }
 
 a {
   color: var(--color-accent-2);
@@ -607,7 +618,10 @@ a:active {
   inset-block: var(--topbar-h) 0;
   inset-inline-start: 0;
   z-index: var(--z-modal);
-  width: min(var(--sidebar-w), calc(100% - var(--space-xl)));
+  /* Wider than the desktop column: the drawer now lists the page's sections,
+     and at 13.5rem their titles wrapped to three lines. Still leaves a strip
+     of scrim to tap. The desktop sidebar takes its width from the grid. */
+  width: min(20rem, calc(100% - var(--space-2xl)));
   padding: var(--space-lg) var(--space-sm) max(var(--space-lg), env(safe-area-inset-bottom));
   overflow-y: auto;
   border-inline-end: 1px solid var(--color-rule);
@@ -1185,7 +1199,7 @@ blockquote {
 }
 
 @media (min-width: 60rem) {
-  body.nav-open { overflow: auto; }
+  html.nav-open { overflow: visible; overflow-x: clip; }
   .menu-toggle { display: none; }
 
   .landing-proof {

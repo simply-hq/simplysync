@@ -155,7 +155,7 @@ const MENU_TOGGLE = `<button class="menu-toggle" type="button" aria-label="Open 
 const SITE_SCRIPT = `<script>(function(){
   var root=document.documentElement,body=document.body,menu=document.querySelector('.menu-toggle');
   window.ssToggleTheme=function(button){var next=root.getAttribute('data-theme')==='dark'?'light':'dark';root.setAttribute('data-theme',next);button.setAttribute('aria-label','Switch to '+(next==='dark'?'light':'dark')+' theme');try{localStorage.setItem('ss-theme',next)}catch(e){}};
-  window.ssToggleNav=function(force){var open=typeof force==='boolean'?force:!body.classList.contains('nav-open');body.classList.toggle('nav-open',open);if(menu){menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'Close documentation navigation':'Open documentation navigation');}};
+  window.ssToggleNav=function(force){var open=typeof force==='boolean'?force:!body.classList.contains('nav-open');body.classList.toggle('nav-open',open);root.classList.toggle('nav-open',open);if(menu){menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'Close documentation navigation':'Open documentation navigation');}};
   var themeButton=document.querySelector('.theme-toggle');if(themeButton){themeButton.setAttribute('aria-label','Switch to '+(root.getAttribute('data-theme')==='dark'?'light':'dark')+' theme');}
   document.addEventListener('keydown',function(event){if(event.key==='Escape')window.ssToggleNav(false)});
   document.addEventListener('click',function(event){var target=event.target;if(target&&target.closest&&target.closest('.nav-sub-link'))window.ssToggleNav(false)});
