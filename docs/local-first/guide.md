@@ -143,6 +143,9 @@ when the meaning of a payload changes incompatibly. An older app will then keep
 the newer event in `_sync_deferred` without partially applying it; after an
 upgrade declares the higher version, startup replays the retained event.
 
+What's safe to change after release — adding columns, renaming, removing,
+changing a type — is covered in [Schema evolution](./schema.md).
+
 On first run the engine mints a new owner (a fresh BIP39 recovery phrase, stored via
 `secureStorage`). On later runs it loads the existing one. Pass
 `externalAppOwner` to supply an owner you derived yourself instead.

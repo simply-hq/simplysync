@@ -158,8 +158,9 @@ const SITE_SCRIPT = `<script>(function(){
   window.ssToggleNav=function(force){var open=typeof force==='boolean'?force:!body.classList.contains('nav-open');body.classList.toggle('nav-open',open);if(menu){menu.setAttribute('aria-expanded',String(open));menu.setAttribute('aria-label',open?'Close documentation navigation':'Open documentation navigation');}};
   var themeButton=document.querySelector('.theme-toggle');if(themeButton){themeButton.setAttribute('aria-label','Switch to '+(root.getAttribute('data-theme')==='dark'?'light':'dark')+' theme');}
   document.addEventListener('keydown',function(event){if(event.key==='Escape')window.ssToggleNav(false)});
+  document.addEventListener('click',function(event){var target=event.target;if(target&&target.closest&&target.closest('.nav-sub-link'))window.ssToggleNav(false)});
   var links=Array.prototype.slice.call(document.querySelectorAll('.toc a'));
-  if('IntersectionObserver' in window&&links.length){var byId=new Map(links.map(function(link){return[link.getAttribute('href').slice(1),link]}));var setCurrent=function(id){links.forEach(function(link){var active=link===byId.get(id);link.classList.toggle('current',active);if(active)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')})};var observer=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting)setCurrent(entry.target.id)})},{rootMargin:'-18% 0px -68% 0px'});byId.forEach(function(_link,id){var heading=document.getElementById(id);if(heading)observer.observe(heading)});setCurrent(links[0].getAttribute('href').slice(1));}
+  if('IntersectionObserver' in window&&links.length){var byId=new Map(links.map(function(link){return[link.getAttribute('href').slice(1),link]}));var subs=Array.prototype.slice.call(document.querySelectorAll('.nav-sub-link'));var setCurrent=function(id){links.forEach(function(link){var active=link===byId.get(id);link.classList.toggle('current',active);if(active)link.setAttribute('aria-current','location');else link.removeAttribute('aria-current')});var rail=byId.get(id);var section=rail?rail.getAttribute('data-section'):id;subs.forEach(function(link){link.classList.toggle('current',link.getAttribute('data-nav-section')===section)})};var observer=new IntersectionObserver(function(entries){entries.forEach(function(entry){if(entry.isIntersecting)setCurrent(entry.target.id)})},{rootMargin:'-18% 0px -68% 0px'});byId.forEach(function(_link,id){var heading=document.getElementById(id);if(heading)observer.observe(heading)});setCurrent(links[0].getAttribute('href').slice(1));}
 })();</script>`;
 
 interface LangTab {
@@ -189,6 +190,7 @@ const CLIENT_API_TABS: readonly LangTab[] = [
 const pages: readonly Page[] = [
   { src: "README.md", out: "docs.html", nav: "What & why" },
   { src: "guide.md", out: "guide.html", nav: "Client API", langTabs: CLIENT_API_TABS },
+  { src: "schema.md", out: "schema.html", nav: "Schema evolution" },
   { src: "architecture.md", out: "architecture.html", nav: "How it works" },
   { src: "sync.md", out: "sync.html", nav: "Sync & relay" },
   { src: "native.md", out: "native.html", nav: "Native clients" },
@@ -213,7 +215,7 @@ const allPages: readonly Page[] = [...pages, ...variantPages];
 type NavItem = string | { readonly label: string; readonly anchor: string };
 
 const NAV_GROUPS: readonly { label: string; pages: readonly NavItem[] }[] = [
-  { label: "Start", pages: ["docs.html", "guide.html", "architecture.html"] },
+  { label: "Start", pages: ["docs.html", "guide.html", "schema.html", "architecture.html"] },
   { label: "Operate", pages: ["sync.html", "native.html", "icloud.html", "self-hosting.html"] },
   {
     label: "Reference",
@@ -313,7 +315,31 @@ function canonicalUrl(out: string): string {
   return `${SITE_ORIGIN}/${cleanPath}`;
 }
 
-function renderNav(activeOut: string, currentOut = activeOut): string {
+// The active page unfolds into its top-level sections, Evolu-style. Only h2s:
+// the "On this page" rail carries the full outline on wide screens, and this is
+// the only section list a phone gets, since the rail is hidden there. Links are
+// same-page anchors, so a Client API variant lists its own sections even though
+// the sidebar entry it highlights is the shared "Client API".
+function renderNavSections(toc: readonly TocEntry[]): string {
+  const sections = toc.filter((entry) => entry.level === 2);
+  if (sections.length < 2) return "";
+  const links = sections
+    .map(
+      (entry) =>
+        `<a class="nav-sub-link" data-nav-section="${entry.id}" href="#${entry.id}">${entry.text}</a>`,
+    )
+    .join("\n              ");
+  return `
+            <div class="nav-sub" role="group" aria-label="Sections on this page">
+              ${links}
+            </div>`;
+}
+
+function renderNav(
+  activeOut: string,
+  currentOut = activeOut,
+  toc: readonly TocEntry[] = [],
+): string {
   // Shortcuts land in the Client API variant you are already reading, so a
   // Swift developer's "API reference" opens the Swift table, not the React one.
   const apiPage = CLIENT_API_TABS.some((tab) => tab.out === currentOut)
@@ -330,7 +356,8 @@ function renderNav(activeOut: string, currentOut = activeOut): string {
         if (!page) return "";
         const active = page.out === activeOut ? " active" : "";
         const current = active ? ` aria-current="page"` : "";
-        return `<a class="nav-link${active}" href="${page.out}"${current}>${page.nav}</a>`;
+        const sections = active ? renderNavSections(toc) : "";
+        return `<a class="nav-link${active}" href="${page.out}"${current}>${page.nav}</a>${sections}`;
       })
       .join("\n            ");
     return `<section class="nav-group">
@@ -405,11 +432,12 @@ function renderFooter(extraClass = ""): string {
 // without re-querying the DOM on every scroll.
 function renderToc(toc: TocEntry[]): string {
   if (toc.length === 0) return "";
+  let section = "";
   const items = toc
-    .map(
-      (entry) =>
-        `<li><a class="toc-link toc-l${entry.level}" data-toc href="#${entry.id}">${entry.text}</a></li>`,
-    )
+    .map((entry) => {
+      if (entry.level === 2) section = entry.id;
+      return `<li><a class="toc-link toc-l${entry.level}" data-toc data-section="${section || entry.id}" href="#${entry.id}">${entry.text}</a></li>`;
+    })
     .join("\n          ");
   return `<aside class="toc-rail">
       <nav class="toc" aria-label="On this page">
@@ -740,7 +768,7 @@ function layout(options: {
   <div class="shell">
     <aside id="docs-sidebar" class="sidebar" aria-label="Documentation sections">
       <nav class="nav">
-        ${renderNav(options.activeOut, options.out)}
+        ${renderNav(options.activeOut, options.out, options.toc)}
       </nav>
     </aside>
     <main id="content" class="content">
@@ -767,6 +795,7 @@ const LLMS_ORDER: readonly string[] = [
   "agents.md",
   "README.md",
   "guide.md",
+  "schema.md",
   "architecture.md",
   "sync.md",
   "native.md",

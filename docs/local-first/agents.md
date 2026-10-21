@@ -233,6 +233,8 @@ ordering for drag-and-drop), `counterColumns()` + `incrementCounter` /
 | storing `recoveryKey` in state or SQLite | leave it in `secureStorage`; display once |
 | a server endpoint that reads user rows | keep it on-device; the relay can't decrypt |
 | `schemaVersion: 2` for a new column | keep `1`; additive changes need no bump |
+| renaming or removing a column | add a new column and read both; keep the old one declared ([Schema evolution](./schema.md)) |
+| a new non-null column | `nullOr(...)` or `withDefault(...)` — old rows read `NULL` |
 
 ## Deeper
 

@@ -670,6 +670,34 @@ body.nav-open .sidebar {
   font-weight: 650;
 }
 
+/* The active page's top-level sections, nested under it on a hairline. These
+   wrap rather than truncate (unlike .nav-link): a section title is the whole
+   point of the entry, and some run long. */
+.nav-sub {
+  margin: var(--space-3xs) 0 var(--space-2xs) var(--space-sm);
+  padding-inline-start: var(--space-2xs);
+  display: flex;
+  flex-direction: column;
+  border-inline-start: 1px solid var(--color-rule-2);
+}
+
+.nav-sub-link {
+  padding: var(--space-3xs) var(--space-2xs);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink-3);
+  font-size: var(--text-sm);
+  line-height: 1.35;
+  text-decoration: none;
+  transition: color var(--dur-short) var(--ease-out);
+}
+
+.nav-sub-link:hover { color: var(--color-ink); }
+
+.nav-sub-link.current {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
 .nav-demo {
   color: var(--color-accent-2);
   font-weight: 650;
@@ -1196,6 +1224,11 @@ blockquote {
   .nav {
     position: sticky;
     inset-block-start: calc(var(--topbar-h) + var(--space-xl));
+    /* The active page's section list makes the sidebar taller than a short
+       window; scroll it instead of letting the bottom links fall off-screen. */
+    max-height: calc(100dvh - var(--topbar-h) - var(--space-2xl));
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   .nav-scrim { display: none; }
