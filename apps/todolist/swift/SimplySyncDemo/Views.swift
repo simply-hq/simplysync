@@ -1,7 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// First-run screen: paste an `sf1_` recovery key or a 24-word BIP39 phrase, or
+/// First-run screen: paste a BIP39 recovery phrase (an `sf1_` key still works,
+/// it is just no longer advertised), or
 /// generate a fresh one. Pasting the same credential into a JS/Expo client (or a
 /// second simulator) makes them the same owner and they sync.
 struct OnboardingView: View {
@@ -21,7 +22,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Recovery key or phrase")
                     .font(.caption).foregroundStyle(.secondary)
-                TextField("sf1_… or 24 words", text: $input, axis: .vertical)
+                TextField("your recovery phrase", text: $input, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -111,7 +112,7 @@ struct RestoreOwnerView: View {
             Text("This replaces the local todos on this device, then downloads the selected owner's encrypted history when a relay is connected.")
                 .foregroundStyle(.secondary)
 
-            TextField("sf1_… or 24 words", text: $input, axis: .vertical)
+            TextField("your recovery phrase", text: $input, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()

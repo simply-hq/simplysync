@@ -154,7 +154,10 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
     private func loadIdentity() throws {
         var secret = config.externalAppOwner?.recoveryKey ?? deps.secureStorage.getItem(mnemonicKey)
         if secret == nil || (try? IdentityDeriver.derive(from: secret!)) == nil {
-            let fresh = IdentityDeriver.createRecoveryKey()
+            // A new owner gets the human format (parity with the TS engine): a
+            // phrase is what a user can actually write down. `sf1_` keys stay
+            // readable forever for everyone who already holds one.
+            let fresh = BIP39.createMnemonic()
             deps.secureStorage.setItem(mnemonicKey, fresh)
             secret = fresh
         }
@@ -241,7 +244,7 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                     "No sync relay holds a copy of this data yet. Back up your data first. Nothing was changed.")
             }
         }
-        let key = IdentityDeriver.createRecoveryKey()
+        let key = BIP39.createMnemonic()
         if let derived = try? IdentityDeriver.derive(from: key) {
             switchOwner(recoveryKey: key, identity: derived)
         }

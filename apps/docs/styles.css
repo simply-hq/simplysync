@@ -780,48 +780,70 @@ body.nav-open .nav-scrim {
 
 .anchor:focus-visible { opacity: 1; }
 
+/* Holds only the Client API language switcher now that the table of contents
+   lives in its own rail, so it needs no more room than the tabs themselves. */
 .article-tools {
-  margin: var(--space-lg) 0 var(--space-2xl);
+  margin: var(--space-lg) 0 var(--space-lg);
 }
+
+/* "On this page": a sticky rail beside the prose on wide screens only. Below
+   that it is hidden rather than inlined — the left sidebar already carries
+   navigation on small screens, and two stacked nav blocks above the first
+   paragraph pushed the actual page content off the fold. */
+.toc-rail { display: none; }
 
 .toc {
   min-width: 0;
-  padding-block: var(--space-sm);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0 var(--space-lg);
-  border-top: 1px solid var(--color-rule-2);
-  border-bottom: 1px solid var(--color-rule-2);
 }
 
 .toc-title {
-  margin: 0 0 var(--space-xs);
-  color: var(--color-ink-3);
-  font-size: var(--text-xs);
-  font-weight: 650;
-}
-
-.toc a {
-  min-width: 0;
-  min-height: 2.25rem;
-  padding-block: var(--space-3xs);
-  display: flex;
-  align-items: center;
-  color: var(--color-ink-2);
+  margin: 0 0 var(--space-sm);
+  color: var(--color-ink);
   font-size: var(--text-sm);
-  line-height: 1.35;
-  text-decoration: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.toc a.current {
-  color: var(--color-accent-2);
   font-weight: 650;
 }
 
-.toc-l3 { padding-inline-start: var(--space-sm); }
+.toc-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  /* The continuous hairline the active marker rides on. */
+  border-inline-start: 1px solid var(--color-rule-2);
+}
+
+.toc-link {
+  min-width: 0;
+  padding: var(--space-2xs) 0 var(--space-2xs) var(--space-sm);
+  display: block;
+  position: relative;
+  color: var(--color-ink-3);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  text-decoration: none;
+  transition: color var(--dur-short) var(--ease-out);
+}
+
+.toc-link:hover { color: var(--color-ink); }
+
+/* Sits on top of the list's hairline, so the current section reads as a
+   position within the page rather than just another coloured link. */
+.toc-link::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: -1px;
+  width: 1px;
+  background: transparent;
+}
+
+.toc-link.current {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+
+.toc-link.current::before { background: var(--color-ink); }
+
+.toc-l3 { padding-inline-start: var(--space-lg); }
 
 .lang-tabs {
   margin: 0 0 var(--space-md);
@@ -878,6 +900,61 @@ pre code {
   color: var(--code-ink);
   font-size: var(--text-sm);
 }
+
+/* Shiki highlights at build time and inlines the grammar theme's own
+   background/foreground on the <pre>. Keep the token colours, drop the surface:
+   the code slab is part of the page's palette (--code-bg is dark in BOTH
+   themes), not the theme's. Unhighlighted fences keep the plain ink. */
+pre.shiki {
+  background: var(--code-bg) !important;
+  color: var(--code-ink) !important;
+}
+
+pre.shiki code {
+  background: transparent;
+}
+
+pre.shiki.plain code {
+  color: var(--code-ink);
+}
+
+/* Diagrams are inlined SVG (see inlineDiagrams in build.ts), so these classes
+   are the same ones the file's standalone <style> colours for GitHub — here
+   they read the page tokens and follow the site's theme toggle. Geometry and
+   type sizes live in the SVG itself, so both renderings lay out identically. */
+.diagram {
+  margin: var(--space-xl) 0;
+  /* Wide diagrams scroll inside the figure on a phone rather than shrinking
+     their labels below legibility. */
+  overflow-x: auto;
+}
+
+.diagram svg {
+  display: block;
+  width: 100%;
+  min-width: 36rem;
+  height: auto;
+}
+
+.diagram figcaption {
+  margin-block-start: var(--space-sm);
+  color: var(--color-ink-3);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+
+.diagram .d-frame { fill: var(--color-paper-2); stroke: var(--color-rule); }
+.diagram .d-node { fill: var(--color-paper); stroke: var(--color-rule-2); }
+.diagram .d-key { fill: var(--color-accent-soft); stroke: var(--color-accent); }
+.diagram .d-title,
+.diagram .d-label { fill: var(--color-ink); }
+.diagram .d-muted { fill: var(--color-ink-3); }
+.diagram .d-edge { stroke: var(--color-ink-3); fill: none; }
+.diagram .d-head { fill: var(--color-ink-3); }
+.diagram .d-edge.enc { stroke: var(--color-accent); }
+.diagram .d-head.enc { fill: var(--color-accent); }
+.diagram .d-edge-label { fill: var(--color-ink-2); }
+.diagram .d-edge-label.enc { fill: var(--color-accent-2); }
 
 blockquote {
   margin: var(--space-lg) 0;
@@ -1128,6 +1205,27 @@ blockquote {
   }
 
   .page-nav { margin-block-start: var(--space-2xl); }
+
+  @media (min-width: 86rem) {
+    /* Widen the shell rather than stealing from the prose column. */
+    .shell {
+      --shell-max: 92rem;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 14rem;
+    }
+
+    .toc-rail {
+      display: block;
+      padding: var(--space-2xl) var(--space-sm) var(--space-3xl) 0;
+    }
+
+    .toc {
+      position: sticky;
+      inset-block-start: calc(var(--topbar-h) + var(--space-xl));
+      max-height: calc(100dvh - var(--topbar-h) - var(--space-3xl));
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+  }
 
   .site-footer {
     grid-column: 2;

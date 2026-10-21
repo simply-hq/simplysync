@@ -69,8 +69,8 @@ The relay only ever moves **opaque ciphertext** — it never sees keys or
 plaintext. So a native client just has to speak the same protocol on the wire:
 
 - **Identity** — derive `ownerId`, `relayAuth` (bearer token), and the AES key
-  from an `sf1_` recovery key (HKDF/HMAC-SHA256) **or** a 24-word BIP39 phrase
-  (SLIP-21/HMAC-SHA512). Auto-detected, exactly like `deriveIdentity`.
+  from a BIP39 phrase (SLIP-21/HMAC-SHA512) **or** an `sf1_` recovery key
+  (HKDF/HMAC-SHA256). Auto-detected, exactly like `deriveIdentity`.
 - **Envelope** — AES-GCM with the additional-authenticated-data set to the
   canonical-JSON header, base64url on the wire.
 - **Transport** — `POST/GET /v1/events`, `Authorization: Bearer <relayAuth>`,
@@ -126,8 +126,8 @@ verify/                host-side checks (run with swiftc, no simulator needed)
    xcodebuild -project SimplySyncDemo.xcodeproj -scheme SimplySyncDemo \
      -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 16' build
    ```
-2. In the app: **Generate a new identity** (or paste an `sf1_` key / 24-word
-   phrase). Add todos immediately; the first launch is local-only.
+2. In the app: **Generate a new identity** (or paste a recovery phrase / legacy
+   `sf1_` key). Add todos immediately; the first launch is local-only.
 3. To sync, deploy the [Cloudflare relay](../../../docs/local-first/self-hosting.md)
    and enter its HTTPS URL in the app's relay field.
 
@@ -172,6 +172,6 @@ node verify/gen-xcodeproj.mjs
   into `Decodable` rows, not a Kysely builder.
 - Last-writer-wins per row (HLC); delete is a soft delete (`isDeleted`).
 - **Not ported:** binary blobs, the encrypted DB export/import (snapshot) format,
-  legacy import, and the fluent index builder.
+  and the fluent index builder.
 - Column names in row `value`s should be lowercase-ASCII so canonical-JSON key
   ordering matches JS code-unit order (see `CanonicalJSON.swift`).

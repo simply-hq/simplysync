@@ -35,6 +35,7 @@ import {
   type TestIdentity,
 } from "./conformance/envelopes";
 import {
+  closeOwner,
   compactStreams,
   getBlob,
   getStatus,
@@ -521,6 +522,58 @@ for (const adapter of implementations()) {
         `${i}`.padStart(22, "A"),
       );
       expect((await compactStreams(base(), who, tooMany)).status).toBe(413);
+    });
+
+    // --- owner close (leaked recovery phrase) -------------------------------
+
+    test("close deletes every event and blob, then the owner answers 410 for good", async () => {
+      const { who, events } = await seed(base());
+      const bytes = new TextEncoder().encode(`closing blob ${Math.random()}`);
+      const hash = await sha256Base64UrlBytes(bytes);
+      expect((await putBlob(base(), who, hash, bytes)).status).toBe(200);
+
+      const res = await closeOwner(base(), who);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        closed: true,
+        deletedEvents: events.length,
+        deletedBlobs: 1,
+      });
+
+      // Every read and write 410s — including a push, which must not
+      // recreate the owner the way it would for an unknown one.
+      expect((await pullEvents(base(), who, "")).status).toBe(410);
+      expect((await getStatus(base(), who)).status).toBe(410);
+      expect((await getBlob(base(), who, hash)).status).toBe(410);
+      expect((await pushEvents(base(), who, await makeEnvelopes(who, 1))).status).toBe(410);
+      expect((await putBlob(base(), who, hash, bytes)).status).toBe(410);
+
+      // Idempotent: a retried close (lost response) still succeeds.
+      const again = await closeOwner(base(), who);
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual({
+        closed: true,
+        deletedEvents: 0,
+        deletedBlobs: 0,
+      });
+    });
+
+    test("close auth gating: wrong bearer 401 and nothing deleted; unknown owner 404 and never created", async () => {
+      const { who, events } = await seed(base());
+
+      expect((await closeOwner(base(), who, { bearer: "not-the-real-token" })).status).toBe(401);
+      // A wrong bearer deletes nothing.
+      expect(await eventIds(base(), who)).toEqual(events.map((e) => e.eventId));
+
+      const fresh = await createTestIdentity();
+      expect((await closeOwner(base(), fresh)).status).toBe(404);
+      expect((await getStatus(base(), fresh)).status).toBe(404);
+    });
+
+    test("a closed owner hides its closed state from a wrong bearer", async () => {
+      const { who } = await seed(base(), 1);
+      expect((await closeOwner(base(), who)).status).toBe(200);
+      expect((await pullEvents(base(), who, "", { bearer: "not-the-real-token" })).status).toBe(401);
     });
 
     // --- recovery ----------------------------------------------------------

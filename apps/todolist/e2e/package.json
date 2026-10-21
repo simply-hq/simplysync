@@ -13,6 +13,7 @@
     "@simplysync/browser": "workspace:*",
     "@simplysync/engine": "workspace:*",
     "@types/bun": "1.3.14",
+    "@types/node": "22.15.30",
     "sql.js": "1.14.1",
     "typescript": "~5.9.2"
   }

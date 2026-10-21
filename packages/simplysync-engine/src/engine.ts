@@ -88,6 +88,33 @@ function warnMissingTombstoneFilter(
   );
 }
 
+/**
+ * Gives every relay request a deadline. Without one, a request whose socket
+ * stalls never settles; the sync pass awaiting it never ends, and every later
+ * sync() joins that same pass, so the device stops syncing for the session.
+ * A caller-supplied signal (the restore probe has its own) is left alone.
+ *
+ * The timer is not cleared when headers arrive, so it also bounds reading the
+ * body. If it fires after the body was read, the abort does nothing.
+ */
+function withDeadline(fetchImpl: typeof fetch, timeoutMs: number): typeof fetch {
+  if (typeof AbortController === "undefined") return fetchImpl;
+  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    if (init?.signal) return fetchImpl(input, init);
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const reason = Object.assign(
+        new Error(`Relay request timed out after ${timeoutMs} ms.`),
+        { kind: "timeout" },
+      );
+      controller.abort(reason);
+    }, timeoutMs) as { unref?: () => void };
+    // Don't hold a short-lived Node/Bun process open for a finished request.
+    timer.unref?.();
+    return fetchImpl(input, { ...init, signal: controller.signal });
+  }) as typeof fetch;
+}
+
 export const createSync =
   (deps: SyncEngineDeps) =>
   <S extends SchemaDefinition>(
@@ -101,7 +128,14 @@ export const createSync =
       );
     }
     const compiler = createCompiler<S>();
-    const fetchImpl = deps.fetch ?? globalThis.fetch;
+    // ponytail: total deadline, not idle timeout; a push of large events on a
+    // very slow uplink can exceed it, raise requestTimeoutMs if that happens.
+    const fetchImpl = withDeadline(
+      deps.fetch ?? globalThis.fetch,
+      typeof config.requestTimeoutMs === "number" && config.requestTimeoutMs > 0
+        ? config.requestTimeoutMs
+        : 60_000,
+    );
 
     // Assemble the concerns in dependency order: each closes over the shared
     // `state`; later groups receive earlier ones as plain parameters (no group
@@ -284,7 +318,7 @@ export const createSync =
         const purged = store.purgeDeleted(olderThanMs, Date.now());
         // Nudge the relay-side stream compaction along without waiting for the
         // next poll; failures are retried by the sync loop's drain.
-        if (purged > 0) void relay.sync();
+        if (purged > 0) void relay.sync().catch(() => undefined);
         return { purged };
       },
       purgeRows(rows) {
@@ -292,16 +326,24 @@ export const createSync =
           return { purged: 0 };
         }
         const purged = store.purgeRows(rows);
-        if (purged > 0) void relay.sync();
+        if (purged > 0) void relay.sync().catch(() => undefined);
         return { purged };
       },
       setTransports(next) {
         relay.setTransports(next);
       },
       sync: relay.syncNow,
+      close: lifecycle.close,
       reloadApp() {
         if (deps.reloadApp) {
-          void deps.reloadApp();
+          // Reported, not thrown: callers reach here after the owner switch
+          // already committed, so a failed reload must not look like a failed
+          // restore.
+          void Promise.resolve()
+            .then(deps.reloadApp)
+            .catch((caught) =>
+              console.error("SimplySync: reloadApp failed", caught),
+            );
           return;
         }
         globalThis.location?.reload?.();

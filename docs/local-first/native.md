@@ -24,8 +24,8 @@ bytes on the wire. Concretely, three things must match the TypeScript
 implementation exactly:
 
 - **Identity** — derive `ownerId`, `relayAuth` (the bearer token), the AES data
-  key, and the `streamKey` from one secret. Auto-detected from an `sf1_` recovery
-  key (HKDF-SHA256) or a 24-word BIP39 phrase (SLIP-21), exactly like
+  key, and the `streamKey` from one secret. Auto-detected from a BIP39 phrase
+  (SLIP-21) or an `sf1_` recovery key (HKDF-SHA256), exactly like
   `deriveIdentity`.
 - **Envelope** — AES-256-GCM with the **canonical-JSON** header as additional
   authenticated data, base64url on the wire. See
@@ -120,8 +120,8 @@ key into a second simulator, the TodoList web client, or the Expo app to watch
 them converge. Full run/verify steps are in the
 [Swift README](../../apps/todolist/swift/README.md).
 
-**Not ported (by design):** binary blobs, the encrypted DB export/import (snapshot)
-format, and legacy import. Conflict resolution is row-level last-writer-wins by
+**Not ported (by design):** binary blobs and the encrypted DB export/import
+(snapshot) format. Conflict resolution is row-level last-writer-wins by
 HLC; delete is a soft delete (`isDeleted`).
 
 ## The Kotlin / JVM port

@@ -142,13 +142,11 @@ export async function openDevice(options: DeviceOptions): Promise<TodoEngine> {
 }
 
 /**
- * Stop the background sync poller so a short-lived process (a CLI, a script, a
- * test) can exit. The poller is the engine's only long-lived timer, and clearing
- * the transports is what stops it — `setTransports([])` does the
- * same thing. Long-running UIs never need this.
+ * Stop the engine's background work so a short-lived process (a CLI, a script,
+ * a test) can exit. Long-running UIs never need this.
  */
 export function closeDevice(engine: TodoEngine): void {
-  engine.setTransports([]);
+  engine.close();
 }
 
 /** Live, non-deleted todos, newest edit first. Same SQL as Swift and Kotlin. */

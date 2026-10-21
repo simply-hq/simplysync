@@ -14,6 +14,7 @@ memory — ideal for a small always-on box.
 
 - `GET /health`, `POST /v1/events` (push), `GET /v1/events` (pull, keyset
   cursor), `POST /v1/streams/compact` (client-driven tombstone GC),
+  `POST /v1/owner/close` (delete all data and retire a leaked owner),
   `GET /v1/status`, `GET /v1/usage`, `PUT|GET|HEAD /v1/blobs/:hash`.
 - Trust-on-first-use owner auth (`sha256(relayAuth)` bound on first request).
 - Per-owner quota, per-event/-blob size caps, content-hash–verified blobs.

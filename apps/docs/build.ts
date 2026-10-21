@@ -10,10 +10,114 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
+import { createHighlighter, type Highlighter } from "shiki";
 
 // Renders the shared markdown in docs/local-first/ into a small, dependency-light
 // static site (dist/). The markdown files stay the single source of truth — this
 // builder only themes them and rewires links for the web.
+
+// Code blocks are dark in BOTH site themes (see --code-bg in tokens.css), so a
+// single dark grammar theme is all this needs — no dual-theme CSS, no runtime
+// switch. Highlighting happens here at build time: the browser gets plain
+// styled spans and downloads no highlighter.
+const CODE_THEME = "github-dark";
+
+// Languages the docs actually fence. An unlisted language renders unhighlighted
+// rather than throwing, so adding a fence never breaks the build.
+const CODE_LANGS = [
+  "ts",
+  "tsx",
+  "js",
+  "swift",
+  "kotlin",
+  "go",
+  "sh",
+  "bash",
+  "json",
+  "jsonc",
+  "sql",
+  "html",
+  "css",
+] as const;
+
+const LANG_ALIASES: Record<string, string> = {
+  typescript: "ts",
+  javascript: "js",
+  shell: "sh",
+  console: "sh",
+  text: "",
+  txt: "",
+};
+
+let highlighter: Highlighter | null = null;
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Diagrams are SVG files beside the markdown (docs/local-first/images/), so
+// GitHub renders them as ordinary images. The site INLINES them instead of
+// linking: an <img> can't see the page's CSS, so it would follow the OS colour
+// scheme rather than the site's own light/dark toggle. Inlining also drops the
+// file's standalone <style> (the GitHub colours) and lets tokens.css colour the
+// same classes. Keyed by file name, loaded once per build.
+const diagrams = new Map<string, { svg: string; desc: string }>();
+
+async function loadDiagrams(dir: string): Promise<void> {
+  let names: string[] = [];
+  try {
+    names = (await readdir(dir)).filter((name) => name.endsWith(".svg"));
+  } catch {
+    return; // no images directory yet
+  }
+  for (const name of names) {
+    const raw = await readFile(join(dir, name), "utf8");
+    const desc = /<desc>([\s\S]*?)<\/desc>/.exec(raw)?.[1]?.trim() ?? "";
+    const svg = raw
+      .replace(/<\?xml[\s\S]*?\?>\s*/, "")
+      .replace(/<style>[\s\S]*?<\/style>\s*/, "")
+      // Size from CSS, not the file's intrinsic width, so it fits the column.
+      .replace(/(<svg\b[^>]*?)\s+width="[^"]*"/, "$1")
+      .replace(/(<svg\b[^>]*?)\s+height="[^"]*"/, "$1")
+      .trim();
+    diagrams.set(name, { svg, desc });
+  }
+}
+
+// marked renders `![alt](./images/x.svg "caption")` as an <img> in its own
+// paragraph. Swap that for a figure holding the inline SVG; the markdown alt
+// becomes the accessible name and the optional title becomes the caption.
+function inlineDiagrams(html: string, page: string): string {
+  return html.replace(
+    /<p><img src="(?:\.\/)?images\/([a-z0-9-]+\.svg)" alt="([^"]*)"(?: title="([^"]*)")?\s*\/?><\/p>/g,
+    (_match, name: string, alt: string, title?: string) => {
+      const diagram = diagrams.get(name);
+      if (!diagram) throw new Error(`${page} references missing diagram images/${name}`);
+      const svg = diagram.svg.replace(
+        /aria-label="[^"]*"/,
+        `aria-label="${alt}"`,
+      );
+      const caption = title ? `\n  <figcaption>${title}</figcaption>` : "";
+      return `<figure class="diagram">\n  ${svg}${caption}\n</figure>`;
+    },
+  );
+}
+
+// For llms-full.txt: an agent reading the raw markdown would get only the alt
+// text where an ASCII diagram used to carry the whole structure. Substitute the
+// SVG's <desc> — the prose version of the same picture.
+function describeDiagrams(markdown: string): string {
+  return markdown.replace(
+    /!\[([^\]]*)\]\((?:\.\/)?images\/([a-z0-9-]+\.svg)(?: "[^"]*")?\)/g,
+    (match, alt: string, name: string) => {
+      const desc = diagrams.get(name)?.desc;
+      return desc ? `[Diagram: ${alt}] ${desc}` : match;
+    },
+  );
+}
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
@@ -103,11 +207,23 @@ const variantPages: readonly Page[] = [
 // Every page that gets rendered (sidebar pages + the hidden language variants).
 const allPages: readonly Page[] = [...pages, ...variantPages];
 
-const NAV_GROUPS = [
+// A nav item is either a page (by its built filename) or a shortcut into one.
+// Shortcuts exist for the things people come back to look up, so "where's the
+// signature for restoreAppOwner?" is one click from anywhere, not a scroll.
+type NavItem = string | { readonly label: string; readonly anchor: string };
+
+const NAV_GROUPS: readonly { label: string; pages: readonly NavItem[] }[] = [
   { label: "Start", pages: ["docs.html", "guide.html", "architecture.html"] },
   { label: "Operate", pages: ["sync.html", "native.html", "icloud.html", "self-hosting.html"] },
-  { label: "Reference", pages: ["agents.html"] },
-] as const;
+  {
+    label: "Reference",
+    pages: [
+      { label: "API reference", anchor: "api-reference" },
+      { label: "Common pitfalls", anchor: "common-pitfalls" },
+      "agents.html",
+    ],
+  },
+];
 
 // Map a source markdown basename to its built page (for inter-doc links).
 const pageByMarkdown = new Map(
@@ -197,10 +313,19 @@ function canonicalUrl(out: string): string {
   return `${SITE_ORIGIN}/${cleanPath}`;
 }
 
-function renderNav(activeOut: string): string {
+function renderNav(activeOut: string, currentOut = activeOut): string {
+  // Shortcuts land in the Client API variant you are already reading, so a
+  // Swift developer's "API reference" opens the Swift table, not the React one.
+  const apiPage = CLIENT_API_TABS.some((tab) => tab.out === currentOut)
+    ? currentOut
+    : "guide.html";
   const groups = NAV_GROUPS.map((group) => {
     const items = group.pages
-      .map((out) => {
+      .map((item) => {
+        if (typeof item !== "string") {
+          return `<a class="nav-link nav-shortcut" href="${apiPage}#${item.anchor}">${item.label}</a>`;
+        }
+        const out = item;
         const page = pages.find((candidate) => candidate.out === out);
         if (!page) return "";
         const active = page.out === activeOut ? " active" : "";
@@ -274,18 +399,26 @@ function renderFooter(extraClass = ""): string {
     </footer>`;
 }
 
+// "On this page" — a sticky rail beside the prose on wide screens, hidden
+// below (the left sidebar still covers page-level navigation there). The links
+// carry data-toc so the scroll-spy in SITE_SCRIPT can mark the current section
+// without re-querying the DOM on every scroll.
 function renderToc(toc: TocEntry[]): string {
   if (toc.length === 0) return "";
   const items = toc
     .map(
       (entry) =>
-        `<a class="toc-l${entry.level}" href="#${entry.id}">${entry.text}</a>`,
+        `<li><a class="toc-link toc-l${entry.level}" data-toc href="#${entry.id}">${entry.text}</a></li>`,
     )
-    .join("\n        ");
-  return `<nav class="toc" aria-label="In this guide">
-        <p class="toc-title">In this guide</p>
-        ${items}
-      </nav>`;
+    .join("\n          ");
+  return `<aside class="toc-rail">
+      <nav class="toc" aria-label="On this page">
+        <p class="toc-title">On this page</p>
+        <ul class="toc-list">
+          ${items}
+        </ul>
+      </nav>
+    </aside>`;
 }
 
 const LANDING_DIRECTORY = [
@@ -309,18 +442,27 @@ const LANDING_DIRECTORY = [
   },
 ] as const;
 
-function extractLandingQuickstart(content: string): string {
-  const sectionStart = content.indexOf(
-    `<h2 id="${slugify("Quickstart: a source-owned React Native app")}">`,
-  );
+// Pull the landing page's command block out of the README MARKDOWN, not the
+// rendered HTML: the clone lines are wanted but the per-platform launch
+// commands are not, and cutting highlighted HTML at a line boundary would slice
+// through token markup. Cut the source, then highlight what's left.
+function extractLandingQuickstart(markdown: string): string {
+  const heading = "## Quickstart: a source-owned React Native app";
+  const sectionStart = markdown.indexOf(heading);
   if (sectionStart < 0) return "";
-  const preStart = content.indexOf("<pre>", sectionStart);
-  const preClose = preStart >= 0 ? content.indexOf("</pre>", preStart) : -1;
-  if (preStart < 0 || preClose < 0) return "";
-  const command = content.slice(preStart, preClose + "</pre>".length);
+  const fenceStart = markdown.indexOf("```sh", sectionStart);
+  const fenceClose =
+    fenceStart >= 0 ? markdown.indexOf("```", fenceStart + 5) : -1;
+  if (fenceStart < 0 || fenceClose < 0) return "";
+
+  let command = markdown.slice(fenceStart + "```sh\n".length, fenceClose);
   const launchStart = command.indexOf("\n\n# iOS Simulator");
-  if (launchStart < 0) return command;
-  return `${command.slice(0, launchStart)}\n</code></pre>`;
+  if (launchStart >= 0) command = command.slice(0, launchStart);
+  command = command.trimEnd();
+
+  return highlighter
+    ? highlighter.codeToHtml(command, { lang: "sh", theme: CODE_THEME })
+    : `<pre class="shiki plain"><code>${escapeHtml(command)}</code></pre>`;
 }
 
 function renderLandingDirectory(): string {
@@ -576,10 +718,12 @@ function layout(options: {
   const langBar = options.langTabs
     ? renderLangTabs(options.langTabs, options.langActiveOut ?? options.activeOut)
     : "";
-  const bodyContent = insertAfterFirstParagraph(
-    options.content,
-    `<div class="article-tools">${langBar}${renderToc(options.toc)}</div>`,
-  );
+  const bodyContent = langBar
+    ? insertAfterFirstParagraph(
+        options.content,
+        `<div class="article-tools">${langBar}</div>`,
+      )
+    : options.content;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -596,7 +740,7 @@ function layout(options: {
   <div class="shell">
     <aside id="docs-sidebar" class="sidebar" aria-label="Documentation sections">
       <nav class="nav">
-        ${renderNav(options.activeOut)}
+        ${renderNav(options.activeOut, options.out)}
       </nav>
     </aside>
     <main id="content" class="content">
@@ -605,6 +749,7 @@ function layout(options: {
         ${renderPageNav(options.activeOut)}
       </article>
     </main>
+    ${renderToc(options.toc)}
     ${renderFooter()}
   </div>
   <button class="nav-scrim" type="button" aria-label="Close documentation navigation" onclick="window.ssToggleNav(false)"></button>
@@ -807,17 +952,54 @@ async function build(): Promise<void> {
 
   marked.setOptions({ gfm: true });
 
+  // Highlight at build time. walkTokens stays synchronous because codeToHtml on
+  // an already-created highlighter is sync; the renderer then just emits what it
+  // produced, falling back to an escaped plain block for an unknown language.
+  highlighter = await createHighlighter({
+    themes: [CODE_THEME],
+    langs: [...CODE_LANGS],
+  });
+  const loaded = new Set<string>(highlighter.getLoadedLanguages());
+  marked.use({
+    walkTokens(token) {
+      if (token.type !== "code") return;
+      const raw = (token.lang ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+      const lang = LANG_ALIASES[raw] ?? raw;
+      if (!lang || !loaded.has(lang) || !highlighter) return;
+      (token as { highlighted?: string }).highlighted = highlighter.codeToHtml(
+        token.text,
+        { lang, theme: CODE_THEME },
+      );
+    },
+    renderer: {
+      code(token) {
+        const highlighted = (token as { highlighted?: string }).highlighted;
+        if (highlighted) return highlighted;
+        return `<pre class="shiki plain"><code>${escapeHtml(token.text)}</code></pre>`;
+      },
+    },
+  });
+
   const sources = new Map<string, string>();
   let landingQuickstart = "";
 
+  await loadDiagrams(join(docsDir, "images"));
+  // Also ship the files themselves, so a direct link to one still resolves.
+  if (diagrams.size > 0) {
+    await mkdir(join(distDir, "images"), { recursive: true });
+    for (const name of diagrams.keys()) {
+      await copyFile(join(docsDir, "images", name), join(distDir, "images", name));
+    }
+  }
+
   for (const page of allPages) {
     const markdown = await readFile(join(docsDir, page.src), "utf8");
-    sources.set(page.src, markdown);
-    const rendered = await marked.parse(markdown);
+    sources.set(page.src, describeDiagrams(markdown));
+    const rendered = inlineDiagrams(await marked.parse(markdown), page.src);
     const { html: withAnchors, toc } = addHeadingAnchors(rendered);
     const content = rewriteLinks(withAnchors);
     if (page.src === "README.md") {
-      landingQuickstart = extractLandingQuickstart(content);
+      landingQuickstart = extractLandingQuickstart(markdown);
     }
     const html = layout({
       title: firstHeading(markdown),

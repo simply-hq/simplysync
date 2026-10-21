@@ -55,6 +55,29 @@ final class PublicAPITests: XCTestCase {
         XCTAssertNotEqual(before, engine.currentOwner?.id)
     }
 
+    // The generator is a bit-packing codec written against the spec, not a
+    // wrapper: the only check that matters is that it is the exact inverse of
+    // the decoder every other port already agrees with.
+    func testMnemonicGeneratorRoundTripsThroughTheDecoder() throws {
+        let fresh = BIP39.createMnemonic()
+        XCTAssertEqual(fresh.split(separator: " ").count, 12)
+        XCTAssertTrue(BIP39.isValid(fresh))
+
+        for byteCount in [16, 20, 24, 28, 32] {
+            let entropy = Crypto.randomBytes(byteCount)
+            let phrase = BIP39.fromEntropy(entropy)
+            XCTAssertEqual(phrase.split(separator: " ").count, byteCount * 3 / 4)
+            XCTAssertEqual(try BIP39.entropy(from: phrase), entropy)
+        }
+
+        // The canonical all-zero vector, so a checksum bug can't pass by being
+        // self-consistent with this port's own encoder.
+        XCTAssertEqual(
+            BIP39.fromEntropy(Data(repeating: 0, count: 16)),
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        )
+    }
+
     func testProtocolPrimitivesArePublicAndRoundTrip() throws {
         let identity = try IdentityDeriver.derive(
             from: "sf1_AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o"

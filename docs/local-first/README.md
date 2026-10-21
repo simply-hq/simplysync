@@ -12,14 +12,7 @@ Open source and MIT-licensed: **clone it, [run your own relay](./self-hosting.md
 and depend on no one.** Don't take the "end-to-end encrypted" claim on faith —
 **[SECURITY.md](../../SECURITY.md)** walks the exact source that enforces it.
 
-```
-  your app                         relay (dumb, opaque store — optional)
-┌──────────────┐  encrypted      ┌───────────────────────────────────┐
-│ local SQLite │ ── push ──────▶ │ events keyed by (ownerId, eventId) │
-│ (source of   │ ◀── pull ────── │ stores ciphertext only            │
-│  truth)      │   (cursor)      └───────────────────────────────────┘
-└──────────────┘
-```
+![Two devices syncing through an optional relay that stores ciphertext only](./images/overview.svg "Plaintext never leaves a device: the engine encrypts before it pushes and decrypts after it pulls.")
 
 ## Use it when
 

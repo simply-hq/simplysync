@@ -29,6 +29,8 @@ import {
   base64UrlEncode,
   compareHlc,
   deriveIdentity,
+  TEST_MNEMONIC,
+  TEST_RECOVERY_KEY,
   unsafeSealPayloadWithNonce,
   type SyncPayload,
 } from "../src/index.ts";
@@ -59,9 +61,8 @@ const PAYLOAD: SyncPayload<{ done: number; title: string }> = {
 
 // deriveIdentity auto-detects the credential form, so one deriver covers both.
 const FIXED_INPUTS: Record<string, string> = {
-  sf1: "sf1_AQgPFh0kKzI5QEdOVVxjanF4f4aNlJuiqbC3vsXM09o",
-  mnemonic:
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+  sf1: TEST_RECOVERY_KEY,
+  mnemonic: TEST_MNEMONIC,
 };
 
 const REPO_ROOT = dirname(dirname(PACKAGE_ROOT));

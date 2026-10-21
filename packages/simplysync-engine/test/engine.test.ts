@@ -199,7 +199,7 @@ describe("engine", () => {
     const engine = makeEngine();
     const owner = await engine.appOwner;
     expect(owner).not.toBeNull();
-    expect(owner?.mnemonic?.split(" ").length).toBe(24);
+    expect(owner?.mnemonic?.split(" ").length).toBe(12);
     expect(owner?.recoveryKey).toBe(owner?.mnemonic);
     expect(owner?.id).toBeTruthy();
   });

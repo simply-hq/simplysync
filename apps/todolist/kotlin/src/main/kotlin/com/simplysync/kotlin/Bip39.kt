@@ -58,8 +58,13 @@ object Bip39 {
         return entropy
     }
 
-    /** Generates a fresh mnemonic from random entropy (256 bits → 24 words by default). */
-    fun generate(strengthBits: Int = 256): String = fromEntropy(Crypto.randomBytes(strengthBits / 8))
+    /**
+      * Generates a fresh mnemonic from random entropy (128 bits → 12 words by
+      * default, matching the TS `createMnemonic`). Longer phrases stay valid —
+      * [entropy] accepts 12/15/18/21/24 — so existing 24-word owners are
+      * unaffected; this only bounds what new phrases look like.
+      */
+    fun generate(strengthBits: Int = 128): String = fromEntropy(Crypto.randomBytes(strengthBits / 8))
 
     /** Standard BIP39 entropy → mnemonic (entropy bits + checksum bits → 11-bit word indices). */
     fun fromEntropy(entropy: ByteArray): String {

@@ -292,6 +292,13 @@ export interface SyncEngineConfig {
    * API for large values.
    */
   readonly maxEventBytes?: number;
+  /**
+   * Deadline in ms for each relay request, covering the response body too.
+   * A request past it fails the pass with kind `"timeout"` and is retried on
+   * the next sync. Default 60000. Raise it for very slow links that push
+   * large events.
+   */
+  readonly requestTimeoutMs?: number;
 }
 
 /** Structured reason a sync attempt failed, so a consumer can show *why*. */
@@ -563,7 +570,18 @@ export interface SyncEngine<S extends SchemaDefinition> {
    */
   getRelayStatuses(): Promise<RelayStatus[]>;
   setTransports(transports: readonly Transport[]): void;
+  /**
+   * Run a sync pass now, whatever `autoSync` says. After {@link close} it
+   * resolves without contacting any relay.
+   */
   sync(): Promise<void>;
+  /**
+   * Stop background work: the poll timer, the web focus/online listeners, and
+   * any further sync passes. A pass already in flight finishes. Local reads
+   * and writes keep working; they just stop reaching relays. Call it when
+   * discarding an engine (a CLI that exits, a test, a hot reload). Idempotent.
+   */
+  close(): void;
   reloadApp(): void;
   readonly ready: Promise<void>;
 }

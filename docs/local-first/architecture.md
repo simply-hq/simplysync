@@ -16,15 +16,7 @@ SimplySync is three layers, each doing one job:
 | **Protocol** | `@simplysync/protocol` | The crypto and wire primitives: identity derivation, the AES-GCM envelope, blob chunking, HLC encoding. |
 | **Relay** | `apps/relay-*` | A dumb, opaque event store. Holds ciphertext + routing metadata. Optional and self-hostable. |
 
-```
-┌─ Engine (on device) ─────────────────────────────────┐     ┌─ Relay (optional) ─┐
-│  insert/update ─▶ row + pending outbox intent         │     │                    │
-│                └▶ async seal ─▶ encrypted outbox ─────┼─push▶ opaque event store │
-│  reactive query cache ◀─ refresh on change            │     │ (ciphertext only)  │
-│  poll loop: pull ─▶ decrypt ─▶ apply (LWW) ─▶ row ◀───┼─pull─                    │
-└───────────────────────────────────────────────────────┘     └────────────────────┘
-        ▲ this page                                                ▲ Sync & the relay
-```
+![Inside the engine: writes are sealed into an encrypted outbox and pushed; pulled events are decrypted and applied last-writer-wins](./images/architecture.svg)
 
 The crucial property: **all encryption and decryption happen in the engine, on
 the device.** The relay only ever moves opaque bytes — covered in

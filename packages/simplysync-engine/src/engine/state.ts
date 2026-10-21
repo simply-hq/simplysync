@@ -47,6 +47,22 @@ export interface EngineState {
   setSyncState(next: SyncState): void;
 }
 
+/**
+ * Call every listener even if one throws. Listeners are app code running in
+ * the middle of a write or sync pass; letting one throw would surface a
+ * committed write as a failure, or abort the pass before it records its
+ * outcome. The error is reported, never swallowed silently.
+ */
+export function notifyAll(listeners: Iterable<() => void>): void {
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch (caught) {
+      console.error("SimplySync: a subscriber threw", caught);
+    }
+  }
+}
+
 export function createEngineState(config: SyncEngineConfig): EngineState {
   const errorListeners = new Set<() => void>();
   const syncListeners = new Set<() => void>();
@@ -69,11 +85,11 @@ export function createEngineState(config: SyncEngineConfig): EngineState {
     syncListeners,
     setError(next) {
       state.error = next;
-      errorListeners.forEach((l) => l());
+      notifyAll(errorListeners);
     },
     setSyncState(next) {
       state.syncState = next;
-      syncListeners.forEach((l) => l());
+      notifyAll(syncListeners);
     },
   };
   return state;

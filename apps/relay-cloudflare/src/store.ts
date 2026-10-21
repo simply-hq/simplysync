@@ -128,7 +128,10 @@ export type AuthDenial =
   | "unknown-owner"
   | "invalid-token"
   | "relay-at-capacity"
-  | "create-rate-limited";
+  | "create-rate-limited"
+  // Valid token, but the owner was closed. Only reported after the token
+  // checks out, so a closed account is indistinguishable to anyone else.
+  | "owner-closed";
 
 export type OwnerAuth =
   | { readonly ok: true; readonly storedBytes: number; readonly createdAt: string }
@@ -143,10 +146,15 @@ export async function ensureOwnerAuth(
 ): Promise<OwnerAuth> {
   const relayAuthHash = await sha256Base64Url(relayAuth);
   const owner = await env.DB.prepare(
-    `select relay_auth_hash, stored_bytes, created_at from owners where owner_id = ?`,
+    `select relay_auth_hash, stored_bytes, created_at, closed_at from owners where owner_id = ?`,
   )
     .bind(ownerId)
-    .first<{ relay_auth_hash: string; stored_bytes: number; created_at: string }>();
+    .first<{
+      relay_auth_hash: string;
+      stored_bytes: number;
+      created_at: string;
+      closed_at: string | null;
+    }>();
 
   if (!owner) {
     if (!opts.createIfMissing) return { ok: false, denial: "unknown-owner" };
@@ -206,7 +214,46 @@ export async function ensureOwnerAuth(
   if (!timingSafeEqual(owner.relay_auth_hash, relayAuthHash)) {
     return { ok: false, denial: "invalid-token" };
   }
+  if (owner.closed_at) return { ok: false, denial: "owner-closed" };
   return { ok: true, storedBytes: owner.stored_bytes, createdAt: owner.created_at };
+}
+
+export interface CloseOutcome {
+  readonly deletedEvents: number;
+  readonly deletedBlobs: number;
+}
+
+/**
+ * Retires an owner for good: every event, blob row, and R2 object is deleted
+ * and the row is marked closed, so later pushes and pulls get 410 instead of
+ * recreating it. Callers have already checked the token. Idempotent, so a
+ * close that dies partway (R2 and D1 are not one transaction) is finished by
+ * calling it again.
+ */
+export async function closeOwner(env: Env, ownerId: string): Promise<CloseOutcome> {
+  // R2 first: the listing is the source of truth, so a retry still finds any
+  // object a failed run left behind.
+  let cursor: string | undefined;
+  do {
+    const page = await env.BLOBS.list({ prefix: `${ownerId}/`, cursor });
+    if (page.objects.length > 0) {
+      await env.BLOBS.delete(page.objects.map((o) => o.key));
+    }
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  const [events, blobs] = await env.DB.batch([
+    env.DB.prepare(`delete from events where owner_id = ?`).bind(ownerId),
+    env.DB.prepare(`delete from blobs where owner_id = ?`).bind(ownerId),
+    env.DB.prepare(
+      `update owners set stored_bytes = 0, closed_at = coalesce(closed_at, ?)
+       where owner_id = ?`,
+    ).bind(new Date().toISOString(), ownerId),
+  ]);
+  return {
+    deletedEvents: events?.meta?.changes ?? 0,
+    deletedBlobs: blobs?.meta?.changes ?? 0,
+  };
 }
 
 /** The per-owner snapshot behind GET /v1/status. `createdAt` rides on the

@@ -115,12 +115,17 @@ class EngineTest {
         override suspend fun health() = RelayClient.HealthResponse(ok = true)
     }
 
-    private suspend fun awaitSynced(engine: SyncEngine) {
-        repeat(2_000) {
+    // A wall-clock deadline, not an iteration count. `2_000 x delay(1)` meant
+    // "about two seconds" only on an idle machine; a cold JVM booting the engine
+    // on a shared CI runner overran it and failed a test whose behaviour was
+    // fine. The deadline only bounds a hang — a healthy engine returns in ms.
+    private suspend fun awaitSynced(engine: SyncEngine, timeoutMs: Long = 15_000) {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (System.nanoTime() < deadline) {
             if (engine.syncState.value is SyncState.Synced) return
-            delay(1)
+            delay(5)
         }
-        throw AssertionError("engine did not reach Synced")
+        throw AssertionError("engine did not reach Synced within ${timeoutMs}ms")
     }
 
     @Test
@@ -130,7 +135,12 @@ class EngineTest {
 
         val owner = engine.appOwner()
         assertNotNull("owner derived on boot", owner)
-        assertTrue("default owner is an sf1_ key", owner!!.recoveryKey.startsWith("sf1_"))
+        assertEquals(
+            "default owner is a 12-word recovery phrase",
+            12,
+            owner!!.recoveryKey.split(" ").size,
+        )
+        assertEquals("and the phrase is exposed as the mnemonic", owner.recoveryKey, owner.mnemonic)
 
         val q = todoQuery(engine)
         val first = engine.insert("todo", "title" to "Buy milk", "done" to false)

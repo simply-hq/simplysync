@@ -84,6 +84,21 @@ export async function compactStreams(
   });
 }
 
+export async function closeOwner(
+  baseUrl: string,
+  test: TestIdentity,
+  { bearer, ip }: { bearer?: string; ip?: string } = {},
+): Promise<Response> {
+  return fetch(`${baseUrl}/v1/owner/close`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(test, bearer, ip),
+    },
+    body: JSON.stringify({ ownerId: test.identity.ownerId }),
+  });
+}
+
 export async function getUsage(
   baseUrl: string,
   test: TestIdentity,

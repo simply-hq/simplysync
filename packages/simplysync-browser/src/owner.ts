@@ -1,12 +1,12 @@
 import type { AppOwner, SecureStorage } from "@simplysync/engine";
-import { createRecoveryKey, deriveIdentity } from "@simplysync/protocol";
+import { createMnemonic, deriveIdentity } from "@simplysync/protocol";
 
 export interface BrowserOwnerStore {
-  /** Loads an sf1_ key or mnemonic, creating a new sf1_ key when absent. */
+  /** Loads a stored phrase or `sf1_` key, minting a new recovery phrase when absent. */
   loadOrCreateRecoveryKey(): Promise<string>;
   /** Validates and stores either cross-platform recovery credential form. */
   setRecoveryKey(recoveryKey: string): Promise<string>;
-  /** Replaces the credential with a newly generated sf1_ key. */
+  /** Replaces the credential with a newly generated recovery phrase. */
   rotateRecoveryKey(): Promise<string>;
   clear(): Promise<void>;
 }
@@ -39,7 +39,7 @@ export function createBrowserOwnerStore(
           );
         }
       }
-      const recoveryKey = await createRecoveryKey();
+      const recoveryKey = createMnemonic();
       await secureStorage.setItem(key, recoveryKey);
       return recoveryKey;
     },
@@ -58,7 +58,7 @@ export function createBrowserOwnerStore(
     },
 
     async rotateRecoveryKey() {
-      const recoveryKey = await createRecoveryKey();
+      const recoveryKey = createMnemonic();
       await secureStorage.setItem(key, recoveryKey);
       return recoveryKey;
     },

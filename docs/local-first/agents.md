@@ -46,6 +46,14 @@ Violating any of these produces silent data bugs, not errors.
 4. **The recovery key is the only key.** Show `owner.recoveryKey` during
    onboarding for backup. Never copy it into app state, plain SQLite, logs, or
    analytics. If the user loses it, the data is gone by design.
+   `recoveryKey` holds whichever form the owner has; `mnemonic` is set only when
+   that form is a phrase. There are exactly two forms, and you rarely choose:
+   `createMnemonic()` (12 words) is what every engine mints for a user, and
+   `createRecoveryKey()` (`sf1_…`, one whitespace-free token) is for fixtures,
+   CLI flags, and CI secrets. `deriveIdentity` accepts either — the `sf1_`
+   prefix is checked *before* the BIP39 test, so the string decides, not you.
+   The two derive **different** owners from the same bytes; neither converts to
+   the other, and `sf1_` is never removed.
 5. **Treat the relay as untrusted transport.** It can delay, withhold, or drop
    encrypted events; it cannot read or forge them. Never move validation,
    search, or authorization server-side.

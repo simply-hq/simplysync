@@ -127,12 +127,25 @@ class SyncEngine(
 
     private fun loadIdentity() {
         var secret = config.externalAppOwner?.recoveryKey ?: deps.secureStorage.getItem(mnemonicKey)
+        // A new owner gets the human format (parity with the TS engine): a
+        // phrase is what a user can actually write down. `sf1_` stays readable
+        // forever for everyone who already holds one.
+        var minted = false
         if (secret == null || runCatching { IdentityDeriver.derive(secret!!) }.isFailure) {
-            val fresh = IdentityDeriver.createRecoveryKey()
+            val fresh = Bip39.generate()
             deps.secureStorage.setItem(mnemonicKey, fresh)
             secret = fresh
+            minted = true
         }
-        val profile = resolveMnemonicProfile(secret!!)
+        // A credential this boot just created has no prior derivation to infer,
+        // so it is SIMPLYSYNC_V1 by construction. Running the heuristic on it
+        // would be wrong: its last resort reads "database has rows" as evidence
+        // of a legacy owner, which would mislabel a fresh phrase on a device
+        // whose rows outlived its secure storage. A minted `sf1_` key used to
+        // short-circuit that ladder on the prefix; this keeps the same outcome.
+        val profile =
+            if (minted) MnemonicIdentityProfile.SIMPLYSYNC_V1
+            else resolveMnemonicProfile(secret!!)
         val derived = IdentityDeriver.derive(secret!!, profile)
         persistMnemonicProfile(profile)
         val device = deps.secureStorage.getItem(deviceKey)
@@ -323,10 +336,10 @@ class SyncEngine(
                     "first. Nothing was changed."
             }
         }
-        val key = IdentityDeriver.createRecoveryKey()
+        val key = Bip39.generate()
         switchOwner(
             key,
-            IdentityDeriver.derive(key),
+            IdentityDeriver.derive(key, MnemonicIdentityProfile.SIMPLYSYNC_V1),
             MnemonicIdentityProfile.SIMPLYSYNC_V1,
         )
         deps.reloadApp?.invoke()
@@ -864,6 +877,8 @@ class SyncEngine(
             // Drop outbox events now delivered to every relay (cursors advanced above).
             store.pruneOutbox(bases)
         }
+        // One completed replica provides availability; failed replicas keep
+        // independent delivery state. App write gates must use the same rule.
         if (anySuccess || firstFailure == null) {
             // Recovered — restore the normal poll cadence if we'd backed off.
             lock.withLock { if (pollIntervalMs != defaultPollMs) pollIntervalMs = defaultPollMs }

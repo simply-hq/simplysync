@@ -238,9 +238,9 @@ describe("native recovery keys remain unchanged", () => {
 });
 
 describe("createMnemonic", () => {
-  test("produces an accepted 24-word phrase", async () => {
+  test("produces an accepted 12-word phrase", async () => {
     const mnemonic = createMnemonic();
-    expect(mnemonic.split(" ")).toHaveLength(24);
+    expect(mnemonic.split(" ")).toHaveLength(12);
     expect(isRecoveryMnemonic(mnemonic)).toBe(true);
     const identity = await deriveIdentity(mnemonic);
     expect(identity.source).toBe("mnemonic");

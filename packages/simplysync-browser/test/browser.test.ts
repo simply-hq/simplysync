@@ -79,13 +79,15 @@ function memorySecureStorage(): SecureStorage & {
 }
 
 describe("browser owner recovery", () => {
-  test("creates a stable sf1_ key and derives an app owner", async () => {
+  test("creates a stable recovery phrase and derives an app owner", async () => {
     const secureStorage = memorySecureStorage();
     const ownerStore = createBrowserOwnerStore(secureStorage);
 
     const first = await ownerStore.loadOrCreateRecoveryKey();
     const second = await ownerStore.loadOrCreateRecoveryKey();
-    expect(first.startsWith("sf1_")).toBe(true);
+    // A new owner gets the human format; `sf1_` stays readable (next test) but
+    // is no longer what a browser app hands its user to write down.
+    expect(first.split(" ")).toHaveLength(12);
     expect(second).toBe(first);
 
     const owner = await deriveBrowserAppOwner(first);

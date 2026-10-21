@@ -499,6 +499,17 @@ export function createLifecycle(
     queryCache.refreshQueries(Object.keys(schema));
   };
 
+  // close() can run before init finishes, so init checks `closed` before it
+  // attaches anything long-lived.
+  let closed = false;
+  let removeActivityListeners: (() => void) | null = null;
+  const close = (): void => {
+    closed = true;
+    relay.close();
+    removeActivityListeners?.();
+    removeActivityListeners = null;
+  };
+
   const init = async (): Promise<void> => {
     try {
       // Open the DB and derive identity while `driver` is still null, so any
@@ -528,15 +539,19 @@ export function createLifecycle(
       // Sync promptly when the app regains focus / connectivity (web).
       const target = globalThis as unknown as {
         addEventListener?: (t: string, cb: () => void) => void;
+        removeEventListener?: (t: string, cb: () => void) => void;
       };
-      if (typeof target.addEventListener === "function") {
+      if (!closed && typeof target.addEventListener === "function") {
         const onActive = () => {
           if (state.transports.length > 0)
             void relay.sync().catch(() => undefined);
         };
-        target.addEventListener("online", onActive);
-        target.addEventListener("focus", onActive);
-        target.addEventListener("visibilitychange", onActive);
+        const events = ["online", "focus", "visibilitychange"];
+        for (const event of events) target.addEventListener(event, onActive);
+        removeActivityListeners = () => {
+          for (const event of events)
+            target.removeEventListener?.(event, onActive);
+        };
       }
     } catch (caught) {
       state.setError({
@@ -572,6 +587,7 @@ export function createLifecycle(
 
       let hasBackup = false;
       let verifiedRelayCount = 0;
+      let retired = false;
       for (const base of bases) {
         const controller = new AbortController();
         let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -593,6 +609,9 @@ export function createLifecycle(
             }),
             timeout,
           ]);
+          // 410: the owner was closed on purpose (POST /v1/owner/close), most
+          // likely because this credential leaked. Never adopt it.
+          if (res.status === 410) retired = true;
           if (res.ok) {
             const b = (await res.json()) as { events?: unknown[] };
             if (Array.isArray(b.events)) {
@@ -611,6 +630,11 @@ export function createLifecycle(
         }
       }
       if (!hasBackup) {
+        if (retired) {
+          throw new Error(
+            "This recovery key or phrase was retired and its data deleted from the sync service. Nothing was changed.",
+          );
+        }
         if (verifiedRelayCount === 0) {
           throw new Error(
             "The sync service could not be reached to verify this recovery key or phrase. Nothing was changed.",
@@ -858,6 +882,7 @@ export function createLifecycle(
 
   return {
     init,
+    close,
     restoreAppOwner,
     resetAppOwner,
     exportDatabase,
