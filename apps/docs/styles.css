@@ -1265,6 +1265,9 @@ blockquote {
       padding: var(--space-2xl) var(--space-sm) var(--space-3xl) 0;
     }
 
+    /* The rail lists the same sections, so the sidebar stops repeating them. */
+    .nav-sub { display: none; }
+
     .toc {
       position: sticky;
       inset-block-start: calc(var(--topbar-h) + var(--space-xl));

@@ -10,7 +10,7 @@ on-device store, clock, and read/write paths) and
 **[Sync & the relay](./sync.md)** (the encrypted envelope, the wire protocol, the
 relay).
 
-> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](./pitfalls.md).
 
 ## Mental model
 
@@ -590,20 +590,3 @@ Relays, sync status, and diagnostics.
 | `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, autoSync?, indexes?, requestTimeoutMs? }` |
 | `SyncState` | `Initial \| IsSyncing \| IsSynced{lastSyncedAt} \| IsNotSynced{error?,status?,terminal?}` |
 | `Query<R>` | `{ sql, parameters, Row }` (the `Row` field is a phantom type carrier) |
-
-## Common pitfalls
-
-- **Calling crypto before the native bootstrap loads (RN).** Import
-  `@simplysync/react-native/install` first in `index.js`, before Expo Router or
-  any engine module, or engine boot throws "WebCrypto is required".
-- **Forgetting to filter `isDeleted`.** Soft-deleted rows stay in the table; add
-  `.where("isDeleted", "=", 0)` to every query that should hide them. The engine
-  warns when you don't — treat the warning as a bug report, not noise.
-- **Hard-deleting rows.** Use `engine.delete` so the deletion replicates as a
-  tombstone, can lose to a later edit, and reaches other devices. A hard `DELETE`
-  through the driver resurrects the row on the next pull.
-- **Expecting field-level merges.** Conflicts resolve row-level last-writer-wins;
-  two offline edits to different fields of one row keep one row wholesale.
-- **Treating the relay as authoritative.** It can withhold or reorder events
-  (availability), but cannot read or forge payloads. Design for eventual
-  consistency.

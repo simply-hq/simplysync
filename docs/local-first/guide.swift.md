@@ -14,7 +14,7 @@ client compiles the same root `Sources/SimplySync/` tree.
 > [Native clients](./native.md). Pure Foundation + CryptoKit + `SQLite3` — no
 > third-party dependencies.
 
-> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](./pitfalls.md).
 
 ## Mental model
 
@@ -419,20 +419,6 @@ Relays, sync status, and diagnostics.
 - **Identity interoperates by `sf1_` key and phrase** — Swift uses the same
   SLIP-21 labels as the TS protocol (`"SimplySync"`); see the
   [interop boundary](./native.md#identity-derivation-the-interop-boundary).
-
-## Common pitfalls
-
-- **Quote table names in SQL** (`from "entry"`) so the reactive cache can tell
-  which writes refresh a query.
-- **Filter `isDeleted`.** Soft-deleted rows stay in the table; add
-  `where "isDeleted" = 0` to queries that should hide them.
-- **Make row fields match what you insert.** A non-optional `Bool` field over a
-  column you left `NULL` will fail to decode and the row is dropped — provide the
-  value or make the field optional.
-- **Keep column names lowercase-ASCII** so canonical-JSON ordering matches the
-  other clients (see [parity rules](./native.md#parity-rules-what-must-stay-byte-identical)).
-- **Don't hard-delete.** Use soft deletes so a delete can lose to a later edit and
-  propagate to other devices.
 
 ---
 

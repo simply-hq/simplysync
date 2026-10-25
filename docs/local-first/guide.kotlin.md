@@ -13,7 +13,7 @@ way the React version works. It lives in
 > [Native clients](./native.md).
 > Pure JVM (no Android framework deps), so it unit-tests without an emulator.
 
-> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](./pitfalls.md).
 
 ## Mental model
 
@@ -412,20 +412,6 @@ Relays, sync status, and diagnostics.
   encrypted DB snapshot format *is* ported separately as `SnapshotCrypto`.
 - **A legacy mnemonic profile.** New phrases interoperate with TS/Swift; Kotlin
   additionally retains Evolu-derived owners for safe Android upgrades ([Identity management](#identity-management)).
-
-## Common pitfalls
-
-- **Quote table names in SQL** (`from "entry"`) so the cache can track which writes
-  refresh a query.
-- **Filter `isDeleted`.** Soft-deleted rows stay in the table; add
-  `where "isDeleted" = 0` to queries that should hide them.
-- **Keep column names lowercase-ASCII** so canonical-JSON ordering matches the
-  other clients (see [parity rules](./native.md#parity-rules-what-must-stay-byte-identical)).
-- **Don't hard-delete.** Use soft deletes so a delete can lose to a later edit and
-  propagate to other devices.
-- **Android needs its own drivers** — inject an `android.database`-backed
-  `SqliteDriver` and a Keystore-backed `SecureStorage`; the bundled JDBC/in-memory
-  ones are for JVM and tests.
 
 ---
 
