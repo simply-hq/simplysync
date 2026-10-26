@@ -239,6 +239,7 @@ ordering for drag-and-drop), `counterColumns()` + `incrementCounter` /
 ## Deeper
 
 - **[Client API](./guide.md)** — full reference and React patterns.
+- **[API reference](./reference.md)** — every engine member, by task; Swift and Kotlin tabs.
 - **[How it works](./architecture.md)** — on-device store, clock, read/write paths.
 - **[Sync & the relay](./sync.md)** — envelope, wire protocol, relay behavior.
 - **[Native clients](./native.md)** — Swift and Kotlin ports.
