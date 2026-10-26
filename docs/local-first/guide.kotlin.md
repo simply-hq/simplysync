@@ -13,7 +13,7 @@ way the React version works. It lives in
 > [Native clients](./native.md).
 > Pure JVM (no Android framework deps), so it unit-tests without an emulator.
 
-> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](./pitfalls.md).
 
 ## Mental model
 
@@ -255,9 +255,17 @@ owner?.id          // public owner id used for relay routing
 owner?.recoveryKey // the secret to back up — a recovery phrase, or a legacy sf1_ key
 owner?.writeKey    // bearer token presented to the relay (a capability)
 owner?.mnemonic    // the phrase, if the owner was derived from one
+
+// UX: reveal the phrase on demand instead of gating onboarding on it. Simply
+// Finance for iOS keeps "Show Recovery Phrase" in Settings behind Face ID; on
+// Android use BiometricPrompt with the device credential as fallback. Show
+// "Authenticating…" while the prompt is up, then offer Hide and Copy. Mark the
+// copied clip sensitive (ClipDescription.EXTRA_IS_SENSITIVE) so Android 13+
+// hides its preview. Prompt the user to save it when they first turn on sync,
+// since that's when it matters.
 ```
 
-Surface `owner.recoveryKey` during onboarding so the user can save it — it's the
+Surface `owner.recoveryKey` so the user can save it — it's the
 **only** thing that can decrypt their data.
 
 > **Interop and upgrades.** New Kotlin mnemonic identities use the same
@@ -272,7 +280,22 @@ Boot with the saved secret and sync from scratch:
 
 ```kotlin
 engine.restoreAppOwner(recoveryKey)               // refuses to wipe unless the relay confirms data
-engine.restoreAppOwner(recoveryKey, force = true) // intentional switch to a new/empty owner
+
+// UX, modelled on the Simply Finance iOS app's Restore screen:
+// - Keep Restore disabled until the input looks complete (12 or 24 words, or an
+//   sf1_ key), and trim it before passing it in.
+// - When ConnectivityManager reports no network, say so up front and offer a
+//   backup file instead, rather than letting the user wait for a timeout.
+// - Flip an `isRestoring` state to show a spinner on the disabled button before
+//   launching the coroutine, so a second tap can't start a second restore.
+// - On failure, show a plain message ("That phrase isn't valid.") and keep what
+//   the user typed so they can fix a word.
+// - Once it returns, navigate straight into the app and show a small "Syncing
+//   your data…" banner until the first sync settles, instead of a full-screen
+//   wait. Writes made meanwhile are safe under last-writer-wins.
+
+// Intentional switch to a new/empty owner: offer it only behind a confirm.
+engine.restoreAppOwner(recoveryKey, force = true)
 ```
 
 For a BIP39 phrase, restore probes both the current cross-platform profile and
@@ -297,6 +320,10 @@ a copy, throwing `IllegalStateException` with the condition that failed
 (unpushed changes, offline, no relay configured, relay holds nothing):
 
 ```kotlin
+// UX: confirm first with a destructive dialog whose copy says exactly what goes
+// and what stays, e.g. "This removes the recovery phrase and local data from this
+// device only. Encrypted relay data is not deleted and can be restored with the
+// phrase." Show progress while it runs; reloadApp replaces the UI.
 try {
     engine.resetAppOwner()
 } catch (e: IllegalStateException) {
@@ -412,20 +439,6 @@ Relays, sync status, and diagnostics.
   encrypted DB snapshot format *is* ported separately as `SnapshotCrypto`.
 - **A legacy mnemonic profile.** New phrases interoperate with TS/Swift; Kotlin
   additionally retains Evolu-derived owners for safe Android upgrades ([Identity management](#identity-management)).
-
-## Common pitfalls
-
-- **Quote table names in SQL** (`from "entry"`) so the cache can track which writes
-  refresh a query.
-- **Filter `isDeleted`.** Soft-deleted rows stay in the table; add
-  `where "isDeleted" = 0` to queries that should hide them.
-- **Keep column names lowercase-ASCII** so canonical-JSON ordering matches the
-  other clients (see [parity rules](./native.md#parity-rules-what-must-stay-byte-identical)).
-- **Don't hard-delete.** Use soft deletes so a delete can lose to a later edit and
-  propagate to other devices.
-- **Android needs its own drivers** — inject an `android.database`-backed
-  `SqliteDriver` and a Keystore-backed `SecureStorage`; the bundled JDBC/in-memory
-  ones are for JVM and tests.
 
 ---
 

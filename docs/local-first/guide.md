@@ -10,7 +10,7 @@ on-device store, clock, and read/write paths) and
 **[Sync & the relay](./sync.md)** (the encrypted envelope, the wire protocol, the
 relay).
 
-> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](./pitfalls.md).
 
 ## Mental model
 
@@ -360,9 +360,16 @@ owner.id;       // public owner id used for relay routing
 owner.recoveryKey; // the secret to back up — a BIP39 phrase, or a legacy sf1_ key
 owner.mnemonic; // the phrase when phrase-backed; undefined for an sf1_ owner
 owner.writeKey; // bearer token presented to the relay (a capability)
+
+// UX: reveal the phrase on demand instead of gating onboarding on it. Simply
+// Finance for iOS keeps "Show recovery phrase" in Settings behind device auth,
+// shows "Authenticating…" while the prompt is up, then offers Hide and Copy,
+// and clears a copied phrase after 60 seconds where the platform allows. Prompt
+// the user to save it when they first turn on sync, since that's when it
+// matters.
 ```
 
-Surface `owner.recoveryKey` during onboarding so the user can save it. It is the
+Surface `owner.recoveryKey` so the user can save it. It is the
 **only** thing that can decrypt their data — if they lose it, the data is
 unrecoverable by design. Never store it in app state or plain SQLite; the engine
 keeps it in the platform secret store.
@@ -375,7 +382,22 @@ Boot with the saved key or phrase and sync from scratch:
 await engine.restoreAppOwner(recoveryKey);
 // By default this refuses to wipe local data unless the relay confirms the owner
 // has data — so a wrong key/phrase or unreachable relay can't destroy what's here.
-// Pass { force: true } to switch to an empty/new owner intentionally.
+//
+// UX, modelled on the Simply Finance iOS app's Restore screen:
+// - Keep Restore disabled until the input looks complete (12 or 24 words, or an
+//   sf1_ key), and trim it before passing it in.
+// - When the device is offline, say so up front and offer a backup file instead,
+//   rather than letting the user wait for a network timeout.
+// - Switch the button to "Restoring…" with a spinner and disable it before you
+//   await, so a second tap can't start a second restore.
+// - On failure, show a plain message ("That phrase isn't valid.", or "No data
+//   found for this phrase") and keep what the user typed so they can fix a word.
+// - After the reload, let the user straight into the app and show a small
+//   "Syncing your data…" banner while useSyncState() reports the first sync,
+//   instead of a full-screen wait. Writes made meanwhile are safe.
+
+// Pass { force: true } to switch to an empty/new owner intentionally. Offer it
+// only as an explicit choice ("Start with an empty account") behind a confirm.
 await engine.restoreAppOwner(recoveryKey, { force: true });
 ```
 
@@ -388,6 +410,10 @@ default unless a relay is verified to hold a copy, and the error says which
 condition failed so you can offer the right next step:
 
 ```ts
+// UX: confirm first, with destructive styling and copy that says exactly what
+// goes and what stays, e.g. "This removes the recovery phrase and local data
+// from this device only. Encrypted relay data is not deleted and can be restored
+// with the phrase." Show progress while it runs; the reload replaces the UI.
 try {
   await engine.resetAppOwner();
 } catch (error) {
@@ -590,20 +616,3 @@ Relays, sync status, and diagnostics.
 | `SyncEngineConfig` | `{ name, transports?, externalAppOwner?, syncIntervalMs?, autoSync?, indexes?, requestTimeoutMs? }` |
 | `SyncState` | `Initial \| IsSyncing \| IsSynced{lastSyncedAt} \| IsNotSynced{error?,status?,terminal?}` |
 | `Query<R>` | `{ sql, parameters, Row }` (the `Row` field is a phantom type carrier) |
-
-## Common pitfalls
-
-- **Calling crypto before the native bootstrap loads (RN).** Import
-  `@simplysync/react-native/install` first in `index.js`, before Expo Router or
-  any engine module, or engine boot throws "WebCrypto is required".
-- **Forgetting to filter `isDeleted`.** Soft-deleted rows stay in the table; add
-  `.where("isDeleted", "=", 0)` to every query that should hide them. The engine
-  warns when you don't — treat the warning as a bug report, not noise.
-- **Hard-deleting rows.** Use `engine.delete` so the deletion replicates as a
-  tombstone, can lose to a later edit, and reaches other devices. A hard `DELETE`
-  through the driver resurrects the row on the next pull.
-- **Expecting field-level merges.** Conflicts resolve row-level last-writer-wins;
-  two offline edits to different fields of one row keep one row wholesale.
-- **Treating the relay as authoritative.** It can withhold or reorder events
-  (availability), but cannot read or forge payloads. Design for eventual
-  consistency.

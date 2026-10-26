@@ -14,7 +14,7 @@ client compiles the same root `Sources/SimplySync/` tree.
 > [Native clients](./native.md). Pure Foundation + CryptoKit + `SQLite3` — no
 > third-party dependencies.
 
-> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](#common-pitfalls).
+> **Looking something up?** Jump to the [API reference](#api-reference) or [Common pitfalls](./pitfalls.md).
 
 ## Mental model
 
@@ -256,9 +256,16 @@ owner?.id          // public owner id used for relay routing
 owner?.recoveryKey // the secret to back up — an sf1_ key or a 24-word phrase
 owner?.writeKey    // bearer token presented to the relay (a capability)
 owner?.mnemonic    // the 24-word phrase, if the owner was derived from one
+
+// UX: reveal the phrase on demand instead of gating onboarding on it. Simply
+// Finance for iOS keeps "Show Recovery Phrase" in Settings behind Face ID or
+// the passcode (LAContext), shows "Authenticating…" while the prompt is up,
+// then offers Hide and Copy. Copy to a local-only pasteboard item that expires
+// after 60 seconds, and announce "Copied" to VoiceOver. Prompt the user to save
+// it when they first turn on sync, since that's when it matters.
 ```
 
-Surface `owner.recoveryKey` during onboarding so the user can save it. It is the
+Surface `owner.recoveryKey` so the user can save it. It is the
 **only** thing that can decrypt their data — lose it and the data is unrecoverable
 by design. The engine keeps it in the Keychain, never in plain SQLite.
 
@@ -270,7 +277,25 @@ Boot with the saved secret and sync from scratch:
 try await engine.restoreAppOwner(recoveryKey)
 // By default this refuses to wipe local data unless the relay confirms the owner
 // has data, so a wrong key or an unreachable relay can't destroy what's here.
-try await engine.restoreAppOwner(recoveryKey, force: true) // intentional switch
+//
+// UX, modelled on the Simply Finance iOS app's Restore screen:
+// - Keep Restore disabled until the input looks complete (12 or 24 words, or an
+//   sf1_ key), and trim it before passing it in.
+// - When NWPathMonitor reports no network, say so up front and offer a backup
+//   file instead, rather than letting the user wait for a timeout.
+// - Set an `isRestoring` flag that turns the button into a ProgressView and
+//   disables it, and let SwiftUI draw it before you await.
+// - On failure, show a plain message ("That phrase isn't valid.") and keep what
+//   the user typed so they can fix a word.
+// - Once it returns, route straight into the app and float a small "Syncing your
+//   data…" banner until the first sync settles, instead of a full-screen wait.
+//   Writes made meanwhile are safe under last-writer-wins.
+// - On Apple devices the phrase can arrive with no typing at all through iCloud
+//   Keychain; see iCloud sync (icloud.md).
+
+// Intentional switch to a new/empty owner. Offer it only as an explicit choice
+// ("Start with an empty wallet") behind a confirmation.
+try await engine.restoreAppOwner(recoveryKey, force: true)
 ```
 
 ### Reset to a new owner
@@ -282,6 +307,10 @@ a copy, throwing `EngineError.resetUnsafe` with the condition that failed
 (unpushed changes, offline, no relay configured, relay holds nothing):
 
 ```swift
+// UX: confirm first with a destructive alert whose copy says exactly what goes
+// and what stays, e.g. "This removes the recovery phrase and local data from this
+// device only. Encrypted relay data is not deleted and can be restored with the
+// phrase." Show progress while it runs; reloadApp replaces the UI.
 do {
     try await engine.resetAppOwner()
 } catch {
@@ -419,20 +448,6 @@ Relays, sync status, and diagnostics.
 - **Identity interoperates by `sf1_` key and phrase** — Swift uses the same
   SLIP-21 labels as the TS protocol (`"SimplySync"`); see the
   [interop boundary](./native.md#identity-derivation-the-interop-boundary).
-
-## Common pitfalls
-
-- **Quote table names in SQL** (`from "entry"`) so the reactive cache can tell
-  which writes refresh a query.
-- **Filter `isDeleted`.** Soft-deleted rows stay in the table; add
-  `where "isDeleted" = 0` to queries that should hide them.
-- **Make row fields match what you insert.** A non-optional `Bool` field over a
-  column you left `NULL` will fail to decode and the row is dropped — provide the
-  value or make the field optional.
-- **Keep column names lowercase-ASCII** so canonical-JSON ordering matches the
-  other clients (see [parity rules](./native.md#parity-rules-what-must-stay-byte-identical)).
-- **Don't hard-delete.** Use soft deletes so a delete can lose to a later edit and
-  propagate to other devices.
 
 ---
 

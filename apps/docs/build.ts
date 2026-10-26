@@ -196,6 +196,7 @@ const pages: readonly Page[] = [
   { src: "native.md", out: "native.html", nav: "Native clients" },
   { src: "icloud.md", out: "icloud.html", nav: "iCloud sync" },
   { src: "self-hosting.md", out: "self-hosting.html", nav: "Self-hosting" },
+  { src: "pitfalls.md", out: "pitfalls.html", nav: "Common pitfalls" },
   { src: "agents.md", out: "agents.html", nav: "For agents" },
 ];
 
@@ -221,7 +222,7 @@ const NAV_GROUPS: readonly { label: string; pages: readonly NavItem[] }[] = [
     label: "Reference",
     pages: [
       { label: "API reference", anchor: "api-reference" },
-      { label: "Common pitfalls", anchor: "common-pitfalls" },
+      "pitfalls.html",
       "agents.html",
     ],
   },
@@ -803,6 +804,7 @@ const LLMS_ORDER: readonly string[] = [
   "self-hosting.md",
   "guide.swift.md",
   "guide.kotlin.md",
+  "pitfalls.md",
 ];
 
 function llmsIndex(): string {
