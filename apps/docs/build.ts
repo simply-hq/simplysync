@@ -187,6 +187,13 @@ const CLIENT_API_TABS: readonly LangTab[] = [
   { label: "Kotlin", out: "guide-kotlin.html" },
 ];
 
+// The API reference ships in the same three languages, in the same tab order.
+const REFERENCE_TABS: readonly LangTab[] = [
+  { label: "React", out: "reference.html" },
+  { label: "Swift", out: "reference-swift.html" },
+  { label: "Kotlin", out: "reference-kotlin.html" },
+];
+
 const pages: readonly Page[] = [
   { src: "README.md", out: "docs.html", nav: "What & why" },
   { src: "guide.md", out: "guide.html", nav: "Client API", langTabs: CLIENT_API_TABS },
@@ -196,35 +203,31 @@ const pages: readonly Page[] = [
   { src: "native.md", out: "native.html", nav: "Native clients" },
   { src: "icloud.md", out: "icloud.html", nav: "iCloud sync" },
   { src: "self-hosting.md", out: "self-hosting.html", nav: "Self-hosting" },
+  { src: "reference.md", out: "reference.html", nav: "API reference", langTabs: REFERENCE_TABS },
   { src: "pitfalls.md", out: "pitfalls.html", nav: "Common pitfalls" },
   { src: "agents.md", out: "agents.html", nav: "For agents" },
 ];
 
-// Language variants of the Client API: built and cross-linked via the switcher,
-// but not given their own sidebar slot — they highlight "Client API".
+// Language variants of the Client API and API reference: built and cross-linked
+// via the switcher, but not given their own sidebar slot — they highlight the
+// React page's entry.
 const variantPages: readonly Page[] = [
   { src: "guide.swift.md", out: "guide-swift.html", nav: "Client API", langTabs: CLIENT_API_TABS, navActive: "guide.html" },
   { src: "guide.kotlin.md", out: "guide-kotlin.html", nav: "Client API", langTabs: CLIENT_API_TABS, navActive: "guide.html" },
+  { src: "reference.swift.md", out: "reference-swift.html", nav: "API reference", langTabs: REFERENCE_TABS, navActive: "reference.html" },
+  { src: "reference.kotlin.md", out: "reference-kotlin.html", nav: "API reference", langTabs: REFERENCE_TABS, navActive: "reference.html" },
 ];
 
 // Every page that gets rendered (sidebar pages + the hidden language variants).
 const allPages: readonly Page[] = [...pages, ...variantPages];
 
-// A nav item is either a page (by its built filename) or a shortcut into one.
-// Shortcuts exist for the things people come back to look up, so "where's the
-// signature for restoreAppOwner?" is one click from anywhere, not a scroll.
-type NavItem = string | { readonly label: string; readonly anchor: string };
-
-const NAV_GROUPS: readonly { label: string; pages: readonly NavItem[] }[] = [
+// Sidebar groups, by each page's built filename.
+const NAV_GROUPS: readonly { label: string; pages: readonly string[] }[] = [
   { label: "Start", pages: ["docs.html", "guide.html", "schema.html", "architecture.html"] },
   { label: "Operate", pages: ["sync.html", "native.html", "icloud.html", "self-hosting.html"] },
   {
     label: "Reference",
-    pages: [
-      { label: "API reference", anchor: "api-reference" },
-      "pitfalls.html",
-      "agents.html",
-    ],
+    pages: ["reference.html", "pitfalls.html", "agents.html"],
   },
 ];
 
@@ -341,24 +344,22 @@ function renderNav(
   currentOut = activeOut,
   toc: readonly TocEntry[] = [],
 ): string {
-  // Shortcuts land in the Client API variant you are already reading, so a
-  // Swift developer's "API reference" opens the Swift table, not the React one.
-  const apiPage = CLIENT_API_TABS.some((tab) => tab.out === currentOut)
-    ? currentOut
-    : "guide.html";
+  // Keep the reader's language: from a Swift page, "Client API" and "API
+  // reference" open their Swift variants, not the React ones.
+  const lang = Math.max(
+    0,
+    ...[CLIENT_API_TABS, REFERENCE_TABS].map((tabs) => tabs.findIndex((tab) => tab.out === currentOut)),
+  );
   const groups = NAV_GROUPS.map((group) => {
     const items = group.pages
       .map((item) => {
-        if (typeof item !== "string") {
-          return `<a class="nav-link nav-shortcut" href="${apiPage}#${item.anchor}">${item.label}</a>`;
-        }
-        const out = item;
-        const page = pages.find((candidate) => candidate.out === out);
+        const page = pages.find((candidate) => candidate.out === item);
         if (!page) return "";
         const active = page.out === activeOut ? " active" : "";
         const current = active ? ` aria-current="page"` : "";
         const sections = active ? renderNavSections(toc) : "";
-        return `<a class="nav-link${active}" href="${page.out}"${current}>${page.nav}</a>${sections}`;
+        const href = page.langTabs?.[lang]?.out ?? page.out;
+        return `<a class="nav-link${active}" href="${href}"${current}>${page.nav}</a>${sections}`;
       })
       .join("\n            ");
     return `<section class="nav-group">
@@ -804,6 +805,9 @@ const LLMS_ORDER: readonly string[] = [
   "self-hosting.md",
   "guide.swift.md",
   "guide.kotlin.md",
+  "reference.md",
+  "reference.swift.md",
+  "reference.kotlin.md",
   "pitfalls.md",
 ];
 
