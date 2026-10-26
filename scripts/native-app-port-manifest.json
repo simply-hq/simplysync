@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-13T06:10:15.328Z",
+  "updatedAt": "2026-10-27T03:06:26.946Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -11,7 +11,7 @@
         ".ts"
       ],
       "note": "Protocol constants, crypto, envelopes, snapshots, and HLC behavior changed; review native kits and app ports.",
-      "sha256": "050b05a7a448eaac0f388ee9b11dd91192933ad1c6f9e2b5d3f1ff209f20fec1",
+      "sha256": "64fde26093fed5db72a774e6bebdbd910fdfd5b32b59bbdf1dbcc13c91b69f40",
       "fileCount": 4
     },
     {
@@ -22,7 +22,7 @@
         ".ts"
       ],
       "note": "The reference engine changed; review native engine ports and app SyncEngine implementations.",
-      "sha256": "c23f99a84c7915ee744ef64687aff5c4e4108c7cab0865fe036e81f99900cae1",
+      "sha256": "9b44b57b580b76a83e701d2eaa60285d1fd7cad1f5f47a307386069d781f07bb",
       "fileCount": 19
     },
     {
@@ -33,8 +33,8 @@
         ".swift"
       ],
       "note": "The Swift protocol kit changed; review SimplyFinance SimplySyncKit.",
-      "sha256": "51612ece593bd9fb3d7ae7fbc08782a0c59daaba990c676247001435390552d4",
-      "fileCount": 9
+      "sha256": "a793d9e56a6ff70e634a2f36dbebf92ff16ce292b827ecba596feafa85a1380a",
+      "fileCount": 10
     },
     {
       "name": "upstream Swift native engine",
@@ -44,7 +44,7 @@
         ".swift"
       ],
       "note": "The Swift engine port changed; review SimplyFinanceCore sync/database/backup code.",
-      "sha256": "831e68d3e7b1a4b351c5aba9b9b2ddf423926da9995140f9df4f3b3c054e5bb6",
+      "sha256": "3b6653c39417e0364f59e8c6bad731998616028d75bd329d5301fc1390866491",
       "fileCount": 12
     },
     {
@@ -55,7 +55,7 @@
         ".kt"
       ],
       "note": "The Kotlin native port changed; review Android synckit and app SyncEngine.",
-      "sha256": "dd0f158a577b2b6759a009182e23914f5c5480a2298325cb7293b206cb9ef85b",
+      "sha256": "86a9a817d312b3349ce6a537b7e602d93358319ca68ff0345f1258146b14dbe0",
       "fileCount": 20
     },
     {
@@ -66,7 +66,7 @@
         ".swift"
       ],
       "note": "The iOS app protocol kit changed; confirm the upstream native Swift port is still represented.",
-      "sha256": "c07175c0dbfd5fda4fa566d7342d1c2e1767be7554a02ecef0be1b1cd9d3036e",
+      "sha256": "ec5b5159329f664b3ffec3aa4ad067e26cd2b9a8c432327188fa245e00c07b7a",
       "fileCount": 11
     },
     {
@@ -87,7 +87,7 @@
         "WalletBoundaryLifecycle.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "adf0f7b553710ebbbbacb58415efec1ca191f48356fa39cd712fd1f64680939c",
+      "sha256": "1794913c923f6341a6c6de6dcb17a800db47b991ad339dc6d07cf4126295bd9e",
       "fileCount": 11
     },
     {
@@ -98,7 +98,7 @@
         ".kt"
       ],
       "note": "The Android app protocol kit changed; confirm the upstream native Kotlin port is still represented.",
-      "sha256": "96670361d06ebd14fdbe0c4577dd787769cfe8dea510f88d94b24699ab9f117e",
+      "sha256": "079ab1b524ba00e8ef68553300275418ef471e4ab856c7999142ab0c2c6f85c5",
       "fileCount": 11
     },
     {
@@ -121,7 +121,7 @@
         "StoreCloseLifecycle.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "230aa9fb0fed56e30bdf2c5e5c7786317eeef9ded3f1ecab6f6f860f600043ec",
+      "sha256": "cb4ee0ff3e246f61eafd376ba1c486cd5743f5c88d7b74843125f28b44fee856",
       "fileCount": 13
     }
   ]

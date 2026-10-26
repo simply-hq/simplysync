@@ -680,6 +680,9 @@ export function createRelaySync(
       // pending and is retried on the next sync.
       await drainPurgeQueue(bases);
 
+      // Availability needs one completed replica, not acknowledgements from all
+      // replicas. App recovery/write gates must keep this distinction too;
+      // failed replicas retain their own delivery work and failure status.
       if (anySuccess || !firstFailure) {
         state.setSyncState({
           type: "SyncStateIsSynced",

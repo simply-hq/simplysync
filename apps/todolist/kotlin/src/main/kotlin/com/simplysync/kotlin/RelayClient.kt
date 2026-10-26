@@ -15,7 +15,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * sees opaque ciphertext — this client uploads/downloads `SyncEnvelope`s and
  * authenticates with the owner's `relayAuth` as a bearer token.
  */
-internal interface RelayTransport {
+/** Public boundary mirrored by app-owned native ports; HTTP construction remains internal. */
+interface RelayTransport {
     suspend fun push(events: List<SyncEnvelope>): RelayClient.PushResult
     suspend fun pull(after: String): RelayClient.PullResult
     suspend fun status(): RelayClient.StatusResponse
