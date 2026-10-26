@@ -106,7 +106,7 @@ omniscient, but it is not blind either:
 - **Availability & ordering.** It can withhold, delay, reorder, or delete events
   — i.e. deny service or serve stale state. It cannot make you accept forged
   data, only fail to give you real data.
-- **Metadata.** It observes `ownerId`, `deviceId`, event counts, **sizes**, and
+- **Metadata.** It observes `ownerId`, `deviceId` (fresh each engine boot), event counts, **sizes**, and
   **timestamps** (`createdAt`/HLC). Owner ids are pseudonymous but stable. With
   compaction enabled it also sees `streamId` — a stable pseudonymous key per
   logical row — so it can count an owner's distinct rows and how often each

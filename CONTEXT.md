@@ -15,9 +15,11 @@ owner, many devices, no sharing between owners.
 _Avoid_: account, user, tenant, workspace
 
 **Device**:
-One installation of an app holding a full local copy of an owner's data. Each
-device mints its own device id, which is the final tiebreaker between two edits
-made in the same millisecond.
+One installation of an app holding a full local copy of an owner's data. Its
+engine mints a fresh device id on every boot, never persisted, so a backup
+restored onto a second phone cannot share one. The device id is only the final
+tiebreaker between two edits made in the same millisecond; it identifies a
+session, not a device.
 _Avoid_: client, instance, node, peer
 
 **Recovery Key**:

@@ -136,7 +136,7 @@ streamKey = deriveBytes(encryptionKeyBytes, "stream-key", 32)
   "version": 1,
   "ownerId": "…",      // public; routing + AEAD additional data
   "eventId": "…",      // unique per owner (the engine uses the HLC)
-  "deviceId": "…",     // which device produced it
+  "deviceId": "…",     // which engine session produced it
   "createdAt": "ISO",  // wall clock, advisory only
   "streamId": "…",     // optional pseudonymous row grouping key
   "nonce": "base64url(12 bytes)",
