@@ -397,7 +397,7 @@ export function createMutations(
 }
 
 /**
- * Boot + owner management: derive/persist the identity and device id, open the
+ * Boot + owner management: derive/persist the identity, mint the device id, open the
  * DB and create the schema (`init`), and the restore/reset owner flows (which
  * wipe local data and adopt a new identity).
  */
@@ -415,7 +415,6 @@ export function createLifecycle(
   // Its value is now a generic recovery credential: either an `sf1_` key or a
   // BIP39 phrase.
   const mnemonicKey = `${config.name}:mnemonic`;
-  const deviceKey = `${config.name}:deviceId`;
 
   const appOwnerFromIdentity = (identity: LocalFirstIdentity): AppOwner => ({
     id: identity.ownerId,
@@ -476,14 +475,16 @@ export function createLifecycle(
       (await tryDeriveIdentity(externalRecoveryKey)) ??
       (await ensureIdentity());
     state.appOwnerValue = appOwnerFromIdentity(state.identity);
-    let storedDevice = await deps.secureStorage.getItem(deviceKey);
-    if (!storedDevice) {
-      const bytes = new Uint8Array(8);
-      globalThis.crypto.getRandomValues(bytes);
-      storedDevice = base64UrlEncode(bytes);
-      await deps.secureStorage.setItem(deviceKey, storedDevice);
-    }
-    state.deviceId = storedDevice;
+    // A fresh device id every boot, never persisted. A persisted id is cloned
+    // by device backups and phone migrations, and two clones stamping the same
+    // millis+counter mint the same event id — which relays dedupe, silently
+    // dropping one edit. The id only breaks HLC ties; the persisted high-water
+    // mark keeps this boot's stamps above the last one's. Installs still hold
+    // the legacy `<name>:deviceId` item; it is left in place so a downgrade
+    // keeps working.
+    const bytes = new Uint8Array(8);
+    globalThis.crypto.getRandomValues(bytes);
+    state.deviceId = base64UrlEncode(bytes);
   };
 
   // Switch to a different owner (restore an existing key/phrase, or reset to a

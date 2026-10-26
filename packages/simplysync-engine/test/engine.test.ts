@@ -286,6 +286,41 @@ describe("engine", () => {
     }
   });
 
+  // A backup restored onto a second phone clones secure storage and the clock's
+  // high-water mark. With a persisted device id both copies then mint the very
+  // same HLC for a same-millisecond write — one event id, which relays dedupe,
+  // silently dropping an edit. A per-boot device id keeps the stamps distinct.
+  test("cloned installs never mint the same event id", async () => {
+    const realNow = Date.now;
+    const store = memoryStorage(); // the shared, "backed-up" secure storage
+    const make = () =>
+      createSync({
+        createSqliteDriver: () => memoryDriver(new Database(":memory:")).driver,
+        secureStorage: store,
+      })({ account: { id: AccountId, name: NonEmptyString } }, { name: "t" });
+    const stamp = async (engine: ReturnType<typeof make>) => {
+      const rows = (await engine.loadQuery(
+        engine.createQuery((db) => db.selectFrom("account").select("updatedAt"), {
+          includeDeleted: true,
+        }),
+      )) as { updatedAt: string }[];
+      return rows[0]!.updatedAt;
+    };
+
+    try {
+      Date.now = () => 2_000_000_000; // both copies write in the same millisecond
+      const original = make();
+      const clone = make();
+      await Promise.all([original.ready, clone.ready]);
+      original.insert("account", { name: "On the old phone" });
+      clone.insert("account", { name: "On the new phone" });
+
+      expect(await stamp(original)).not.toBe(await stamp(clone));
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
   // restoreAppOwner must NOT wipe local data when it can't confirm the owner has
   // a backup (wrong phrase / relay unreachable / no relay) — else a typo wipes
   // everything with no recovery.

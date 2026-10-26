@@ -87,7 +87,6 @@ class SyncEngine(
     private val reseedingRelays = HashSet<String>()
 
     private val mnemonicKey = "${config.name}:mnemonic"
-    private val deviceKey = "${config.name}:deviceId"
     private val mnemonicProfileKey = "${config.name}:mnemonicIdentityProfile"
     private val liveFlows = HashMap<String, MutableStateFlow<List<Any?>>>()
 
@@ -148,8 +147,11 @@ class SyncEngine(
             else resolveMnemonicProfile(secret!!)
         val derived = IdentityDeriver.derive(secret!!, profile)
         persistMnemonicProfile(profile)
-        val device = deps.secureStorage.getItem(deviceKey)
-            ?: Base64Url.encode(Crypto.randomBytes(8)).also { deps.secureStorage.setItem(deviceKey, it) }
+        // A fresh device id every boot, never persisted: a persisted id is
+        // cloned by device backups, and two clones stamping the same
+        // millis+counter mint one event id that relays dedupe, dropping an
+        // edit. The legacy `<name>:deviceId` item stays put for downgrades.
+        val device = Base64Url.encode(Crypto.randomBytes(8))
         lock.withLock {
             identity = derived
             deviceId = device

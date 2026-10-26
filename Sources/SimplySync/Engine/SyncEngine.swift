@@ -101,7 +101,6 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
 
     private var bootTask: Task<Void, Never>!
     private let mnemonicKey: String
-    private let deviceKey: String
 
     public init(schema: Schema, config: SyncEngineConfig, deps: SyncEngineDeps) {
         self.schema = schema
@@ -113,7 +112,6 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
         self.defaultPollMs = config.syncIntervalMs > 0 ? config.syncIntervalMs : 60_000
         self.pollIntervalMs = config.syncIntervalMs > 0 ? config.syncIntervalMs : 60_000
         self.mnemonicKey = "\(config.name):mnemonic"
-        self.deviceKey = "\(config.name):deviceId"
         self.cache.onError = { [weak self] message in self?.setError(message) }
         self.bootTask = Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
@@ -162,11 +160,11 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             secret = fresh
         }
         let derived = try IdentityDeriver.derive(from: secret!)
-        let device = deps.secureStorage.getItem(deviceKey) ?? {
-            let d = Base64URL.encode(Crypto.randomBytes(8))
-            deps.secureStorage.setItem(deviceKey, d)
-            return d
-        }()
+        // A fresh device id every boot, never persisted: a persisted id is
+        // cloned by device backups, and two clones stamping the same
+        // millis+counter mint one event id that relays dedupe, dropping an
+        // edit. The legacy `<name>:deviceId` item stays put for downgrades.
+        let device = Base64URL.encode(Crypto.randomBytes(8))
         lock.withLock {
             self.identity = derived
             self.deviceId = device
