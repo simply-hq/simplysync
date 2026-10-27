@@ -189,6 +189,12 @@ describe("getRelayStatuses", () => {
     expect(bad.reachable).toBe(false);
     expect(bad.lastFailure?.kind).toBe("serverError");
     expect(bad.lastSyncedAt).toBeUndefined();
+    // A failed redundant replica cannot disable local mutations after a good sync.
+    const saved = engine.insert("note", { body: "still editable" });
+    expect(saved.ok).toBe(true);
+    await engine.sync();
+    expect(engine.getSyncState().type).toBe("SyncStateIsSynced");
+    engine.setTransports([]);
   });
 
   test("dropping a relay from transports drops its lingering health entry", async () => {

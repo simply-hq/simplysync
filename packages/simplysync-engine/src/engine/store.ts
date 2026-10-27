@@ -1032,18 +1032,21 @@ export function createStore(
     const tables: Record<string, Record<string, unknown>[]> = {};
     const meta: Record<string, string> = {};
     if (driver) {
-      for (const table of Object.keys(schema)) {
-        tables[table] = driver.select<Record<string, unknown>>(
-          `select * from "${table}"`,
+      // Rows and delivery metadata must describe the same committed version.
+      driver.transaction(() => {
+        for (const table of Object.keys(schema)) {
+          tables[table] = driver.select<Record<string, unknown>>(
+            `select * from "${table}"`,
+          );
+        }
+        const metaRows = driver.select<{ key: string; value: string }>(
+          `select key, value from "${SYNC_META_TABLE}"`,
         );
-      }
-      const metaRows = driver.select<{ key: string; value: string }>(
-        `select key, value from "${SYNC_META_TABLE}"`,
-      );
-      for (const { key, value } of metaRows) {
-        if (!isPortableMetaKey(key)) continue;
-        meta[key] = value;
-      }
+        for (const { key, value } of metaRows) {
+          if (!isPortableMetaKey(key)) continue;
+          meta[key] = value;
+        }
+      });
     }
     return {
       format: "simplysync-db-snapshot",
