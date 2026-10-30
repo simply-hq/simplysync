@@ -395,7 +395,10 @@ phrase without typing it.
   refresh-on-change) works the same way.
 - **`LiveQuery` / `ObservableObject`, not hooks.** SwiftUI observes `LiveQuery.rows`
   and `engine.syncState` instead of `useQuery` / `useSyncState`.
-- **Not ported:** encrypted DB export/import (snapshot), binary blobs, and the
+- **Blobs are kit-level, caller-managed** (as in TypeScript): `Blob.encrypt` /
+  `decryptChunk` / `decrypt` and `RelayClient.putBlob` / `hasBlob` / `getBlob`.
+  Storing the manifest, queueing uploads and caching chunks is the app's job.
+- **Not ported:** encrypted DB export/import (snapshot) and the
   fluent index builder. The protocol, schema, mutations, queries,
   identity, relay sync, and LWW are all here.
 - **Identity interoperates by `sf1_` key and phrase** — Swift uses the same
