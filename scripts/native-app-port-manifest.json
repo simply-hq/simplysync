@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-10-27T03:06:26.946Z",
+  "updatedAt": "2026-10-30T16:06:42.360Z",
   "description": "Fingerprints the SimplySync source-of-truth sync/protocol code and the app-owned iOS/Android ports. If any fingerprint changes, review and port the change deliberately before refreshing this manifest.",
   "trees": [
     {
@@ -66,7 +66,7 @@
         ".swift"
       ],
       "note": "The iOS app protocol kit changed; confirm the upstream native Swift port is still represented.",
-      "sha256": "ec5b5159329f664b3ffec3aa4ad067e26cd2b9a8c432327188fa245e00c07b7a",
+      "sha256": "56d16dd055245ad11a5bc44fce5737b0e2d0665bff33ec262dcf8655de19ec1e",
       "fileCount": 11
     },
     {
@@ -87,7 +87,7 @@
         "WalletBoundaryLifecycle.swift"
       ],
       "note": "The iOS app sync integration changed; review Android parity and upstream engine assumptions.",
-      "sha256": "1794913c923f6341a6c6de6dcb17a800db47b991ad339dc6d07cf4126295bd9e",
+      "sha256": "ba27528734e6e7e1c8be3c2cd2f8f73ab15ac3744fd326fa7d85dff69c91ed75",
       "fileCount": 11
     },
     {
@@ -98,7 +98,7 @@
         ".kt"
       ],
       "note": "The Android app protocol kit changed; confirm the upstream native Kotlin port is still represented.",
-      "sha256": "079ab1b524ba00e8ef68553300275418ef471e4ab856c7999142ab0c2c6f85c5",
+      "sha256": "732fe7c4be1021de6e8deea840299b1351fdc758bb38bd78e2d8b206258cc45d",
       "fileCount": 11
     },
     {
@@ -121,7 +121,7 @@
         "StoreCloseLifecycle.kt"
       ],
       "note": "The Android app sync integration changed; review iOS parity and upstream engine assumptions.",
-      "sha256": "cb4ee0ff3e246f61eafd376ba1c486cd5743f5c88d7b74843125f28b44fee856",
+      "sha256": "d12100f3908f1074eacd1aefa9601b97070b478e8751d5d2680120efe135622d",
       "fileCount": 13
     }
   ]
