@@ -173,6 +173,46 @@ public struct RelayClient {
         return try JSONDecoder().decode(Health.self, from: data)
     }
 
+    /// HEAD /v1/blobs/:hash — whether the relay already holds this chunk.
+    public func hasBlob(_ hash: String) async throws -> Bool {
+        var request = try blobRequest(hash)
+        request.httpMethod = "HEAD"
+        let (data, response) = try await session.data(for: request)
+        if (response as? HTTPURLResponse)?.statusCode == 404 { return false }
+        try check(response, data)
+        return true
+    }
+
+    /// PUT /v1/blobs/:hash — upload one stored chunk (`nonce ‖ ciphertext`). The
+    /// relay recomputes the hash and dedupes, so re-uploading is harmless.
+    public func putBlob(_ hash: String, _ bytes: Data) async throws {
+        var request = try blobRequest(hash)
+        request.httpMethod = "PUT"
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.upload(for: request, from: bytes)
+        try check(response, data)
+    }
+
+    /// GET /v1/blobs/:hash — the stored chunk bytes, or nil when the relay has none.
+    public func getBlob(_ hash: String) async throws -> Data? {
+        let (data, response) = try await session.data(for: try blobRequest(hash))
+        if (response as? HTTPURLResponse)?.statusCode == 404 { return nil }
+        try check(response, data)
+        return data
+    }
+
+    private func blobRequest(_ hash: String) throws -> URLRequest {
+        guard var components = URLComponents(url: baseURL.appendingPathComponent("v1/blobs/\(hash)"),
+                                             resolvingAgainstBaseURL: false) else {
+            throw RelayError.badURL
+        }
+        components.queryItems = [URLQueryItem(name: "ownerId", value: ownerId)]
+        guard let url = components.url else { throw RelayError.badURL }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(relayAuth)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
     private func check(_ response: URLResponse, _ data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
