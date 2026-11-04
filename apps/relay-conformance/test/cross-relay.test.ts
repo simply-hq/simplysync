@@ -140,14 +140,20 @@ describe.skipIf(!CLOUDFLARE)("migrating an owner between relays", () => {
     // The dangerous shape in production is swapping the implementation BEHIND
     // an unchanged URL: the engine reuses the cursor, the push re-creates the
     // owner so pull never 404s, and its wipe detection never fires.
+    //
+    // Cloudflare is pushed FIRST: both relays anchor `seq` to the push time,
+    // so a Go cursor taken afterwards sits above everything Cloudflare already
+    // numbered, whichever relay answered faster. (That anchoring is what makes
+    // a REBUILT relay safe — conformance.test.ts "a wiped relay…" — but a
+    // different relay's older events still sit below a carried cursor.)
     const who = await createTestIdentity();
     const events = await makeEnvelopes(who, 4);
-    expect((await pushEvents(go.baseUrl, who, events)).status).toBe(200);
-    const goCursor = (await pull(go.baseUrl, who)).nextCursor;
-
     expect((await pushEvents(cf!.baseUrl, who, events)).status).toBe(200);
     const honest = await pull(cf!.baseUrl, who);
     expect(honest.events.length).toBe(4);
+
+    expect((await pushEvents(go.baseUrl, who, events)).status).toBe(200);
+    const goCursor = (await pull(go.baseUrl, who)).nextCursor;
 
     const carried = await pull(cf!.baseUrl, who, goCursor);
     expect(carried.events.length).toBeLessThan(honest.events.length);

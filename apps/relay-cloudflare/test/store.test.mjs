@@ -109,24 +109,31 @@ test("chargeableBytes charges only for events the relay does not already hold", 
   assert.equal(db.calls.length, 2, "an empty push asks D1 nothing");
 });
 
-test("reserveSeqRange hands consecutive pushes disjoint, monotonic ranges", async () => {
+test("reserveSeqRange hands consecutive pushes disjoint, monotonic, time-anchored ranges", async () => {
+  // Models the statement: `set value = max(value, now) + count returning value`.
   let counter = 0;
-  const db = stubDb((_sql, [by]) => {
-    counter += by;
+  const db = stubDb((_sql, [now, by]) => {
+    counter = Math.max(counter, now) + by;
     return { value: counter };
   });
 
+  const before = Date.now();
   const first = await reserveSeqRange(db, 3);
   const second = await reserveSeqRange(db, 2);
 
   // base is exclusive, high inclusive: the rows a push inserts are the ones
   // with base < seq <= high, which is what the usage subquery sums.
-  assert.deepEqual(first, { base: 0, high: 3 });
-  assert.deepEqual(second, { base: 3, high: 5 });
-  assert.ok(second.base >= first.high, "ranges never overlap");
+  assert.equal(first.high - first.base, 3);
+  assert.equal(second.high - second.base, 2);
+  assert.equal(second.base, first.high, "consecutive pushes abut");
+  // A fresh counter starts at the push time, never 0: a rebuilt relay must
+  // number events above every cursor an earlier incarnation handed out.
+  assert.ok(first.base >= before, `first seq ${first.base} is not anchored to now`);
 
   // An empty batch reserves nothing but still names a valid, empty range.
-  assert.deepEqual(await reserveSeqRange(db, 0), { base: 5, high: 5 });
+  const empty = await reserveSeqRange(db, 0);
+  assert.equal(empty.base, empty.high);
+  assert.ok(empty.base >= second.high);
 });
 
 test("reserveSeqRange with no counter row still yields an empty-safe range", async () => {
