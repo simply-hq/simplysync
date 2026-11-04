@@ -368,6 +368,20 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 	if err := tx.QueryRow(`select value from relay_meta where key = 'event_seq'`).Scan(&seq); err != nil && err != sql.ErrNoRows {
 		return pushOutcome{rejected: pushStoreFailed}
 	}
+	// Never mint a seq below the push time in ms. Clients keep `seq > cursor`
+	// per relay URL, so a relay rebuilt from nothing (lost volume, fresh deploy)
+	// or restored from an older backup restarts its counter BELOW cursors it
+	// already handed out, and every device holding one silently receives
+	// nothing until the counter climbs past it again. Anchoring the counter to
+	// wall-clock time makes a rebuilt relay's first seqs exceed any cursor an
+	// earlier incarnation issued, so those devices resume on their next pull.
+	// Only wall-clock needs to outrun the event rate (1000 events/s sustained
+	// would let the counter lead time); it is max()ed, so a clock that steps
+	// backwards leaves the counter where it was. Mirrors the Cloudflare relay's
+	// reserveSeqRange.
+	if now := time.Now().UnixMilli(); seq < now {
+		seq = now
+	}
 
 	stmt, err := tx.Prepare(
 		`insert or ignore into events

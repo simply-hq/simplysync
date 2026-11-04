@@ -52,6 +52,7 @@ export interface Env {
   MAX_OWNERS: string;
   MAX_STREAMS_PER_COMPACT?: string;
   RELAY_DISABLED: string;
+  WRITE_LIMIT_SCOPE?: string;
 }
 
 export interface Config {
@@ -66,6 +67,13 @@ export interface Config {
   maxOwners: number;
   maxStreamsPerCompact: number;
   relayDisabled: boolean;
+  /**
+   * "owner" (default): one write budget per owner, so a leaked key can't hammer
+   * writes. "owner-ip": one budget per (owner, client IP), for deployments where
+   * one key is shared by unrelated people (anonymous channels), so one member's
+   * flood throttles that member instead of everyone sharing the key.
+   */
+  writeLimitScope: "owner" | "owner-ip";
 }
 
 export function readConfig(env: Env): Config {
@@ -82,6 +90,7 @@ export function readConfig(env: Env): Config {
     maxOwners: readPositiveInt(env.MAX_OWNERS, 100000),
     maxStreamsPerCompact: readPositiveInt(env.MAX_STREAMS_PER_COMPACT, 1000),
     relayDisabled: env.RELAY_DISABLED === "true",
+    writeLimitScope: env.WRITE_LIMIT_SCOPE === "owner-ip" ? "owner-ip" : "owner",
   };
 }
 
@@ -421,6 +430,16 @@ export interface SeqRange {
  * collide, and the counter only ever increases — a cursor is never reused, even
  * after Compaction deletes the row that consumed it. Events take positions in
  * the range by index; duplicates just leave a harmless gap.
+ *
+ * The counter never falls below the push time in ms. Clients keep `seq > cursor`
+ * per relay URL, so a database rebuilt from nothing or restored from an older
+ * backup restarts the counter BELOW cursors it already handed out, and every
+ * device holding one silently receives nothing until the counter climbs past
+ * it again. Anchoring to wall-clock time makes a rebuilt relay's first seqs
+ * exceed any cursor an earlier incarnation issued, so those devices resume on
+ * their next pull. Only wall-clock needs to outrun the event rate (1000 events/s
+ * sustained would let the counter lead time); max() keeps a backwards clock
+ * step from lowering it. Mirrors the Go relay's pushEvents.
  */
 export async function reserveSeqRange(
   db: D1Database,
@@ -428,9 +447,9 @@ export async function reserveSeqRange(
 ): Promise<SeqRange> {
   const seqRow = await db
     .prepare(
-      `update relay_meta set value = value + ? where key = 'event_seq' returning value`,
+      `update relay_meta set value = max(value, ?) + ? where key = 'event_seq' returning value`,
     )
-    .bind(count)
+    .bind(Date.now(), count)
     .first<{ value: number }>();
   const base = (seqRow?.value ?? count) - count;
   return { base, high: base + count };

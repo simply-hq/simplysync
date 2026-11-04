@@ -585,6 +585,8 @@ for (const adapter of implementations()) {
         // restore from before this owner existed: the device still holds the
         // recovery key, the relay holds nothing.
         const { who, events } = await seed(base());
+        // A second device's position on the relay as it was before the wipe.
+        const staleCursor = (await pull(base(), who)).nextCursor;
 
         const wiped = await adapter.launchEmpty();
         try {
@@ -594,6 +596,16 @@ for (const adapter of implementations()) {
           // Re-seeding from the device is the whole recovery path.
           expect((await pushEvents(wiped.baseUrl, who, events)).status).toBe(200);
           expect(await eventIds(wiped.baseUrl, who)).toEqual(
+            events.map((event) => event.eventId),
+          );
+
+          // The second device never saw the 404: by the time it pulls, the
+          // re-seed has recreated the owner, so it asks for `seq > staleCursor`
+          // with a cursor from the OLD counter. A rebuilt relay must number its
+          // events above every cursor an earlier incarnation handed out, or
+          // this device reports "synced" while receiving nothing.
+          const resumed = await pull(wiped.baseUrl, who, staleCursor);
+          expect(resumed.events.map((event) => event.eventId)).toEqual(
             events.map((event) => event.eventId),
           );
         } finally {

@@ -317,8 +317,11 @@ liveness via `/health`.
 
 ### Two different orders
 
-The relay's monotonic server `seq` is only a skip-proof pagination order. The
-engine still sets `eventId = payload.hlc`, and that HLC is the conflict order.
+The relay's monotonic server `seq` is only a skip-proof pagination order (it is
+also never below the push time in milliseconds, so a rebuilt relay cannot
+re-issue a cursor an earlier deployment already handed out — see
+[relay reset](#the-relays-data-is-reset-or-lost)). The engine still sets
+`eventId = payload.hlc`, and that HLC is the conflict order.
 Correctness comes from authenticated clients applying row-level LWW, not from
 the order in which the relay returns events.
 
@@ -468,36 +471,39 @@ Note what the re-seed carries: **current rows, not history**. A relay holding
 42 events over 2 rows comes back with 2. Older revisions are gone for good —
 they were never a backup.
 
-**The gap: a peer that never sees the 404.** Detection is per device, and it
-needs that device to pull while the account is still missing. If another device
-syncs first, its re-seed recreates the owner, and every peer that pulls
-afterwards gets a normal `200` with an empty page — no 404, no repair. Those
-peers keep a cursor from before the wipe, while the relay's `seq` counter
-restarted from 0 and the re-seed only pushed it back up to the current-row count.
-`where seq > cursor` matches nothing, so **the peer silently stops receiving —
-reporting "synced" the whole time.** It resumes only once the relay has issued
-more `seq` than it ever had before the wipe, and everything in the gap is lost to
-that device. Its own writes still push normally, so the divergence is one-way:
-the re-seeded device sees the stale one, not the reverse.
+**The peer that never sees the 404.** Detection is per device, and it needs
+that device to pull while the account is still missing. If another device syncs
+first, its re-seed recreates the owner, and every peer that pulls afterwards
+gets a normal `200` — no 404, no repair. Those peers keep a cursor from before
+the wipe and ask for `seq > cursor`. Both reference relays guard this case:
+the `seq` counter never falls below the push time in milliseconds, so a relay
+rebuilt from nothing (or restored from an older backup) numbers its first events
+above every cursor an earlier incarnation handed out, and the stale peer
+receives the whole re-seed on its next pull. The conformance suite pins it
+("a wiped relay forgets the owner…"). A custom relay that restarts its counter
+from 0 strands such a peer: `seq > cursor` matches nothing, and it **reports
+"synced" while receiving nothing** until the counter climbs past its cursor.
 
-The `/v1/status` backstop doesn't cover this. It re-seeds on `headSeq` behind the
-local cursor, but only when `account.events` is `0` — and a re-seeded relay has
-events. (That guard is deliberate: stream compaction can legitimately lower
-`headSeq`, and treating it as loss would re-seed healthy relays.) It is also
-reached only through `getRelayStatuses()`, which is a UI call, not part of the
-sync loop.
+What no relay can repair: events the stale peer pushed before the wipe that
+nobody had pulled yet. They are gone from the relay, and the peer already
+recorded them as delivered, so it won't push them again. Only that peer noticing
+the wipe — via a pull 404 or the `/v1/status` backstop below — re-uploads them.
 
-**Recovery for a stranded device: give the relay a new base URL** — a new
-hostname, or just a path prefix like `https://relay.example.com/v2`. Every key
-in `_sync_meta` is scoped by base URL, so a new one starts from an empty cursor
-and re-seeds. Treat the URL as an opaque key: even a trailing-slash difference
-counts as a different relay.
+The `/v1/status` backstop re-seeds on `headSeq` behind the local cursor, but
+only when `account.events` is `0` — a re-seeded relay has events. (That guard is
+deliberate: stream compaction can legitimately lower `headSeq`, and treating it
+as loss would re-seed healthy relays.) It is also reached only through
+`getRelayStatuses()`, which is a UI call, not part of the sync loop.
 
-Two resets that are **safe**: deleting event rows while keeping `relay_meta`
-(the `seq` counter keeps climbing, so no cursor can be stranded), and the relay's
-own [compaction](#compaction), which never reuses a `seq`. Only discarding the
-counter — a deleted database file, a fresh deploy, a restore from an older
-backup — can strand a peer.
+**Manual recovery for any stranded device: give the relay a new base URL** — a
+new hostname, or just a path prefix like `https://relay.example.com/v2`. Every
+key in `_sync_meta` is scoped by base URL, so a new one starts from an empty
+cursor and re-seeds. Treat the URL as an opaque key: even a trailing-slash
+difference counts as a different relay.
+
+Two resets that are **safe** on any relay: deleting event rows while keeping
+`relay_meta` (the `seq` counter keeps climbing, so no cursor can be stranded),
+and the relay's own [compaction](#compaction), which never reuses a `seq`.
 
 ### …I lose my recovery phrase?
 
