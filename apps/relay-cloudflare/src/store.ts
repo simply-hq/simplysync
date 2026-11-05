@@ -515,6 +515,13 @@ async function insertAndCharge(
 export interface EventPage {
   readonly events: SyncEnvelope[];
   readonly nextCursor: string;
+  /**
+   * Random id minted once per database (migration 0004) and echoed on every
+   * pull. A client that sees it change under the same URL knows the relay was
+   * rebuilt from nothing — including events it already pushed and marked
+   * delivered, which the time-anchored seq alone cannot reveal — and re-seeds.
+   */
+  readonly epoch: string;
 }
 
 export async function listEvents(
@@ -527,15 +534,18 @@ export async function listEvents(
   // Cursor is a monotonic seq. A legacy HLC-string cursor parses to 0 -> the
   // client re-pulls once (deduped client-side) then advances on seq.
   const afterSeq = Number.isFinite(Number(after)) ? Number(after) : 0;
-  const { results } = await env.DB.prepare(
-    `select seq, envelope_json from events
-       where owner_id = ? and seq > ?
-       order by seq asc limit ?`,
-  )
-    .bind(ownerId, afterSeq, limit)
-    .all<{ seq: number; envelope_json: string }>();
-
-  const rows = results ?? [];
+  // One D1 round trip for the page and the epoch; pull is the hot path.
+  const [page, epochRow] = await env.DB.batch([
+    env.DB.prepare(
+      `select seq, envelope_json from events
+         where owner_id = ? and seq > ?
+         order by seq asc limit ?`,
+    ).bind(ownerId, afterSeq, limit),
+    env.DB.prepare(`select value from relay_meta where key = 'epoch'`),
+  ]);
+  const rows = (page?.results ?? []) as { seq: number; envelope_json: string }[];
+  const epochValue = (epochRow?.results?.[0] as { value?: number } | undefined)?.value;
+  const epoch = epochValue === undefined ? "" : String(epochValue);
   // Bound the response page by bytes as well as count: at the 256 KiB/event max
   // the count cap alone lets one page reach hundreds of MiB, doubling during
   // JSON.stringify. Stop after at least one row so the pull always advances;
@@ -549,7 +559,7 @@ export async function listEvents(
     accumulated += row.envelope_json.length;
     if (maxBytes > 0 && accumulated >= maxBytes) break;
   }
-  return { events, nextCursor: String(cursor) };
+  return { events, nextCursor: String(cursor), epoch };
 }
 
 // -----------------------------------------------------------------------------

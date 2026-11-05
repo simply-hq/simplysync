@@ -369,6 +369,7 @@ class SyncEngine(
             store.setMeta("cursor:$base", "")
             store.deleteMeta("push:$base")
             store.deleteMeta("backfill:$base")
+            store.deleteMeta("epoch:$base")
             true
         }
         if (fresh) backfillOutboxForNewRelay(base)
@@ -995,6 +996,21 @@ class SyncEngine(
             }
             throw e
         }
+        // Relays that know their own database identity echo it as `epoch`. A
+        // change under the same URL is a rebuilt relay: its log is gone, including
+        // events this device already pushed and recorded as delivered, which the
+        // seq-anchored cursor alone cannot reveal (the new counter starts above
+        // ours, so pulls simply continue). Treat it exactly like a pull 404 after
+        // an advanced cursor: forget the relay and re-seed it. Older relays send
+        // no epoch and keep the 404/headSeq detection only.
+        val epochKey = "epoch:$base"
+        val epoch = result.epoch?.takeIf { it.isNotEmpty() }
+        val knownEpoch = lock.withLock { store.getMeta(epochKey) }
+        if (epoch != null && knownEpoch != null && knownEpoch != epoch) {
+            handleWipedRelay(base)
+            lock.withLock { store.setMeta(epochKey, epoch) }
+            return PullPage(emptySet(), 0)
+        }
         return lock.withLock {
             // The suspension above is a window in which restoreAppOwner/resetAppOwner
             // can swap the owner and wipe the database. This page was fetched for
@@ -1087,6 +1103,7 @@ class SyncEngine(
                 )
             }
             store.setMeta(cursorKey, result.nextCursor)
+            if (epoch != null && knownEpoch != epoch) store.setMeta(epochKey, epoch)
             PullPage(changed, result.events.size)
         }
     }

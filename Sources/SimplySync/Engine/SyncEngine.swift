@@ -264,6 +264,7 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
         store.setMeta("cursor:\(base)", "")
         store.deleteMeta("push:\(base)")
         store.deleteMeta("backfill:\(base)")
+        store.deleteMeta("epoch:\(base)")
     }
 
     /// A relay whose event log is behind our pull cursor has lost data (wiped
@@ -958,6 +959,21 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
             }
             throw error
         }
+        // Relays that know their own database identity echo it as `epoch`. A
+        // change under the same URL is a rebuilt relay: its log is gone, including
+        // events this device already pushed and recorded as delivered, which the
+        // seq-anchored cursor alone cannot reveal (the new counter starts above
+        // ours, so pulls simply continue). Treat it exactly like a pull 404 after
+        // an advanced cursor: forget the relay and re-seed it. Older relays send
+        // no epoch and keep the 404/headSeq detection only.
+        let epochKey = "epoch:\(base)"
+        let epoch = (result.epoch?.isEmpty == false) ? result.epoch : nil
+        let knownEpoch = lock.withLock { store.getMeta(epochKey) }
+        if let epoch, let knownEpoch, knownEpoch != epoch {
+            handleWipedRelay(base: base)
+            lock.withLock { store.setMeta(epochKey, epoch) }
+            return PullPage(changed: [], pulled: 0)
+        }
         return lock.withLock {
             // The await above is a window in which restoreAppOwner/resetAppOwner
             // can swap the owner and wipe the database. This page was fetched for
@@ -1045,6 +1061,7 @@ public final class SyncEngine: ObservableObject, @unchecked Sendable {
                     "insert or ignore into \"\(Store.seenTable)\" (event_id) values (?)", [.text(envelope.eventId)])
             }
             store.setMeta(cursorKey, result.nextCursor)
+            if let epoch, knownEpoch != epoch { store.setMeta(epochKey, epoch) }
             return PullPage(changed: changed, pulled: result.events.count)
         }
     }

@@ -339,7 +339,7 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 	// Pull is the one large response; gzip it when the client supports it. The
 	// ciphertext won't shrink, but the base64 inflation + repeated JSON
 	// scaffolding across a full page of envelopes does.
-	writeJSONMaybeGzip(w, r, http.StatusOK, map[string]any{"events": events, "nextCursor": cursor})
+	writeJSONMaybeGzip(w, r, http.StatusOK, map[string]any{"events": events, "nextCursor": cursor, "epoch": st.epoch})
 }
 
 func handleUsage(st *store, w http.ResponseWriter, r *http.Request) {

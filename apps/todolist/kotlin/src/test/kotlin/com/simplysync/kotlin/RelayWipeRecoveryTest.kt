@@ -102,6 +102,49 @@ class RelayWipeRecoveryTest {
     }
 
     @Test
+    fun aChangedEpochUnderTheSameUrlReSeedsTheRelay() = runBlocking {
+        // Parity with relay-forwarding.test.ts "a changed epoch…": the rebuilt
+        // relay still answers 200 and its time-anchored counter keeps the stale
+        // cursor "working", so only the epoch reveals that the log is gone.
+        val pushes = java.util.concurrent.atomic.AtomicInteger(0)
+        val epoch = java.util.concurrent.atomic.AtomicReference("relay-epoch-1")
+        val relay = startStub { method, path, _ ->
+            when {
+                method == "POST" -> { pushes.incrementAndGet(); okPush }
+                path.startsWith("/v1/events") ->
+                    200 to """{"events":[],"nextCursor":"7","epoch":"${epoch.get()}"}"""
+                path.startsWith("/v1/status") ->
+                    200 to """{"server":{"version":"1.0.0"},"account":{"events":1}}"""
+                else -> 200 to """{"ok":true,"version":"1.0.0"}"""
+            }
+        }
+        val engine = engineWith("kotlin-epoch-test", baseUrl(relay))
+        try {
+            engine.ready()
+            engine.insert("note", "body" to "keep me")
+            engine.sync()
+            engine.sync()
+            val before = pushes.get()
+            assertTrue(before > 0)
+
+            // Same epoch: nothing to repair, nothing re-sent.
+            engine.sync()
+            assertEquals(before, pushes.get())
+
+            epoch.set("relay-epoch-2")
+            engine.sync()
+            assertTrue("a new epoch marks the relay as being re-seeded", engine.getRelayStatuses().first().reseeding)
+            engine.sync()
+            assertTrue("the row is re-uploaded under the new epoch", pushes.get() > before)
+            engine.sync()
+            assertFalse(engine.getRelayStatuses().first().reseeding)
+        } finally {
+            engine.close()
+            relay.stop(0)
+        }
+    }
+
+    @Test
     fun resetRefusesUntilARelayIsConfirmedToHoldTheData() = runBlocking {
         // No relay configured: this data exists only here, so the unforced call
         // must refuse and point at a backup.

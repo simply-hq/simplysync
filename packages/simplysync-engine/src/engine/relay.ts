@@ -96,6 +96,9 @@ export function createRelaySync(
     reseedingRelays.add(base);
     store.resetRelaySyncState(base);
     store.backfillOutboxForNewRelay(base);
+    // The re-seed pushes on the NEXT pass (push runs before pull); ask the
+    // drain for one rather than leaving the relay empty until the next poll.
+    syncQueued = true;
     store.appendSyncLog({
       relay: base,
       phase: "pull",
@@ -422,13 +425,35 @@ export function createRelaySync(
     const body = (await response.json()) as {
       events?: unknown;
       nextCursor?: unknown;
+      epoch?: unknown;
     };
     if (!Array.isArray(body.events) || typeof body.nextCursor !== "string") {
       throw malformedResponse("pull");
     }
+    // Relays that know their own database identity echo it as `epoch`. A
+    // change under the same URL is a rebuilt relay: its log is gone, including
+    // events this device already pushed and recorded as delivered, which the
+    // seq-anchored cursor alone cannot reveal (the new counter starts above
+    // ours, so pulls simply continue). Treat it exactly like a pull 404 after
+    // an advanced cursor: forget the relay and re-seed it. Older relays send
+    // no epoch and keep the 404/headSeq detection only.
+    const epoch =
+      typeof body.epoch === "string" && body.epoch !== "" ? body.epoch : null;
+    const knownEpoch = store.relayEpoch(baseUrl);
+    if (epoch !== null && knownEpoch !== null && knownEpoch !== epoch) {
+      handleWipedRelay(baseUrl);
+      store.setRelayEpoch(baseUrl, epoch);
+      return result;
+    }
     const events = body.events as SyncEnvelope[];
     const nextCursor = body.nextCursor;
     result.pulled = events.length;
+    // Forward what this relay delivers to the other configured relays, so a
+    // fleet of relays converges without relaying between themselves. Events
+    // this device (or a sibling tab sharing its id) authored are already in
+    // the outbox for every relay, so only other devices' events are queued.
+    const forwardToPeers = relayBaseUrls().length > 1;
+    const ownDevice = state.deviceId.split(".")[0];
 
     // Async phase: decrypt every not-yet-seen envelope into memory. No writes
     // happen here. decryptEnvelope is async and driver.transaction below runs
@@ -438,6 +463,7 @@ export function createRelaySync(
       eventId: string;
       payloadJson: string;
       rawPayload: unknown;
+      envelopeJson: string | null;
     }> = [];
     for (const envelope of events) {
       if (store.hasSeenEvent(envelope.eventId)) continue;
@@ -461,6 +487,12 @@ export function createRelaySync(
         eventId: envelope.eventId,
         payloadJson: JSON.stringify(rawPayload),
         rawPayload,
+        envelopeJson:
+          forwardToPeers
+          && typeof envelope.deviceId === "string"
+          && envelope.deviceId.split(".")[0] !== ownDevice
+            ? JSON.stringify(envelope)
+            : null,
       });
     }
 
@@ -478,12 +510,18 @@ export function createRelaySync(
     // nothing async runs inside the transaction callback.
     if (decrypted.length > 0) {
       driver.transaction(() => {
-        for (const { eventId, payloadJson, rawPayload } of decrypted) {
+        const pulledAt = new Date().toISOString();
+        for (const { eventId, payloadJson, rawPayload, envelopeJson } of decrypted) {
           // Re-check "seen" here (not just in the async phase above): a
           // duplicate eventId within the same page — which a relay shouldn't
           // send, but we stay defensive — would otherwise be applied twice.
           if (store.hasSeenEvent(eventId)) continue;
           const outcome = admission.admit(eventId, rawPayload, payloadJson);
+          // Authenticated and orderable (deferred counts: it is the owner's
+          // data, just not applicable here yet) — worth carrying to peers.
+          if (envelopeJson !== null && outcome.kind !== "rejected") {
+            store.insertForwardedEvent(eventId, envelopeJson, baseUrl, pulledAt);
+          }
           if (outcome.kind === "applied" || outcome.kind === "unchanged") {
             result.changed.add(outcome.table);
             if (outcome.kind === "applied") result.applied += 1;
@@ -512,6 +550,7 @@ export function createRelaySync(
     if (nextCursor !== after) {
       store.setPullCursor(baseUrl, nextCursor);
     }
+    if (epoch !== null && knownEpoch !== epoch) store.setRelayEpoch(baseUrl, epoch);
     return result;
   };
 

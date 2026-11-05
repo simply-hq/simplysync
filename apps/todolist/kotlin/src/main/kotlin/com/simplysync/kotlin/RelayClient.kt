@@ -49,7 +49,15 @@ class RelayClient(
     private val base: String = baseUrl.trimEnd('/')
 
     data class PushResult(val accepted: Int, val duplicate: Int)
-    data class PullResult(val events: List<SyncEnvelope>, val nextCursor: String)
+    /**
+     * `epoch` is the relay database's identity, when the relay reports one. A
+     * change under the same URL means the relay was rebuilt and its log is gone.
+     */
+    data class PullResult(
+        val events: List<SyncEnvelope>,
+        val nextCursor: String,
+        val epoch: String? = null,
+    )
 
     @Serializable
     private data class PushBody(val ownerId: String, val events: List<SyncEnvelope>)
@@ -58,7 +66,11 @@ class RelayClient(
     private data class PushResponse(val accepted: Int = 0, val duplicate: Int = 0)
 
     @Serializable
-    private data class PullResponse(val events: List<SyncEnvelope> = emptyList(), val nextCursor: String = "")
+    private data class PullResponse(
+        val events: List<SyncEnvelope> = emptyList(),
+        val nextCursor: String = "",
+        val epoch: String? = null,
+    )
 
     // The /v1/status response shape shared by all reference relays (Bun, Go,
     // Cloudflare). Fields we don't surface (ownerId, createdAt) are ignored.
@@ -117,7 +129,7 @@ class RelayClient(
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw RelayException(response.code, body)
             val decoded = json.decodeFromString(PullResponse.serializer(), body)
-            PullResult(decoded.events, decoded.nextCursor)
+            PullResult(decoded.events, decoded.nextCursor, decoded.epoch)
         }
     }
 

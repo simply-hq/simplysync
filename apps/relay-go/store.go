@@ -1,8 +1,10 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -27,6 +29,12 @@ type store struct {
 	db        *sql.DB
 	writeMu   sync.Mutex
 	maxOwners int
+	// Random id minted once per database and echoed in every pull page. A
+	// client that sees it change under the same URL knows the relay was rebuilt
+	// from nothing — including events it already pushed and marked delivered,
+	// which the time-anchored seq alone cannot reveal — and re-seeds. Read once
+	// after migrate; it never changes while the process runs.
+	epoch string
 }
 
 func openStore(dataDir string) (*store, error) {
@@ -113,6 +121,21 @@ func (s *store) migrate() error {
 	s.db.Exec(`insert or ignore into relay_meta (key, value) values ('owner_count', 0)`)
 	s.db.Exec(`update relay_meta set value = (select count(*) from owners)
 		where key = 'owner_count' and value < (select count(*) from owners)`)
+
+	// Database identity (see store.epoch). 53 random bits so the value stays an
+	// exact integer in every JSON consumer; a restore from backup keeps the old
+	// epoch on purpose — that log is continuous with what clients already hold.
+	var seed [8]byte
+	if _, err := rand.Read(seed[:]); err != nil {
+		return err
+	}
+	s.db.Exec(`insert or ignore into relay_meta (key, value) values ('epoch', ?)`,
+		int64(binary.BigEndian.Uint64(seed[:])>>11))
+	var epoch int64
+	if err := s.db.QueryRow(`select value from relay_meta where key = 'epoch'`).Scan(&epoch); err != nil {
+		return err
+	}
+	s.epoch = strconv.FormatInt(epoch, 10)
 	return nil
 }
 
