@@ -131,7 +131,7 @@ const engine = createSync({
 })(schema, {
   name: "my-app",
   transports: [], // local-only until you add a relay
-  syncIntervalMs: 5000, // poll cadence; default 5000
+  syncIntervalMs: 5000, // poll cadence in ms; default 60000
   schemaVersion: 1,     // optional; defaults to 1
 });
 
