@@ -988,8 +988,15 @@ export function createStore(
   const projectRow = (
     table: string,
     values: Record<string, unknown>,
-  ): { row: Record<string, unknown>; error: string | null } => {
+  ): {
+    row: Record<string, unknown>;
+    error: string | null;
+    /** Keys this schema has no column for — a newer app version's data. */
+    dropped: readonly string[];
+  } => {
     const row: Record<string, unknown> = {};
+    const known = new Set<string>([...Object.keys(schema[table]), ...SYSTEM_COLUMNS]);
+    const dropped = Object.keys(values).filter((name) => !known.has(name));
     for (const [name, type] of Object.entries(schema[table])) {
       if (!(name in values)) continue;
       const value = values[name];
@@ -1006,6 +1013,7 @@ export function createStore(
         return {
           row,
           error: `${table}.${name}: ${result.error.message}`,
+          dropped,
         };
       }
       row[name] = result.value;
@@ -1014,30 +1022,36 @@ export function createStore(
       if (!(name in values)) continue;
       const value = values[name];
       const message = validateSystemColumn(name, value);
-      if (message) return { row, error: `${table}.${name}: ${message}` };
+      if (message) return { row, error: `${table}.${name}: ${message}`, dropped };
       row[name] = value;
     }
-    return { row, error: null };
+    return { row, error: null, dropped };
   };
 
   // Apply one replicated payload under last-writer-wins: keep the local row
-  // when its HLC is newer-or-equal, otherwise project the payload onto the
-  // local schema (unknown columns from a newer app version are dropped, not
-  // fatal — see projectRow) and write it. Shared by the relay pull path and
-  // the cross-tab apply path so both merge identically. Returns true when the
-  // row was written, false when the local copy wins.
+  // when its HLC is newer, otherwise project the payload onto the local
+  // schema (unknown columns from a newer app version are dropped, not fatal —
+  // see projectRow) and write it. Shared by the relay pull path and the
+  // cross-tab apply path so both merge identically.
+  //
+  // `dropped` names the columns this build could not store. The caller
+  // retains such a payload so the boot sweep after an upgrade can replay it:
+  // by then the row is already here at the SAME version, so a replay fills
+  // only the columns that are still NULL locally and touches nothing else. A
+  // strictly newer local version reports nothing dropped — under row-level
+  // last-writer-wins it superseded every column the payload carried.
   const applyLwwRow = (
     payload: SyncPayload<Record<string, unknown>, number>,
-  ): boolean => {
+  ): { wrote: boolean; dropped: readonly string[] } => {
     const { driver } = state;
-    if (!driver) return false;
+    if (!driver) return { wrote: false, dropped: [] };
     const existing = driver.select<{ updatedAt: string }>(
       `select updatedAt from "${payload.table}" where id = ?`,
       [payload.rowId],
     )[0];
-    if (existing && compareHlc(existing.updatedAt, payload.hlc) >= 0)
-      return false;
-    const { row: projected, error } = projectRow(payload.table, {
+    const order = existing ? compareHlc(existing.updatedAt, payload.hlc) : -1;
+    if (order > 0) return { wrote: false, dropped: [] };
+    const { row: projected, error, dropped } = projectRow(payload.table, {
       ...payload.value,
       id: payload.rowId,
       // `hlc` is the canonical version on the wire. Native ports do not need
@@ -1046,8 +1060,28 @@ export function createStore(
       updatedAt: payload.hlc,
     });
     if (error) throw new Error(error);
+    if (order === 0) {
+      // An HLC embeds its writing device, so a tie is this same event again
+      // (resend, re-seed, or the retained replay above). Never overwrite a
+      // value; only fill what is NULL.
+      const local =
+        driver.select<Record<string, unknown>>(
+          `select * from "${payload.table}" where id = ?`,
+          [payload.rowId],
+        )[0] ?? {};
+      const fill = Object.entries(projected).filter(
+        ([name, value]) =>
+          name !== "id" && value !== null && value !== undefined && local[name] === null,
+      );
+      if (fill.length === 0) return { wrote: false, dropped };
+      driver.exec(
+        `update "${payload.table}" set ${fill.map(([name]) => `"${name}" = ?`).join(", ")} where id = ?`,
+        [...fill.map(([, value]) => value), payload.rowId],
+      );
+      return { wrote: true, dropped };
+    }
     writeRow(payload.table, projected);
-    return true;
+    return { wrote: true, dropped };
   };
 
   // A driver-agnostic full snapshot: every row of every schema table (including

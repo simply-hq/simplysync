@@ -24,6 +24,7 @@ import {
   createSync,
   id,
   NonEmptyString,
+  nullOr,
   type SyncEngine,
   type Transport,
 } from "../src/index";
@@ -42,6 +43,29 @@ const RELAY_URL = "http://relay.test";
 const schema = {
   note: { id: id("Note"), title: NonEmptyString, details: NonEmptyString },
 };
+
+/** The same database opened by a build whose schema knows `futureColumn`. */
+function makeUpgradedDevice(db: Database, fetchImpl: typeof fetch, name: string) {
+  return createSync({
+    createSqliteDriver: () => memoryDriver(db).driver,
+    secureStorage: memoryStorage(),
+    fetch: fetchImpl,
+  })(
+    {
+      note: {
+        id: id("Note"),
+        title: NonEmptyString,
+        details: NonEmptyString,
+        futureColumn: nullOr(NonEmptyString),
+      },
+    },
+    {
+      name,
+      externalAppOwner: { id: "", mnemonic: MNEMONIC, writeKey: "" },
+      syncIntervalMs: 3_600_000,
+    },
+  );
+}
 
 function makeDevice(fetchImpl: typeof fetch, name: string) {
   const db = new Database(":memory:");
@@ -158,6 +182,75 @@ describe("relay pull/apply — Plan 004 (schema projection on remote apply)", ()
     const log = engine.getSyncLog(5);
     expect(log[0]?.applied).toBe(1);
     expect(log[0]?.kind).toBeUndefined(); // no failure surfaced
+
+    // The column it had no place for is not lost: the payload is retained
+    // opaquely (no retry time) for the build that knows the column…
+    expect(
+      (db
+        .prepare(`select retry_after_ms from _sync_deferred where event_id = ?`)
+        .get(hlc) as { retry_after_ms: number | null } | null)?.retry_after_ms,
+    ).toBeNull();
+
+    // …and that build's boot sweep fills it in, then forgets the copy.
+    const upgraded = makeUpgradedDevice(db, relay.fetch, "unknown-column");
+    await upgraded.ready;
+    expect(
+      (db.prepare(`select futureColumn from note where id = ?`).get(rowId) as {
+        futureColumn: string | null;
+      }).futureColumn,
+    ).toBe("some value from the future");
+    expect(
+      (db.prepare(`select title from note where id = ?`).get(rowId) as {
+        title: string;
+      }).title,
+    ).toBe("Written on a newer app version");
+    expect(
+      (db.prepare(`select count(*) as c from _sync_deferred`).get() as {
+        c: number;
+      }).c,
+    ).toBe(0);
+  });
+
+  test("a retained unknown-column payload is discarded once a newer local version supersedes it", async () => {
+    const relay = fakeRelay();
+    const { engine, db } = makeDevice(relay.fetch, "unknown-column-superseded");
+    await engine.ready;
+
+    const rowId = "row-2";
+    const hlc = createHlc("device-remote", Date.now() - 1_000, 0);
+    await pushSynthetic(relay, {
+      schemaVersion: 1,
+      table: "note",
+      op: "upsert",
+      rowId,
+      hlc,
+      value: {
+        title: "from the future",
+        details: "d",
+        futureColumn: "superseded before the upgrade",
+        createdAt: new Date().toISOString(),
+        updatedAt: hlc,
+        isDeleted: 0,
+      },
+    });
+    await connect(engine);
+    expect(
+      (db.prepare(`select count(*) as c from _sync_deferred`).get() as { c: number }).c,
+    ).toBe(1);
+
+    // This (older) build edits the row: a newer version without the column.
+    expect(engine.update("note", { id: rowId, title: "edited here" }).ok).toBe(true);
+
+    const upgraded = makeUpgradedDevice(db, relay.fetch, "unknown-column-superseded");
+    await upgraded.ready;
+    const row = db
+      .prepare(`select title, futureColumn from note where id = ?`)
+      .get(rowId) as { title: string; futureColumn: string | null };
+    expect(row.title).toBe("edited here");
+    expect(row.futureColumn).toBeNull();
+    expect(
+      (db.prepare(`select count(*) as c from _sync_deferred`).get() as { c: number }).c,
+    ).toBe(0);
   });
 
   test("a merged remote row may carry SQLite NULLs for never-supplied typed columns", async () => {
