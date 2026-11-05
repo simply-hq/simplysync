@@ -313,10 +313,16 @@ export function createStore(
   const pullCursorKey = (base: string) => `cursor:${base}`;
   const pushCursorKey = (base: string) => `push:${base}`;
   const backfillMarkerKey = (base: string) => `backfill:${base}`;
+  // The relay's database identity, echoed in every pull page. A different
+  // value under the same URL means the relay was rebuilt (lost volume, fresh
+  // deploy) and its event log — including events this device already pushed —
+  // is gone. Reset with the cursor: it describes the same log.
+  const epochKey = (base: string) => `epoch:${base}`;
   const relayStateKeys = (base: string) => [
     pullCursorKey(base),
     pushCursorKey(base),
     backfillMarkerKey(base),
+    epochKey(base),
   ];
 
   // What a snapshot may carry between devices. The pull cursor and clock mark
@@ -333,6 +339,9 @@ export function createStore(
   const setPullCursor = (base: string, cursor: string): void =>
     setMeta(pullCursorKey(base), cursor);
   const pushCursor = (base: string): string | null => getMeta(pushCursorKey(base));
+  const relayEpoch = (base: string): string | null => getMeta(epochKey(base));
+  const setRelayEpoch = (base: string, epoch: string): void =>
+    setMeta(epochKey(base), epoch);
 
   // The HLC high-water mark, so the clock stays monotonic across restarts.
   const clockHighWaterMark = (): { time: number; counter: number } => ({
@@ -882,6 +891,29 @@ export function createStore(
     );
   };
 
+  // Queue an event this device PULLED from one relay for delivery to the
+  // others, so every configured relay converges on the same log even though
+  // relays never talk to each other. The envelope is already sealed by its
+  // author, so it is stored as-is with no plaintext, `pushed_at` set (it has
+  // reached a relay — it is not pending local work), and an acknowledgement
+  // for the relay it came from so `claimPushBatch` sends it only to the rest.
+  // `insert or ignore`: an event already queued (this device's own, or
+  // forwarded from another relay earlier) only gains the acknowledgement.
+  const insertForwardedEvent = (
+    eventId: string,
+    envelopeJson: string,
+    sourceRelay: string,
+    pulledAt: string,
+  ): void => {
+    const { driver } = state;
+    if (!driver) return;
+    driver.exec(
+      `insert or ignore into "${SYNC_OUTBOX_TABLE}" (event_id, payload_json, envelope_json, pushed_at) values (?, null, ?, ?)`,
+      [eventId, envelopeJson, pulledAt],
+    );
+    markOutboxDelivered(eventId, sourceRelay);
+  };
+
   const writeRow = (table: string, row: Record<string, unknown>): void => {
     const { driver } = state;
     if (!driver) return;
@@ -1139,6 +1171,8 @@ export function createStore(
     pullCursor,
     setPullCursor,
     pushCursor,
+    relayEpoch,
+    setRelayEpoch,
     clockHighWaterMark,
     setClockHighWaterMark,
     hasSeenEvent,
@@ -1164,6 +1198,7 @@ export function createStore(
     pruneOutbox,
     backfillOutboxForNewRelay,
     insertPendingOutboxEvent,
+    insertForwardedEvent,
     writeRow,
     coerceValues,
     applyLwwRow,

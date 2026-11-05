@@ -62,20 +62,22 @@ describe("relay data loss", () => {
     expect(pullCursors).toContain("5");
     expect(pushes).toBeGreaterThan(0);
 
+    // Detecting the wipe queues a follow-up pass in the SAME sync() call, so
+    // the row is re-uploaded here — even though it was already acknowledged
+    // once — rather than on the next poll.
+    const pushesBeforeReseed = pushes;
     wiped = true;
     await engine.sync();
+    expect(pushes).toBeGreaterThan(pushesBeforeReseed);
 
     const [status] = await engine.getRelayStatuses();
     expect(status?.reseeding).toBe(true);
 
-    // Repaired: the cursor is back to zero (not the stale "5" the relay can no
-    // longer match) and the row is re-uploaded even though it was already
-    // acknowledged once.
-    const pushesBeforeReseed = pushes;
+    // Repaired: the cursor is back to zero, not the stale "5" the relay can no
+    // longer match.
     pullCursors.length = 0;
     wiped = false;
     await engine.sync();
-    expect(pushes).toBeGreaterThan(pushesBeforeReseed);
     expect(pullCursors[0]).toBe("");
 
     // A pass with nothing left to send means the copy is rebuilt.

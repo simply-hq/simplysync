@@ -66,9 +66,13 @@ public struct RelayClient {
     public struct PullResult {
         public let events: [SyncEnvelope]
         public let nextCursor: String
-        public init(events: [SyncEnvelope], nextCursor: String) {
+        /// The relay database's identity, when the relay reports one. A change
+        /// under the same URL means the relay was rebuilt and its log is gone.
+        public let epoch: String?
+        public init(events: [SyncEnvelope], nextCursor: String, epoch: String? = nil) {
             self.events = events
             self.nextCursor = nextCursor
+            self.epoch = epoch
         }
     }
 
@@ -103,7 +107,11 @@ public struct RelayClient {
 
     private struct PushBody: Encodable { let ownerId: String; let events: [SyncEnvelope] }
     private struct PushResponse: Decodable { let accepted: Int; let duplicate: Int }
-    private struct PullResponse: Decodable { let events: [SyncEnvelope]; let nextCursor: String }
+    private struct PullResponse: Decodable {
+        let events: [SyncEnvelope]
+        let nextCursor: String
+        let epoch: String?
+    }
 
     public enum RelayError: Error { case http(status: Int, body: String), badURL }
 
@@ -142,7 +150,8 @@ public struct RelayClient {
         let (data, response) = try await session.data(for: request)
         try check(response, data)
         let decoded = try JSONDecoder().decode(PullResponse.self, from: data)
-        return PullResult(events: decoded.events, nextCursor: decoded.nextCursor)
+        return PullResult(events: decoded.events, nextCursor: decoded.nextCursor,
+                          epoch: decoded.epoch)
     }
 
     /// GET /v1/status?ownerId= — per-owner health + quota + head cursor. A

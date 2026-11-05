@@ -144,6 +144,11 @@ for (const adapter of implementations()) {
       const tail = await pull(base(), who, body.nextCursor);
       expect(tail.events).toEqual([]);
       expect(tail.nextCursor).toBe(body.nextCursor);
+      // Every page names the relay database it came from, and that name holds
+      // across pulls — a client compares it to detect a rebuilt relay.
+      expect(typeof body.epoch).toBe("string");
+      expect(body.epoch).not.toBe("");
+      expect(tail.epoch).toBe(body.epoch);
     });
 
     test("pull pages are ordered and a later cursor never re-returns earlier events", async () => {
@@ -586,7 +591,8 @@ for (const adapter of implementations()) {
         // recovery key, the relay holds nothing.
         const { who, events } = await seed(base());
         // A second device's position on the relay as it was before the wipe.
-        const staleCursor = (await pull(base(), who)).nextCursor;
+        const before = await pull(base(), who);
+        const staleCursor = before.nextCursor;
 
         const wiped = await adapter.launchEmpty();
         try {
@@ -608,6 +614,10 @@ for (const adapter of implementations()) {
           expect(resumed.events.map((event) => event.eventId)).toEqual(
             events.map((event) => event.eventId),
           );
+          // ...and the page says it is a different database, which is how a
+          // client learns that events it pushed before the wipe are gone too.
+          expect(resumed.epoch).not.toBe("");
+          expect(resumed.epoch).not.toBe(before.epoch);
         } finally {
           await wiped.kill();
         }

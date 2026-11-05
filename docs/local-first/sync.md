@@ -41,7 +41,13 @@ Re-pushing is harmless because relays deduplicate `(ownerId, eventId)`.
 - defer authenticated future-version, unknown-table, or temporarily future-HLC
   events in `_sync_deferred`;
 - apply a supported row only when its HLC is **strictly newer** than the local
-  row's `updatedAt`, then record the event in `_sync_seen`.
+  row's `updatedAt`, then record the event in `_sync_seen`;
+- with more than one relay configured, queue every other device's event for
+  the relays it was *not* pulled from (the sealed envelope goes into the
+  outbox as-is, acknowledged for its source). Relays never talk to each other,
+  so this is what makes a set of relays converge; a device's own events are
+  already queued for every relay. (TypeScript engine; the native ports keep a
+  push-cursor outbox and do not forward yet.)
 
 The page's applies/deferred writes and seen markers commit together. Only after
 that commit does the engine persist the relay's `nextCursor`, so a crash re-pulls
@@ -211,8 +217,15 @@ Body: { "ownerId": string, "events": SyncEnvelope[] }
 
 ```
 ?ownerId=<id>&after=<cursor>&limit=<n>   (Bearer auth)
-→ 200 { "events": SyncEnvelope[], "nextCursor": string }
+→ 200 { "events": SyncEnvelope[], "nextCursor": string, "epoch": string }
 ```
+
+- `epoch` names the relay's database: a random id minted once when the
+  database is created (Go: `relay_meta`, Cloudflare: migration 0004). It
+  changes only when the relay is rebuilt from nothing, and every engine stores
+  it per relay (`epoch:<url>`) to detect that — see [relay
+  reset](#the-relays-data-is-reset-or-lost). Older relays omit it; engines
+  then rely on the 404 and `/v1/status` checks alone.
 
 - Keyset pagination: parse `after` as the relay-issued sequence, then
   `WHERE owner_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?`. An empty or legacy
@@ -486,10 +499,16 @@ receives the whole re-seed on its next pull. The conformance suite pins it
 from 0 strands such a peer: `seq > cursor` matches nothing, and it **reports
 "synced" while receiving nothing** until the counter climbs past its cursor.
 
-What no relay can repair: events the stale peer pushed before the wipe that
-nobody had pulled yet. They are gone from the relay, and the peer already
-recorded them as delivered, so it won't push them again. Only that peer noticing
-the wipe — via a pull 404 or the `/v1/status` backstop below — re-uploads them.
+What the counter cannot repair: events the stale peer pushed before the wipe
+that nobody had pulled yet. They are gone from the relay, and the peer already
+recorded them as delivered, so it won't push them again. That is what the
+pull page's `epoch` is for: the reference relays echo their database identity
+on every pull, every engine remembers it per relay, and a different value under
+the same URL is treated exactly like a pull 404 after an advanced cursor — the
+engine forgets the relay and re-seeds its current rows, which include those
+events. A relay restored from an older backup keeps its epoch on purpose (that
+log is continuous with what clients hold), so only the counter rule applies
+there.
 
 The `/v1/status` backstop re-seeds on `headSeq` behind the local cursor, but
 only when `account.events` is `0` — a re-seeded relay has events. (That guard is

@@ -10,6 +10,8 @@ import { getUsage, pullEvents, pushEvents } from "./http";
 export interface PullBody {
   readonly events: SyncEnvelope[];
   readonly nextCursor: string;
+  /** The relay database's identity; changes only when the relay is rebuilt. */
+  readonly epoch: string;
 }
 
 export async function pull(
