@@ -41,8 +41,13 @@ New browser owners use portable `sf1_` recovery keys. Restore accepts either an
 `sf1_` key or a legacy BIP39 phrase, and invalid stored credentials are never
 silently replaced with a different owner.
 
-The driver snapshots the whole sql.js database after writes. Keep the default
-required writer lock enabled so a second tab cannot overwrite a newer snapshot.
+The driver snapshots the whole sql.js database after writes. Snapshots are
+encrypted at rest by default (AES-256-GCM under the same non-extractable
+master key as the secure storage); a plaintext snapshot from an older release
+still loads and is rewritten encrypted on the next save. Pass
+`createIndexedDbSnapshotStore({ encrypt: false })` to keep plaintext. Keep the
+default required writer lock enabled so a second tab cannot overwrite a newer
+snapshot.
 An async OPFS driver should replace this model only after measured database size
 or write latency justifies an engine-wide asynchronous storage API.
 
