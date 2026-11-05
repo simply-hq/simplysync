@@ -56,11 +56,17 @@ the engine deliberately treats it as opaque. The seen-set is capped at 50k by
 retaining the lexicographically greatest event IDs; LWW application remains
 idempotent if an event is ever replayed.
 
-**Poll cadence & backoff.** The relay is plain HTTP with no server push, so the
-engine polls (`syncIntervalMs`, default 60 s) and also syncs on local writes and on
-web focus/online, so a change made on another device shows up on the next
-poll, write, or focus — set a shorter interval if the app needs faster
-cross-device updates. After a *terminal* failure (400/401/403/413) it backs the
+**Poll cadence, long-poll & backoff.** The relay is plain HTTP with no server
+push, so the engine polls (`syncIntervalMs`, default 60 s) and also syncs on
+local writes and on web focus/online. A relay that can hold a pull open says so
+on every pull response (`x-simplysync-max-wait`, seconds; the Go relay does,
+Cloudflare does not); the periodic pass then asks the first configured relay to
+`wait` up to 20 s for new events and the next pass follows at once, so another
+device's change lands within a round trip. A local write or an explicit
+`sync()` cuts the wait short. Against a relay that advertises nothing, a change
+made on another device shows up on the next poll, write, or focus — set a
+shorter interval if the app needs faster cross-device updates there.
+`longPoll: false` turns the held-open pull off. After a *terminal* failure (400/401/403/413) it backs the
 poller off to 5 minutes so it doesn't hammer a relay that's rejecting the batch —
 while still retrying immediately on focus/online/write. A `429` also uses the
 five-minute backoff but remains nonterminal; network and 5xx failures retry at
@@ -220,6 +226,10 @@ Body: { "ownerId": string, "events": SyncEnvelope[] }
 → 200 { "events": SyncEnvelope[], "nextCursor": string, "epoch": string }
 ```
 
+- `wait=<seconds>` (Go relay) holds an empty pull open until a push lands for
+  the owner or the wait expires, capped by `MAX_PULL_WAIT_SECONDS` (default
+  25, `0` disables). The cap is advertised on every pull response as
+  `x-simplysync-max-wait`; a relay that sends no header is polled as before.
 - `epoch` names the relay's database: a random id minted once when the
   database is created (Go: `relay_meta`, Cloudflare: migration 0004). It
   changes only when the relay is rebuilt from nothing, and every engine stores

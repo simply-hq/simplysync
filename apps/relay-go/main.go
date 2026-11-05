@@ -32,6 +32,9 @@ type Config struct {
 	MaxEventsPerPull     int
 	DefaultEventsPerPull int
 	MaxPullBytes         int64
+	// Longest a pull may be held open waiting for new events (`?wait=N`). 0
+	// turns long-polling off; clients then fall back to their poll interval.
+	MaxPullWaitSeconds   int
 	MaxStreamsPerCompact int
 	MaxBlobBytes         int64
 	CompactionInterval   time.Duration
@@ -67,6 +70,8 @@ func loadConfig() Config {
 		// Byte ceiling on a single pull page, independent of the count cap: at
 		// 256 KiB/event the count cap alone admits a multi-hundred-MiB page.
 		MaxPullBytes: envInt64("MAX_PULL_BYTES", 8*1024*1024),
+		// Under Cloudflare's 100 s origin limit and the 120 s ReadTimeout.
+		MaxPullWaitSeconds: envInt("MAX_PULL_WAIT_SECONDS", 25),
 		MaxStreamsPerCompact: envInt("MAX_STREAMS_PER_COMPACT", 1000),
 		MaxBlobBytes:         envInt64("MAX_BLOB_BYTES", 8*1024*1024),
 		CompactionInterval:   resolveCompactionInterval(),

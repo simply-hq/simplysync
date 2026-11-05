@@ -35,6 +35,8 @@ type store struct {
 	// which the time-anchored seq alone cannot reveal — and re-seeds. Read once
 	// after migrate; it never changes while the process runs.
 	epoch string
+	// Open long-poll pulls, woken when a push lands for their owner.
+	waiters *ownerWaiters
 }
 
 func openStore(dataDir string) (*store, error) {
@@ -48,7 +50,7 @@ func openStore(dataDir string) (*store, error) {
 	if err := db.Ping(); err != nil {
 		return nil, err
 	}
-	return &store{db: db}, nil
+	return &store{db: db, waiters: newOwnerWaiters()}, nil
 }
 
 func (s *store) close() { _ = s.db.Close() }
@@ -482,6 +484,10 @@ func (s *store) pushEvents(cfg Config, ownerID string, events []incomingEvent) p
 	}
 	if err := tx.Commit(); err != nil {
 		return pushOutcome{rejected: pushStoreFailed}
+	}
+	// Committed and visible to a fresh query: release the owner's open pulls.
+	if accepted > 0 {
+		s.waiters.notify(ownerID)
 	}
 	return pushOutcome{accepted: accepted, duplicate: duplicate}
 }

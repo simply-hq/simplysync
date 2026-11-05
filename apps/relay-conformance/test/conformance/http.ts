@@ -56,13 +56,19 @@ export async function pullEvents(
   baseUrl: string,
   test: TestIdentity,
   after: string,
-  { limit, bearer, ip }: { limit?: number; bearer?: string; ip?: string } = {},
+  {
+    limit,
+    bearer,
+    ip,
+    wait,
+  }: { limit?: number; bearer?: string; ip?: string; wait?: number } = {},
 ): Promise<Response> {
   const params = new URLSearchParams({
     ownerId: test.identity.ownerId,
     after,
   });
   if (limit !== undefined) params.set("limit", String(limit));
+  if (wait !== undefined) params.set("wait", String(wait));
   return fetch(`${baseUrl}/v1/events?${params.toString()}`, {
     headers: authHeaders(test, bearer, ip),
   });
