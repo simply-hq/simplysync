@@ -215,10 +215,13 @@ with `nullOr(...)`, `maxLength(n)(...)`, or `withDefault(...)`.
 search), `keyBetween(a, b)` / `keysBetween` / `compareOrderKeys` (fractional
 ordering for drag-and-drop), `counterColumns()` + `incrementCounter` /
 `decrementCounter` / `counterTotalQuery` (conflict-free counters),
-`encodeJson` / `decodeJsonOr` (JSON columns), `createPresenceChannel`.
+`encodeJson` / `decodeJsonOr` (JSON columns), `createPresenceChannel`,
+`createIdFromString(s)` (async; deterministic id from a stable string — derive
+a follow-up row's id from its parent's so concurrent devices write the same
+row), `uuidToId` / `idToUuid` (external UUID keys round-trip).
 
-**React** — `SyncProvider`, `useSync<S>()`, `useQuery(q)`, `useSyncState()`,
-`useSyncError()`.
+**React** — `SyncProvider`, `useSync<S>()`, `useQuery(q)`, `useQueries([q1, q2])`,
+`useSyncState()`, `useSyncError()`.
 
 ## Mistakes and their fixes
 

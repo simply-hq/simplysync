@@ -215,6 +215,12 @@ engine.update("entry", { id, amountCents: -500 });
 engine.upsert("entry", { id, description: "Latte", amountCents: -500 });
 ```
 
+**Deterministic ids.** Pass your own `id` when the row should exist exactly once
+across devices: `await createIdFromString(\`shipment:${orderId}\`)` gives every
+device the same id for the same input, so concurrent follow-up work converges
+on one row instead of two (`uuidToId` / `idToUuid` do the same for external
+UUID keys).
+
 **Deletes are soft.** In a distributed log you can't truly delete one change —
 you mark the row deleted and let the tombstone sync. Use `delete`; never hard-delete
 a row yourself, or peers resurrect it on the next pull.
@@ -342,6 +348,8 @@ function Ledger() {
 ```
 
 - **`useQuery(query)`** — subscribes to the query and returns the current rows.
+- **`useQueries([q1, q2])`** — several queries at once, rows returned in order;
+  the result array keeps its identity until one query's rows change.
   Re-renders when matching rows change, from a local write *or* an incoming sync.
 - **`useSyncState()`** — the current `SyncState` (see [Syncing with a relay](#syncing-with-a-relay)).
 - **`useSyncError()`** — the last `SyncError | null`, for surfacing failures.

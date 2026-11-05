@@ -74,6 +74,43 @@ export function useQuery<R>(query: Query<R>): readonly R[] {
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
+type RowsOf<Q> = {
+  readonly [K in keyof Q]: Q[K] extends Query<infer R> ? readonly R[] : never;
+};
+
+/**
+ * Several reactive queries in one hook, rows returned in the same order. The
+ * result array keeps its identity until one query's rows actually change, so
+ * it is safe to depend on in effects and memos.
+ */
+export function useQueries<const Q extends readonly Query[]>(queries: Q): RowsOf<Q> {
+  const engine = useSync();
+  const key = queries.map(queryDeps).join("|");
+
+  const subscribe = useMemo(
+    () => (listener: () => void) => {
+      const unsubscribes = queries.map((query) => engine.subscribeQuery(query)(listener));
+      return () => {
+        for (const unsubscribe of unsubscribes) unsubscribe();
+      };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [engine, key],
+  );
+  const getSnapshot = useMemo(() => {
+    let last: readonly (readonly unknown[])[] | null = null;
+    return () => {
+      const next = queries.map((query) => engine.getQueryRows(query));
+      if (last && last.every((rows, i) => rows === next[i])) return last;
+      last = next;
+      return last;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, key]);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot) as RowsOf<Q>;
+}
+
 export function useSyncState(): SyncState {
   const engine = useSync();
   return useSyncExternalStore(
