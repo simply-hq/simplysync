@@ -59,8 +59,26 @@ export function createRelaySync(
   // applyRemoteRow is idempotent (LWW) even if one were.
   const SEEN_CAP = 50_000;
   const DEFERRED_REPLAY_LIMIT = 256;
+  // Long-poll. A relay that can hold a pull open says so on every pull
+  // response (`x-simplysync-max-wait`, seconds). The periodic pass then asks
+  // the FIRST relay to wait, up to this long, for new events, and the next
+  // pass is scheduled right away instead of after `syncIntervalMs` — so
+  // another device's change lands within a round trip. Only the first relay
+  // waits: the pass contacts relays in order, and waiting on each would
+  // serialise the latency. Relays that advertise nothing are polled as before.
+  const LONG_POLL_WAIT_S = 20;
+  const LONG_POLL_RETICK_MS = 250;
+  const longPollEnabled = config.longPoll !== false;
+  const relayMaxWait = new Map<string, number>();
+  // The in-flight waited pull, so a local write or an explicit sync() can cut
+  // it short: the pass then moves on and the queued follow-up pushes.
+  let longPollAbort: AbortController | null = null;
+  let longPollInterrupted = false;
+  // Set by the poll tick, consumed by the next pass to run: a pass triggered
+  // by a write or a focus event never waits, it has work of its own.
+  let timerPassPending = false;
   // Single-owner mutable state (never touched outside this module).
-  let syncTimer: number | null = null;
+  let syncTimer: ReturnType<typeof setTimeout> | null = null;
   // Set by close(): no further passes or poll ticks. One-way.
   let closed = false;
   let pollIntervalMs = DEFAULT_POLL_MS;
@@ -388,7 +406,16 @@ export function createRelaySync(
     applyFailures: number;
   }
 
-  const pullAndApply = async (baseUrl: string): Promise<PullResult> => {
+  const interruptLongPoll = (): void => {
+    if (!longPollAbort) return;
+    longPollInterrupted = true;
+    longPollAbort.abort();
+  };
+
+  const pullAndApply = async (
+    baseUrl: string,
+    waitSeconds = 0,
+  ): Promise<PullResult> => {
     const result: PullResult = {
       changed: new Set<string>(),
       pulled: 0,
@@ -402,9 +429,45 @@ export function createRelaySync(
     const url = new URL(`${baseUrl}/v1/events`);
     url.searchParams.set("ownerId", identity.ownerId);
     url.searchParams.set("after", after);
-    const response = await fetchImpl(url.toString(), {
+    const init: RequestInit = {
       headers: { Authorization: `Bearer ${identity.relayAuth}` },
-    });
+    };
+    let waitTimer: ReturnType<typeof setTimeout> | undefined;
+    if (waitSeconds > 0 && typeof AbortController !== "undefined") {
+      url.searchParams.set("wait", String(waitSeconds));
+      // Own deadline: the engine's request deadline is skipped for a request
+      // that brings its own signal, and this one legitimately outlives it.
+      const controller = new AbortController();
+      longPollAbort = controller;
+      longPollInterrupted = false;
+      waitTimer = setTimeout(() => {
+        controller.abort(
+          Object.assign(
+            new Error(`Relay long-poll timed out after ${waitSeconds + 15} s.`),
+            { kind: "timeout" },
+          ),
+        );
+      }, (waitSeconds + 15) * 1000);
+      (waitTimer as { unref?: () => void }).unref?.();
+      init.signal = controller.signal;
+    }
+    let response: Response;
+    try {
+      response = await fetchImpl(url.toString(), init);
+    } catch (caught) {
+      // A wait cut short on purpose is an empty page, not a failure.
+      if (waitSeconds > 0 && longPollInterrupted) return result;
+      throw caught;
+    } finally {
+      if (waitTimer !== undefined) clearTimeout(waitTimer);
+      if (waitSeconds > 0) longPollAbort = null;
+    }
+    const advertised = Number(response.headers.get("x-simplysync-max-wait") ?? "");
+    if (Number.isFinite(advertised) && advertised > 0) {
+      relayMaxWait.set(baseUrl, advertised);
+    } else {
+      relayMaxWait.delete(baseUrl);
+    }
     // An owner the relay has never seen is "nothing to pull yet", not an error.
     // Both reference relays create the owner on PUSH only, so pull/status 404
     // until this account's first event lands (relay-go store.go `Unknown owner`,
@@ -558,14 +621,25 @@ export function createRelaySync(
 
   const runSyncPass = async (): Promise<void> => {
     if (!state.identity || state.syncing) return;
+    const longPoll = timerPassPending;
+    timerPassPending = false;
     state.syncing = true;
     const bases = relayBaseUrls();
+    const waitFor = (base: string): number =>
+      longPoll && base === bases[0]
+        ? Math.min(LONG_POLL_WAIT_S, relayMaxWait.get(base) ?? 0)
+        : 0;
     // Flip the public sync state synchronously at the true start of the sync —
     // NOT after the awaited seal below — so observers (UI spinners, and tests'
     // settle() helpers) reliably see the in-flight sync instead of missing it
     // during the seal's first async tick. A seal-only sync (no relay attached)
     // deliberately doesn't surface a "syncing" state, matching prior behavior.
-    if (bases.length > 0) state.setSyncState({ type: "SyncStateIsSyncing" });
+    // Nor does a long-poll pass: it spends most of its time waiting for
+    // nothing, and a spinner for that would never go out. It still reports
+    // progress the moment something arrives.
+    if (bases.length > 0 && !longPoll) {
+      state.setSyncState({ type: "SyncStateIsSyncing" });
+    }
     try {
       // Seal any durable, plaintext-pending outbox rows (see store.ts
       // insertPendingOutboxEvent) before anything else — regardless of
@@ -636,7 +710,7 @@ export function createRelaySync(
           let firstPage = true;
           while (true) {
             const cursorBefore = store.pullCursor(base) ?? "";
-            const page = await pullAndApply(base);
+            const page = await pullAndApply(base, firstPage ? waitFor(base) : 0);
             const advanced = (store.pullCursor(base) ?? "") !== cursorBefore;
             // Forward-progress guard: a non-empty page that didn't advance the
             // cursor is the relay re-serving events we already have. The FIRST
@@ -686,6 +760,8 @@ export function createRelaySync(
         } catch (caught) {
           const failure = classifyError(caught);
           if (!firstFailure) firstFailure = failure;
+          // Never re-tick quickly against a relay that just failed.
+          relayMaxWait.delete(base);
           relayHealth.set(base, {
             // Keep the last good sync time so "failing since when" is visible.
             lastSyncedAt: relayHealth.get(base)?.lastSyncedAt,
@@ -814,6 +890,9 @@ export function createRelaySync(
     // follow-up pass instead of creating one relay round-trip per caller.
     if (activeSync) {
       syncQueued = true;
+      // Don't make this caller wait out a long-poll that has nothing to do
+      // with its writes: cut it short, the queued pass runs next.
+      interruptLongPoll();
       return activeSync;
     }
 
@@ -912,19 +991,36 @@ export function createRelaySync(
   const getRelayStatuses = (): Promise<RelayStatus[]> =>
     Promise.all(relayBaseUrls().map(fetchRelayStatus));
 
-  // The relay is HTTP (no server push), so poll periodically to pull remote
-  // changes while transports are configured. Also synced opportunistically after
-  // local writes and on web focus/online.
-  const startPolling = () => {
+  // Whether the next tick should follow straight on from this one: the first
+  // relay held the last pull open, and we are not backing off a failure.
+  const longPollActive = (): boolean =>
+    longPollEnabled &&
+    pollIntervalMs === DEFAULT_POLL_MS &&
+    (relayMaxWait.get(relayBaseUrls()[0] ?? "") ?? 0) > 0;
+
+  // The relay is HTTP, so poll periodically to pull remote changes while
+  // transports are configured (also synced opportunistically after local
+  // writes and on web focus/online). A relay that supports long-poll turns
+  // the periodic pull into a held-open one and the next tick follows at once.
+  const scheduleTick = (delayMs: number): void => {
     if (!autoSyncEnabled || closed) return;
     if (syncTimer !== null || state.transports.length === 0) return;
-    syncTimer = setInterval(() => {
-      void sync().catch(() => undefined);
-    }, pollIntervalMs) as unknown as number;
+    syncTimer = setTimeout(() => {
+      syncTimer = null;
+      timerPassPending = longPollEnabled;
+      void sync()
+        .catch(() => undefined)
+        .finally(() => {
+          // stopPolling()/startPolling() may have rescheduled meanwhile.
+          if (syncTimer !== null || closed) return;
+          scheduleTick(longPollActive() ? LONG_POLL_RETICK_MS : pollIntervalMs);
+        });
+    }, delayMs);
   };
+  const startPolling = () => scheduleTick(pollIntervalMs);
   const stopPolling = () => {
     if (syncTimer !== null) {
-      clearInterval(syncTimer as unknown as ReturnType<typeof setInterval>);
+      clearTimeout(syncTimer);
       syncTimer = null;
     }
   };
@@ -963,6 +1059,7 @@ export function createRelaySync(
     close: () => {
       closed = true;
       stopPolling();
+      interruptLongPoll();
     },
     relayBaseUrls,
     getRelayStatuses,

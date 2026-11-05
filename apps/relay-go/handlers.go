@@ -328,10 +328,38 @@ func handlePull(cfg Config, st *store, w http.ResponseWriter, r *http.Request) {
 		limit = cfg.MaxEventsPerPull
 	}
 
+	// Long-poll: `wait=N` holds an empty pull open up to N seconds (capped by
+	// MAX_PULL_WAIT_SECONDS) until a push lands for this owner, so a second
+	// device sees a change within a round trip. Subscribe BEFORE the first
+	// list so a push between the list and the wait cannot be missed. The cap
+	// is advertised on every pull so clients know they may wait at all.
+	wait := 0
+	if v := q.Get("wait"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			wait = n
+		}
+	}
+	if wait > cfg.MaxPullWaitSeconds {
+		wait = cfg.MaxPullWaitSeconds
+	}
+	var woken <-chan struct{}
+	if wait > 0 {
+		ch, cancel := st.waiters.subscribe(ownerID)
+		defer cancel()
+		woken = ch
+	}
+
 	events, cursor, err := st.listEvents(ownerID, after, limit, cfg.MaxPullBytes)
+	if err == nil && wait > 0 && len(events) == 0 {
+		awaitWake(r.Context(), woken, time.Duration(wait)*time.Second)
+		events, cursor, err = st.listEvents(ownerID, after, limit, cfg.MaxPullBytes)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errBody("Internal error"))
 		return
+	}
+	if cfg.MaxPullWaitSeconds > 0 {
+		w.Header().Set("X-SimplySync-Max-Wait", strconv.Itoa(cfg.MaxPullWaitSeconds))
 	}
 	if events == nil {
 		events = []json.RawMessage{}
@@ -610,6 +638,8 @@ func writeCORS(w http.ResponseWriter) {
 	h.Set("Access-Control-Allow-Origin", "*")
 	h.Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 	h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, HEAD, OPTIONS")
+	// Browsers hide custom response headers from scripts unless exposed.
+	h.Set("Access-Control-Expose-Headers", "X-SimplySync-Max-Wait")
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

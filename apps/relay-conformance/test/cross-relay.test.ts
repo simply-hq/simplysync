@@ -235,6 +235,36 @@ describe.skipIf(!CLOUDFLARE)("streamId validation parity", () => {
 // --- exceptions: a feature only the Go relay has ---------------------------
 
 describe("go-only behaviour (not contract)", () => {
+  test("a pull with `wait` is held open until a push lands, and advertises its ceiling", async () => {
+    // Risk: the Cloudflare relay cannot hold a request open (no Durable
+    // Object yet), so long-polling stays a Go-only latency win. The engine
+    // only waits when a relay advertises `x-simplysync-max-wait`.
+    const who = await createTestIdentity();
+    const events = await makeEnvelopes(who, 2);
+    expect((await pushEvents(go.baseUrl, who, [events[0]!])).status).toBe(200);
+    const head = await pull(go.baseUrl, who);
+
+    // Nothing new: the pull waits out the whole `wait`, then answers empty.
+    const t0 = Date.now();
+    const idle = await pullEvents(go.baseUrl, who, head.nextCursor, { wait: 1 });
+    expect(idle.status).toBe(200);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(900);
+    expect(Number(idle.headers.get("x-simplysync-max-wait"))).toBeGreaterThan(0);
+    expect(((await idle.json()) as { events: SyncEnvelope[] }).events).toEqual([]);
+
+    // A push during the wait releases it with the new event, well before
+    // the wait would have expired.
+    const t1 = Date.now();
+    const waiting = pullEvents(go.baseUrl, who, head.nextCursor, { wait: 10 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await pushEvents(go.baseUrl, who, [events[1]!])).status).toBe(200);
+    const woken = await waiting;
+    expect(Date.now() - t1).toBeLessThan(5_000);
+    expect(
+      ((await woken.json()) as { events: SyncEnvelope[] }).events.map((e) => e.eventId),
+    ).toEqual([events[1]!.eventId]);
+  });
+
   test("pull compresses in the handler, which is why only Go sends Vary", async () => {
     // The Go relay is deployed with nothing in front of it, so it gzips the one
     // large response itself and must tell caches it varies by Accept-Encoding.
@@ -313,6 +343,19 @@ describe("go-only behaviour (not contract)", () => {
     expect(
       (await pushEvents(goDisabled.baseUrl, who, [await makeEnvelope(who)])).status,
     ).toBe(200);
+  });
+});
+
+describe.skipIf(!CLOUDFLARE)("Cloudflare answers a `wait` pull at once (no long-poll)", () => {
+  test("no ceiling is advertised, so engines keep polling it on their interval", async () => {
+    const who = await createTestIdentity();
+    expect((await pushEvents(cf!.baseUrl, who, await makeEnvelopes(who, 1))).status).toBe(200);
+    const head = await pull(cf!.baseUrl, who);
+    const t0 = Date.now();
+    const res = await pullEvents(cf!.baseUrl, who, head.nextCursor, { wait: 5 });
+    expect(res.status).toBe(200);
+    expect(Date.now() - t0).toBeLessThan(2_000);
+    expect(res.headers.get("x-simplysync-max-wait")).toBeNull();
   });
 });
 

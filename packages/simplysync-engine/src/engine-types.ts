@@ -271,6 +271,14 @@ export interface SyncEngineConfig {
   /** Poll interval (ms) for pulling remote changes. Default 60000. */
   readonly syncIntervalMs?: number;
   /**
+   * Hold the periodic pull open on the first configured relay when that relay
+   * supports it (it advertises `x-simplysync-max-wait`), so another device's
+   * change arrives within about a second instead of on the next poll. Local
+   * writes and explicit `sync()` calls interrupt the wait. Relays without
+   * support are polled on `syncIntervalMs` as before. Default: on.
+   */
+  readonly longPoll?: boolean;
+  /**
    * Set `false` to stop the engine scheduling sync for itself: no poll timer,
    * and no opportunistic pass after a local write, at boot, when transports
    * are attached, or on web focus/online.
