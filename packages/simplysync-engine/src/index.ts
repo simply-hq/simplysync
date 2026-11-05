@@ -4,6 +4,7 @@ export * from "./counter.js";
 export * from "./search.js";
 export * from "./json.js";
 export * from "./presence.js";
+export * from "./engine/ids.js";
 export * from "./engine-types.js";
 export * from "./engine.js";
 

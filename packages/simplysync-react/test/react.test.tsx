@@ -13,6 +13,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   SyncProvider,
+  useQueries,
   useQuery,
   useSync,
   useSyncState,
@@ -60,6 +61,27 @@ describe("@simplysync/react", () => {
       createElement(SyncProvider, { value: engine }, createElement(List)),
     );
     expect(html).toContain("count:3");
+  });
+
+  test("useQueries renders every query's rows in order", () => {
+    const rowsBySql: Record<string, readonly unknown[]> = {
+      "select 1": [{ id: "a" }],
+      "select 2": [{ id: "b" }, { id: "c" }],
+    };
+    const engine = {
+      ...fakeEngine([]),
+      getQueryRows: (query: Query) => rowsBySql[query.sql] ?? [],
+    } as unknown as SyncEngine<Record<string, never>>;
+    const q1 = { sql: "select 1", parameters: [] } as unknown as Query<{ id: string }>;
+    const q2 = { sql: "select 2", parameters: [] } as unknown as Query<{ id: string }>;
+    const Both = () => {
+      const [one, two] = useQueries([q1, q2]);
+      return createElement("div", null, `${one.length}+${two.length}`);
+    };
+    const html = renderToStaticMarkup(
+      createElement(SyncProvider, { value: engine }, createElement(Both)),
+    );
+    expect(html).toContain("1+2");
   });
 
   test("useSyncState renders the engine's current sync state", () => {
