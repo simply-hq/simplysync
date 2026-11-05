@@ -51,8 +51,10 @@ retaining the lexicographically greatest event IDs; LWW application remains
 idempotent if an event is ever replayed.
 
 **Poll cadence & backoff.** The relay is plain HTTP with no server push, so the
-engine polls (`syncIntervalMs`, default 5s) and also syncs on local writes and on
-web focus/online. After a *terminal* failure (400/401/403/413) it backs the
+engine polls (`syncIntervalMs`, default 60 s) and also syncs on local writes and on
+web focus/online, so a change made on another device shows up on the next
+poll, write, or focus — set a shorter interval if the app needs faster
+cross-device updates. After a *terminal* failure (400/401/403/413) it backs the
 poller off to 5 minutes so it doesn't hammer a relay that's rejecting the batch —
 while still retrying immediately on focus/online/write. A `429` also uses the
 five-minute backoff but remains nonterminal; network and 5xx failures retry at
@@ -527,6 +529,15 @@ Last write wins by HLC, and the unit is the **whole row**, not the field. If one
 device edits a note's title and the other edits its body, the row with the
 greater HLC replaces the other outright — the losing device's edit to the *other*
 column is gone. `compareHlc` is the only tiebreaker; there is no merge.
+
+One deliberate exception to "the whole row replaces": a payload value of `NULL`
+in a column whose type does not allow `NULL` is skipped on apply rather than
+written (`projectRow` in `store.ts`). Such a value means "this column was never
+set on the writing device" — typically a row created before the column existed —
+so a device that already holds a real value keeps it. The cost is that two
+devices applying the same event can briefly differ in that column: a device
+without the row stores `NULL`, a device with an older value keeps it. The next
+full-row write from either device converges them.
 
 ### …a device's clock is wrong?
 
