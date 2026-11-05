@@ -449,7 +449,10 @@ in [SECURITY.md](../../SECURITY.md).
 ## Extending the protocol — guidelines
 
 - **Versioning:** `SyncEnvelope.version` and `SyncPayload.schemaVersion` default
-  to `1`. Additive tables/columns stay on version 1. If payload meaning changes,
+  to `1`. Additive tables/columns stay on version 1. A build that meets a column it
+  does not know applies the row without it and retains the payload; the boot
+  sweep after the upgrade that adds the column fills it in (a strictly newer
+  local version of the row supersedes the retained values instead). If payload meaning changes,
   bump the engine config's `schemaVersion`; older clients durably defer the
   opaque payload, and an upgraded client replays it after declaring support.
   Bump and branch rather than mutating meaning in place — old envelopes live

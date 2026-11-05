@@ -159,8 +159,17 @@ export function createEventAdmission(
     }
 
     try {
-      const wrote = store.applyLwwRow(payload);
-      store.dropDeferredEvent(eventId);
+      const { wrote, dropped } = store.applyLwwRow(payload);
+      if (dropped.length > 0) {
+        // Columns a newer app version wrote and this build has no place for.
+        // The row is in (without them), so this is not a failure — but the
+        // values are the owner's data. Retain the payload opaquely; the boot
+        // sweep after the upgrade that adds the column replays it, and the
+        // same-version apply above fills in what was missing.
+        store.deferRemoteEvent(eventId, payloadJson, null);
+      } else {
+        store.dropDeferredEvent(eventId);
+      }
       return wrote
         ? { kind: "applied", table: payload.table }
         : { kind: "unchanged", table: payload.table };
